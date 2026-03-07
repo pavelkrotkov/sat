@@ -1,0 +1,13 @@
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Browser/session state
+playwright_profile/
+
+# Generated reports and debug artifacts
+outputs/
+artifacts/
+
+# OS metadata
+.DS_Store
