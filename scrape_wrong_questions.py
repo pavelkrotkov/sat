@@ -671,10 +671,8 @@ class OutputManager:
         return uid in self.records
 
     def upsert(self, record: WrongQuestionRecord) -> None:
-        payload = asdict(record)
-        payload["subject_bucket"] = payload.get("subject_bucket") or detect_subject(payload)
+        payload = self._prepare_record_payload(asdict(record))
         self.records[payload["uid"]] = payload
-        self.save()
 
     def ordered_records(self) -> list[dict[str, Any]]:
         return sorted(
@@ -688,10 +686,12 @@ class OutputManager:
             ),
         )
 
-    def save(self) -> None:
-        self._refresh_record_assets()
+    def checkpoint_json(self) -> None:
         ordered = self.ordered_records()
         atomic_write_text(self.json_path, json_dump_pretty(ordered))
+
+    def save_reports(self) -> None:
+        ordered = self.ordered_records()
         atomic_write_text(self.csv_path, self._render_csv(ordered))
         atomic_write_text(self.md_path, self._render_markdown(ordered))
         atomic_write_text(self.llm_md_path, self._render_llm_markdown(ordered))
@@ -699,7 +699,9 @@ class OutputManager:
         atomic_write_text(self.css_path, PANDOC_REPORT_CSS)
 
     def finalize(self) -> None:
-        self.save()
+        self._refresh_record_assets()
+        self.checkpoint_json()
+        self.save_reports()
         self._render_html_reports()
 
     def _render_html_reports(self) -> None:
@@ -737,8 +739,13 @@ class OutputManager:
     def _refresh_record_assets(self) -> None:
         for uid, record in self.records.items():
             record["uid"] = uid
-            record["subject_bucket"] = record.get("subject_bucket") or detect_subject(record)
-            record["images"] = self._ensure_embeddable_images(record)
+            self.records[uid] = self._prepare_record_payload(record)
+
+    def _prepare_record_payload(self, record: dict[str, Any]) -> dict[str, Any]:
+        payload = record.copy()
+        payload["subject_bucket"] = payload.get("subject_bucket") or detect_subject(payload)
+        payload["images"] = self._ensure_embeddable_images(payload)
+        return payload
 
     def _ensure_embeddable_images(self, record: dict[str, Any]) -> list[str]:
         existing = dedupe_preserve_order(ensure_list_of_strings(record.get("images", [])))
@@ -1586,6 +1593,7 @@ class SatBluebookScraper:
                     LOG.info("Skipping existing UID after review scrape: %s", record.uid)
                 else:
                     self.outputs.upsert(record)
+                    self.outputs.checkpoint_json()
                     LOG.info("Saved %s.", record.uid)
             except Exception as exc:  # noqa: BLE001
                 self.capture_error(review_page, f"review-failure-{slugify(test_name)}-{row_position + 1}")
