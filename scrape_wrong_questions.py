@@ -1479,7 +1479,6 @@ class SatBluebookScraper:
             lambda: self.click_score_details_for_card(page, int(card["card_index"]), test_name),
             description=f"open Score Details for {test_name}",
         )
-        self.wait_for_ready_state(score_page)
         self.process_questions_overview(score_page, test_name)
         if score_page is not page and not score_page.is_closed():
             score_page.close()
@@ -1490,7 +1489,6 @@ class SatBluebookScraper:
             lambda: self.click_by_text(page, test_name),
             description=f"open test {test_name}",
         )
-        self.wait_for_ready_state(test_page)
         self.process_test_from_current_page(test_page, test_name)
         if test_page is not page and not test_page.is_closed():
             test_page.close()
@@ -1501,7 +1499,6 @@ class SatBluebookScraper:
             lambda: self.click_score_details(page),
             description=f"open Score Details for {test_name}",
         )
-        self.wait_for_ready_state(score_page)
         self.process_questions_overview(score_page, test_name)
         if score_page is not page and not score_page.is_closed():
             score_page.close()
@@ -1555,21 +1552,18 @@ class SatBluebookScraper:
                 f"Saved a diagnostic screenshot to {screenshot or 'artifacts/errors/'}."
             )
         self.set_view_all(page)
-        total_rows = len(self.incorrect_row_indexes(page))
+        row_targets = self.incorrect_row_targets(page)
+        total_rows = len(row_targets)
         LOG.info("%s: found %d incorrect question rows.", test_name, total_rows)
         if self.args.max_questions_per_test > 0:
-            total_rows = min(total_rows, self.args.max_questions_per_test)
-        for row_position in range(total_rows):
+            row_targets = row_targets[: self.args.max_questions_per_test]
+        for row_position, row_target in enumerate(row_targets):
             self.wait_for_questions_overview(page)
-            row_indexes = self.incorrect_row_indexes(page)
-            if row_position >= len(row_indexes):
-                LOG.warning(
-                    "The number of incorrect rows changed while scraping %s; stopping early.",
-                    test_name,
-                )
+            row = self.find_row_for_target(page, row_target)
+            if row is None:
+                LOG.warning("Could not refind incorrect row %d for %s; stopping early.", row_position + 1, test_name)
                 break
-            row = self.questions_table_rows(page).nth(row_indexes[row_position])
-            row_meta = self.read_row_metadata(row)
+            row_meta = row_target["meta"]
             tentative_uid = make_uid(
                 test_name=test_name,
                 section=row_meta.get("section", ""),
@@ -1587,7 +1581,6 @@ class SatBluebookScraper:
                     lambda: self.click_review(row),
                     description=f"open review for {test_name} row {row_position + 1}",
                 )
-                self.wait_for_ready_state(review_page)
                 record = self.scrape_review_page(review_page, test_name, row_meta)
                 if self.outputs.has_uid(record.uid) and not self.args.overwrite_existing:
                     LOG.info("Skipping existing UID after review scrape: %s", record.uid)
@@ -1653,37 +1646,6 @@ class SatBluebookScraper:
         except (PlaywrightError, PlaywrightTimeoutError):
             pass
 
-        selects = page.locator("select")
-        try:
-            select_count = min(selects.count(), 8)
-        except PlaywrightError:
-            select_count = 0
-        for index in range(select_count):
-            select = selects.nth(index)
-            try:
-                if not select.is_visible():
-                    continue
-                option_values = select.evaluate(
-                    """
-                    (node) => Array.from(node.options).map(option => ({
-                      label: (option.label || option.textContent || "").trim(),
-                      value: option.value || "",
-                    }))
-                    """
-                )
-                for option in option_values:
-                    label = normalize_space(option.get("label"))
-                    value = option.get("value", "")
-                    if label.lower() == "all" or value.lower() == "all":
-                        if value:
-                            select.select_option(value=value)
-                        else:
-                            select.select_option(label=label)
-                        page.wait_for_timeout(600)
-                        return
-            except (PlaywrightError, PlaywrightTimeoutError):
-                continue
-
         if self.click_by_text(page, r"\bAll\b", regex=True, required=False):
             page.wait_for_timeout(600)
 
@@ -1734,6 +1696,51 @@ class SatBluebookScraper:
                 continue
             indexes.append(index)
         return indexes
+
+    def incorrect_row_targets(self, page: Page) -> list[dict[str, Any]]:
+        rows = self.questions_table_rows(page)
+        targets: list[dict[str, Any]] = []
+        try:
+            count = rows.count()
+        except PlaywrightError:
+            return targets
+        for index in range(count):
+            row = rows.nth(index)
+            row_text = self.safe_inner_text(row)
+            lowered = row_text.lower()
+            if "incorrect" not in lowered:
+                continue
+            if "questions overview" in lowered or "your answer" in lowered:
+                continue
+            targets.append(
+                {
+                    "row_index": index,
+                    "row_text": row_text,
+                    "meta": self.read_row_metadata(row),
+                }
+            )
+        return targets
+
+    def find_row_for_target(self, page: Page, target: dict[str, Any]) -> Locator | None:
+        rows = self.questions_table_rows(page)
+        target_index = int(target["row_index"])
+        target_text = target["row_text"]
+        try:
+            candidate = rows.nth(target_index)
+            if self.safe_inner_text(candidate) == target_text:
+                return candidate
+        except PlaywrightError:
+            pass
+
+        try:
+            count = rows.count()
+        except PlaywrightError:
+            return None
+        for index in range(count):
+            candidate = rows.nth(index)
+            if self.safe_inner_text(candidate) == target_text:
+                return candidate
+        return None
 
     def read_row_metadata(self, row: Locator) -> dict[str, str]:
         row_text = self.safe_inner_text(row)
