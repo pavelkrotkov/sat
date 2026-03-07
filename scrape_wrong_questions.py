@@ -1818,9 +1818,14 @@ class SatBluebookScraper:
         self.ensure_correct_answer_visible(page)
         container = self.review_container(page)
         structured = self.extract_review_structured_data(container)
-        text_payload = self.extract_visible_text(container)
-        parsed = parse_review_content(text_payload)
-        merged = {**row_meta, **{key: value for key, value in parsed.items() if value}, **structured}
+        merged = {**row_meta, **structured}
+        text_payload = ""
+        if self.review_parse_needs_fallback(merged):
+            text_payload = self.extract_visible_text(container)
+            parsed = parse_review_content(text_payload)
+            for key, value in parsed.items():
+                if value and not merged.get(key):
+                    merged[key] = value
         uid = make_uid(
             test_name=test_name,
             section=merged.get("section", ""),
@@ -1853,10 +1858,22 @@ class SatBluebookScraper:
             html_snapshot_path=paths["html"],
             review_url=page.url,
             source_row_text=merged.get("source_row_text", ""),
-            raw_visible_text=merged.get("raw_visible_text", text_payload),
+            raw_visible_text=text_payload,
             notes=paths["notes"],
         )
         return record
+
+    def review_parse_needs_fallback(self, merged: dict[str, Any]) -> bool:
+        required_groups = (
+            ("question_html", "question_text"),
+            ("explanation_html", "explanation"),
+            ("correct_answer",),
+        )
+        for group in required_groups:
+            if any(normalize_space(str(merged.get(key, ""))) for key in group):
+                continue
+            return True
+        return False
 
     def extract_review_structured_data(self, container: Locator) -> dict[str, Any]:
         try:
