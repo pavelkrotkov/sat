@@ -322,6 +322,21 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Rebuild outputs from an existing JSON file and saved HTML snapshots; skips browser automation.",
     )
+    parser.add_argument(
+        "--save-page-visits",
+        action="store_true",
+        help="Save full-page visit snapshots under artifacts/page_visits for debugging.",
+    )
+    parser.add_argument(
+        "--save-question-screenshots",
+        action="store_true",
+        help="Save per-question review screenshots under artifacts/screenshots.",
+    )
+    parser.add_argument(
+        "--save-error-screenshots",
+        action="store_true",
+        help="Save failure screenshots under artifacts/errors.",
+    )
     return parser.parse_args()
 
 
@@ -1174,11 +1189,11 @@ class SatBluebookScraper:
         self.outputs = outputs
         self.profile_dir = ensure_dir(Path(args.profile_dir))
         self.artifacts_dir = ensure_dir(Path(args.artifacts_dir))
-        self.error_dir = ensure_dir(self.artifacts_dir / "errors")
-        self.screenshot_dir = ensure_dir(self.artifacts_dir / "screenshots")
         self.html_dir = ensure_dir(self.artifacts_dir / "html")
         self.image_dir = ensure_dir(self.artifacts_dir / "images")
-        self.page_visit_dir = ensure_dir(self.artifacts_dir / "page_visits")
+        self.error_dir = self.artifacts_dir / "errors"
+        self.screenshot_dir = self.artifacts_dir / "screenshots"
+        self.page_visit_dir = self.artifacts_dir / "page_visits"
         self.context: BrowserContext | None = None
         self.main_page: Page | None = None
         self.page_visit_counter = 0
@@ -1194,7 +1209,8 @@ class SatBluebookScraper:
                 args=["--start-maximized"],
             )
             self.context.set_default_timeout(self.args.timeout_ms)
-            self.install_debug_hooks()
+            if self.args.save_page_visits:
+                self.install_debug_hooks()
             self.main_page = self.context.pages[0] if self.context.pages else self.context.new_page()
             self.main_page.set_default_timeout(self.args.timeout_ms)
             self.main_page.goto(self.args.start_url, wait_until="domcontentloaded")
@@ -1246,7 +1262,8 @@ class SatBluebookScraper:
             except PlaywrightTimeoutError:
                 pass
         page.wait_for_timeout(750)
-        self.snapshot_page(page, "wait_for_ready_state")
+        if self.args.save_page_visits:
+            self.snapshot_page(page, "wait_for_ready_state")
 
     def install_debug_hooks(self) -> None:
         assert self.context is not None
@@ -1273,6 +1290,8 @@ class SatBluebookScraper:
         self.snapshot_page(page, "framenavigated")
 
     def snapshot_page(self, page: Page, reason: str) -> str:
+        if not self.args.save_page_visits:
+            return ""
         if page.is_closed():
             return ""
         try:
@@ -1289,6 +1308,7 @@ class SatBluebookScraper:
             title = ""
         self.page_visit_counter += 1
         prefix = f"{self.page_visit_counter:05d}-{slugify(reason, 'event')}-{slugify(url, 'page', max_len=50)}"
+        ensure_dir(self.page_visit_dir)
         html_path = self.page_visit_dir / f"{prefix}.html"
         meta_path = self.page_visit_dir / f"{prefix}.json"
         atomic_write_text(html_path, html)
@@ -2053,11 +2073,15 @@ class SatBluebookScraper:
         screenshot_value = str(screenshot_path)
         html_value = str(html_path)
         html_markup = ""
-        try:
-            container.screenshot(path=str(screenshot_path))
-        except PlaywrightError as exc:
-            notes.append(f"Question screenshot failed: {exc}")
-            self.main_page and self.capture_error(self.main_page, f"screenshot-failure-{uid}")
+        if self.args.save_question_screenshots:
+            ensure_dir(self.screenshot_dir)
+            try:
+                container.screenshot(path=str(screenshot_path))
+            except PlaywrightError as exc:
+                notes.append(f"Question screenshot failed: {exc}")
+                self.main_page and self.capture_error(self.main_page, f"screenshot-failure-{uid}")
+                screenshot_value = ""
+        else:
             screenshot_value = ""
         try:
             html_markup = container.inner_html()
@@ -2315,6 +2339,9 @@ class SatBluebookScraper:
             return ""
 
     def capture_error(self, page: Page, label: str) -> str:
+        if not self.args.save_error_screenshots:
+            return ""
+        ensure_dir(self.error_dir)
         path = self.error_dir / f"{slugify(label)}-{int(time.time())}.png"
         try:
             page.screenshot(path=str(path), full_page=True)
