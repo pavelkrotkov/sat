@@ -651,8 +651,7 @@ class OutputManager:
         self.drill_html_path = self.outputs_dir / "drill_pack.html"
         self.css_path = self.outputs_dir / "pandoc-report.css"
         self.pandoc_path = shutil.which("pandoc")
-        self.fragment_markdown_cache: dict[tuple[str, bool], str] = {}
-        self.fragment_plain_cache: dict[tuple[str, bool], str] = {}
+        self.fragment_conversion_cache: dict[tuple[str, str, bool], str] = {}
         self.records: dict[str, dict[str, Any]] = {} if fresh else self._load()
 
     def _load(self) -> dict[str, dict[str, Any]]:
@@ -780,207 +779,187 @@ class OutputManager:
         return output.getvalue()
 
     def _render_markdown(self, records: list[dict[str, Any]]) -> str:
+        return self._render_question_report(
+            records,
+            title="# Wrong SAT Bluebook Questions",
+            intro="",
+            include_images=True,
+            include_visual_context=False,
+        )
+
+    def _render_llm_markdown(self, records: list[dict[str, Any]]) -> str:
+        intro = (
+            "This file is optimized for LLM analysis. Math is preserved as Markdown math, "
+            "and visuals are converted to text descriptions or table-like plain text. "
+            "External image links are intentionally omitted."
+        )
+        return self._render_question_report(
+            records,
+            title="# Wrong SAT Bluebook Questions (LLM Analysis Edition)",
+            intro=intro,
+            include_images=False,
+            include_visual_context=True,
+        )
+
+    def _render_question_report(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        title: str,
+        intro: str,
+        include_images: bool,
+        include_visual_context: bool,
+    ) -> str:
         lines = [
-            "# Wrong SAT Bluebook Questions",
+            title,
             "",
             f"Generated {utc_now()}",
             "",
         ]
+        if intro:
+            lines.extend([intro, ""])
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for record in records:
             grouped[record.get("test_name") or "Unknown Test"].append(record)
         for test_name in sorted(grouped, key=natural_sort_key):
             lines.extend([f"## {test_name}", ""])
             for item in grouped[test_name]:
-                q_label = item.get("question_number") or item.get("uid")
-                lines.append(f"### Question {q_label}")
-                lines.append("")
-                lines.append(f"- Section: {item.get('section') or 'Unknown'}")
-                lines.append(f"- Subject: {item.get('subject_bucket') or 'Unknown'}")
-                lines.append(f"- Module: {item.get('module') or 'Unknown'}")
-                lines.append(f"- Domain / Skill: {item.get('domain') or 'Unknown'} / {item.get('skill') or 'Unknown'}")
-                lines.append(f"- My answer: {item.get('my_answer') or 'Unknown'}")
-                lines.append(f"- Correct answer: {item.get('correct_answer') or 'Unknown'}")
-                if item.get("images"):
-                    image_paths = [str(path) for path in item["images"] if path]
-                    if image_paths:
-                        lines.extend(["", "#### Figure", ""])
-                        for image_path in image_paths:
-                            image_uri = Path(image_path).resolve().as_uri()
-                            if image_path.lower().endswith(".svg"):
-                                lines.append(f"![Figure]({image_uri}){{.inline-svg}}")
-                            else:
-                                lines.append(f"![Figure]({image_uri})")
-                            lines.append("")
-                if item.get("screenshot_path"):
-                    lines.append(
-                        f"- Screenshot: {relative_markdown_path(self.outputs_dir, item['screenshot_path'])}"
-                    )
-                if item.get("html_snapshot_path"):
-                    lines.append(
-                        f"- HTML snapshot: {relative_markdown_path(self.outputs_dir, item['html_snapshot_path'])}"
-                    )
-                lines.extend(
-                    [
-                        "",
-                        "#### Question",
-                        "",
-                    ]
+                self._append_question_report_section(
+                    lines,
+                    item,
+                    include_images=include_images,
+                    include_visual_context=include_visual_context,
                 )
-                question_markdown = self._record_fragment_markdown(item, "question_html", item.get("question_text", ""))
-                lines.extend([question_markdown or "_Not parsed cleanly. See raw text / screenshot._", ""])
-                if item.get("answer_choices_html"):
-                    lines.extend(["#### Answer Choices", ""])
-                    for index, choice_html in enumerate(item["answer_choices_html"], start=1):
-                        label = chr(64 + index)
-                        converted = self._html_fragment_to_markdown(choice_html, strip_figures=True).strip()
-                        if not converted:
-                            continue
-                        choice_lines = converted.splitlines()
-                        lines.append(f"- {label}. {choice_lines[0]}")
-                        for line in choice_lines[1:]:
-                            lines.append(f"  {line}" if line else "")
-                    lines.append("")
-                elif item.get("answer_choices"):
-                    lines.extend(["#### Answer Choices", ""])
-                    lines.extend(f"- {choice}" for choice in item["answer_choices"])
-                    lines.append("")
-                lines.extend(["#### Explanation", ""])
-                explanation_markdown = self._record_fragment_markdown(item, "explanation_html", item.get("explanation", ""))
-                lines.extend([explanation_markdown or "_Not found._", ""])
             lines.append("")
         return self._clean_report_markdown("\n".join(lines))
 
-    def _render_llm_markdown(self, records: list[dict[str, Any]]) -> str:
-        lines = [
-            "# Wrong SAT Bluebook Questions (LLM Analysis Edition)",
-            "",
-            f"Generated {utc_now()}",
-            "",
-            (
-                "This file is optimized for LLM analysis. Math is preserved as Markdown math, "
-                "and visuals are converted to text descriptions or table-like plain text. "
-                "External image links are intentionally omitted."
-            ),
-            "",
-        ]
-        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for record in records:
-            grouped[record.get("test_name") or "Unknown Test"].append(record)
-        for test_name in sorted(grouped, key=natural_sort_key):
-            lines.extend([f"## {test_name}", ""])
-            for item in grouped[test_name]:
-                q_label = item.get("question_number") or item.get("uid")
-                lines.append(f"### Question {q_label}")
-                lines.append("")
-                lines.append(f"- Section: {item.get('section') or 'Unknown'}")
-                lines.append(f"- Subject: {item.get('subject_bucket') or 'Unknown'}")
-                lines.append(f"- Module: {item.get('module') or 'Unknown'}")
-                lines.append(f"- Domain / Skill: {item.get('domain') or 'Unknown'} / {item.get('skill') or 'Unknown'}")
-                lines.append(f"- My answer: {item.get('my_answer') or 'Unknown'}")
-                lines.append(f"- Correct answer: {item.get('correct_answer') or 'Unknown'}")
-                lines.extend(
-                    [
-                        "",
-                        "#### Question",
-                        "",
-                    ]
-                )
-                question_markdown = self._record_fragment_markdown(item, "question_html", item.get("question_text", ""))
-                lines.extend([question_markdown or "_Not parsed cleanly._", ""])
-                visual_contexts = self._extract_llm_visual_contexts(item)
-                if visual_contexts:
-                    lines.extend(["#### Visual Context", ""])
-                    for index, context in enumerate(visual_contexts, start=1):
-                        lines.extend([f"##### Visual {index}", ""])
-                        lines.extend(context.splitlines())
-                        lines.append("")
-                if item.get("answer_choices_html"):
-                    lines.extend(["#### Answer Choices", ""])
-                    for index, choice_html in enumerate(item["answer_choices_html"], start=1):
-                        label = chr(64 + index)
-                        converted = self._html_fragment_to_markdown(choice_html, strip_figures=True).strip()
-                        if not converted:
-                            continue
-                        choice_lines = converted.splitlines()
-                        lines.append(f"- {label}. {choice_lines[0]}")
-                        for line in choice_lines[1:]:
-                            lines.append(f"  {line}" if line else "")
-                    lines.append("")
-                elif item.get("answer_choices"):
-                    lines.extend(["#### Answer Choices", ""])
-                    lines.extend(f"- {choice}" for choice in item["answer_choices"])
-                    lines.append("")
-                lines.extend(["#### Explanation", ""])
-                explanation_markdown = self._record_fragment_markdown(item, "explanation_html", item.get("explanation", ""))
-                lines.extend([explanation_markdown or "_Not found._", ""])
+    def _append_question_report_section(
+        self,
+        lines: list[str],
+        item: dict[str, Any],
+        *,
+        include_images: bool,
+        include_visual_context: bool,
+    ) -> None:
+        q_label = item.get("question_number") or item.get("uid")
+        lines.append(f"### Question {q_label}")
+        lines.append("")
+        lines.append(f"- Section: {item.get('section') or 'Unknown'}")
+        lines.append(f"- Subject: {item.get('subject_bucket') or 'Unknown'}")
+        lines.append(f"- Module: {item.get('module') or 'Unknown'}")
+        lines.append(f"- Domain / Skill: {item.get('domain') or 'Unknown'} / {item.get('skill') or 'Unknown'}")
+        lines.append(f"- My answer: {item.get('my_answer') or 'Unknown'}")
+        lines.append(f"- Correct answer: {item.get('correct_answer') or 'Unknown'}")
+        if include_images:
+            self._append_record_images(lines, item)
+        if item.get("screenshot_path"):
+            lines.append(f"- Screenshot: {relative_markdown_path(self.outputs_dir, item['screenshot_path'])}")
+        if item.get("html_snapshot_path"):
+            lines.append(f"- HTML snapshot: {relative_markdown_path(self.outputs_dir, item['html_snapshot_path'])}")
+        lines.extend(["", "#### Question", ""])
+        question_markdown = self._record_fragment_markdown(item, "question_html", item.get("question_text", ""))
+        lines.extend([question_markdown or "_Not parsed cleanly._", ""])
+        if include_visual_context:
+            self._append_visual_context(lines, item)
+        self._append_answer_choices(lines, item)
+        lines.extend(["#### Explanation", ""])
+        explanation_markdown = self._record_fragment_markdown(item, "explanation_html", item.get("explanation", ""))
+        lines.extend([explanation_markdown or "_Not found._", ""])
+
+    def _append_record_images(self, lines: list[str], item: dict[str, Any]) -> None:
+        image_paths = [str(path) for path in item.get("images", []) if path]
+        if not image_paths:
+            return
+        lines.extend(["", "#### Figure", ""])
+        for image_path in image_paths:
+            image_uri = Path(image_path).resolve().as_uri()
+            if image_path.lower().endswith(".svg"):
+                lines.append(f"![Figure]({image_uri}){{.inline-svg}}")
+            else:
+                lines.append(f"![Figure]({image_uri})")
             lines.append("")
-        return self._clean_report_markdown("\n".join(lines))
+
+    def _append_visual_context(self, lines: list[str], item: dict[str, Any]) -> None:
+        visual_contexts = self._extract_llm_visual_contexts(item)
+        if not visual_contexts:
+            return
+        lines.extend(["#### Visual Context", ""])
+        for index, context in enumerate(visual_contexts, start=1):
+            lines.extend([f"##### Visual {index}", ""])
+            lines.extend(context.splitlines())
+            lines.append("")
+
+    def _append_answer_choices(self, lines: list[str], item: dict[str, Any]) -> None:
+        if item.get("answer_choices_html"):
+            lines.extend(["#### Answer Choices", ""])
+            for index, choice_html in enumerate(item["answer_choices_html"], start=1):
+                label = chr(64 + index)
+                converted = self._convert_html_fragment(
+                    choice_html,
+                    target_format="commonmark_x",
+                    strip_figures=True,
+                ).strip()
+                if not converted:
+                    continue
+                choice_lines = converted.splitlines()
+                lines.append(f"- {label}. {choice_lines[0]}")
+                for line in choice_lines[1:]:
+                    lines.append(f"  {line}" if line else "")
+            lines.append("")
+            return
+        if item.get("answer_choices"):
+            lines.extend(["#### Answer Choices", ""])
+            lines.extend(f"- {choice}" for choice in item["answer_choices"])
+            lines.append("")
 
     def _record_fragment_markdown(self, item: dict[str, Any], html_key: str, plain_text: str) -> str:
         html_fragment = item.get(html_key) or ""
         if html_fragment:
-            converted = self._html_fragment_to_markdown(html_fragment, strip_figures=True).strip()
+            converted = self._convert_html_fragment(
+                html_fragment,
+                target_format="commonmark_x",
+                strip_figures=True,
+            ).strip()
             if converted:
                 return converted
         return plain_text or ""
 
-    def _html_fragment_to_markdown(self, html_fragment: str, *, strip_figures: bool) -> str:
+    def _convert_html_fragment(
+        self,
+        html_fragment: str,
+        *,
+        target_format: str,
+        strip_figures: bool,
+    ) -> str:
         fragment = (html_fragment or "").strip()
         if not fragment:
             return ""
-        cache_key = (fragment, strip_figures)
-        cached = self.fragment_markdown_cache.get(cache_key)
+        cache_key = (fragment, target_format, strip_figures)
+        cached = self.fragment_conversion_cache.get(cache_key)
         if cached is not None:
             return cached
         if not self.pandoc_path:
-            self.fragment_markdown_cache[cache_key] = ""
+            self.fragment_conversion_cache[cache_key] = ""
             return ""
 
         prepared = self._prepare_fragment_for_markdown(fragment, strip_figures=strip_figures)
         try:
             result = subprocess.run(
-                [self.pandoc_path, "-f", "html", "-t", "commonmark_x"],
+                [self.pandoc_path, "-f", "html", "-t", target_format],
                 input=prepared,
                 capture_output=True,
                 text=True,
                 check=True,
             )
-            converted = self._postprocess_markdown_fragment(result.stdout)
+            if target_format == "plain":
+                converted = self._postprocess_plain_fragment(result.stdout)
+            else:
+                converted = self._postprocess_markdown_fragment(result.stdout)
         except subprocess.CalledProcessError as exc:
             stderr = normalize_space(exc.stderr)
             LOG.debug("Pandoc fragment conversion failed: %s", stderr or exc)
             converted = ""
-        self.fragment_markdown_cache[cache_key] = converted
-        return converted
-
-    def _html_fragment_to_plain(self, html_fragment: str, *, strip_figures: bool) -> str:
-        fragment = (html_fragment or "").strip()
-        if not fragment:
-            return ""
-        cache_key = (fragment, strip_figures)
-        cached = self.fragment_plain_cache.get(cache_key)
-        if cached is not None:
-            return cached
-        if not self.pandoc_path:
-            self.fragment_plain_cache[cache_key] = ""
-            return ""
-
-        prepared = self._prepare_fragment_for_markdown(fragment, strip_figures=strip_figures)
-        try:
-            result = subprocess.run(
-                [self.pandoc_path, "-f", "html", "-t", "plain"],
-                input=prepared,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            converted = self._postprocess_plain_fragment(result.stdout)
-        except subprocess.CalledProcessError as exc:
-            stderr = normalize_space(exc.stderr)
-            LOG.debug("Pandoc plain conversion failed: %s", stderr or exc)
-            converted = ""
-        self.fragment_plain_cache[cache_key] = converted
+        self.fragment_conversion_cache[cache_key] = converted
         return converted
 
     def _prepare_fragment_for_markdown(self, html_fragment: str, *, strip_figures: bool) -> str:
@@ -1071,7 +1050,11 @@ class OutputManager:
                 continue
             fragment_added = False
             for block in self._extract_visual_blocks(fragment):
-                rendered = self._html_fragment_to_plain(block, strip_figures=False)
+                rendered = self._convert_html_fragment(
+                    block,
+                    target_format="plain",
+                    strip_figures=False,
+                )
                 if self._is_meaningful_visual_context(rendered):
                     normalized = rendered.strip()
                     if normalized not in seen:
