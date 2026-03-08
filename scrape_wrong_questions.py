@@ -281,13 +281,14 @@ def dedupe_preserve_order(values: list[str]) -> list[str]:
     return deduped
 
 
-def extract_visual_assets_from_html(uid: str, html: str, image_dir: Path) -> list[str]:
+def extract_visual_assets_from_html_details(uid: str, html: str, image_dir: Path) -> tuple[list[str], set[str]]:
     figure_blocks = re.findall(r"<figure\b.*?</figure>", html, flags=re.IGNORECASE | re.DOTALL)
     if not figure_blocks:
-        return []
+        return [], set()
 
     ensure_dir(image_dir)
     assets: list[str] = []
+    handled_sources: set[str] = set()
     for figure_index, figure_html in enumerate(figure_blocks, start=1):
         svg_match = re.search(r"<svg\b.*?</svg>", figure_html, flags=re.IGNORECASE | re.DOTALL)
         if svg_match:
@@ -315,6 +316,7 @@ def extract_visual_assets_from_html(uid: str, html: str, image_dir: Path) -> lis
             )
             if not data_match:
                 continue
+            handled_sources.add(src)
             mime_type = data_match.group(1).lower()
             encoded = re.sub(r"\s+", "", data_match.group(2))
             extension = {
@@ -333,7 +335,12 @@ def extract_visual_assets_from_html(uid: str, html: str, image_dir: Path) -> lis
             image_path = image_dir / f"{uid}-figure-{figure_index}{suffix}.{extension}"
             atomic_write_bytes(image_path, payload)
             assets.append(str(image_path))
-    return dedupe_preserve_order(assets)
+    return dedupe_preserve_order(assets), handled_sources
+
+
+def extract_visual_assets_from_html(uid: str, html: str, image_dir: Path) -> list[str]:
+    assets, _ = extract_visual_assets_from_html_details(uid, html, image_dir)
+    return assets
 
 
 def detect_test_number(test_name: str) -> str:
@@ -1956,12 +1963,15 @@ class SatBluebookScraper:
             html_value = ""
 
         images: list[str] = []
+        handled_image_sources: set[str] = set()
         if html_markup:
             try:
-                images.extend(extract_visual_assets_from_html(uid, html_markup, self.image_dir))
+                images, handled_image_sources = extract_visual_assets_from_html_details(uid, html_markup, self.image_dir)
             except OSError as exc:
                 LOG.warning("Figure extraction failed for %s: %s", uid, exc)
 
+        if html_markup:
+            ensure_dir(self.image_dir)
         images.extend(self.capture_non_svg_figures(container, uid))
 
         img_locator = container.locator("img")
@@ -1973,6 +1983,9 @@ class SatBluebookScraper:
             image = img_locator.nth(index)
             try:
                 if not image.is_visible():
+                    continue
+                src = normalize_space(image.get_attribute("src") or "")
+                if src and src in handled_image_sources:
                     continue
                 path = self.image_dir / f"{uid}-img-{index + 1}.png"
                 image.screenshot(path=str(path))
