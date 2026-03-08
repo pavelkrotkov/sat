@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import time
 from collections import Counter, defaultdict
-from dataclasses import asdict, dataclass, field
+from dataclasses import MISSING, asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -278,10 +278,7 @@ class WrongQuestionRecord:
     images: list[str] = field(default_factory=list)
     screenshot_path: str = ""
     html_snapshot_path: str = ""
-    review_url: str = ""
     source_row_text: str = ""
-    raw_visible_text: str = ""
-    notes: str = ""
 
 
 def parse_args() -> argparse.Namespace:
@@ -499,7 +496,7 @@ def detect_subject(record: WrongQuestionRecord | dict[str, Any]) -> str:
         return "Math"
     haystack = " ".join(
         normalize_space(str(record.get(key, "") if isinstance(record, dict) else getattr(record, key, "")))
-        for key in ("section", "domain", "skill", "question_text", "raw_visible_text")
+        for key in ("section", "domain", "skill", "question_text")
     ).lower()
     if any(hint in haystack for hint in MATH_HINTS) or " math" in f" {haystack} ":
         return "Math"
@@ -588,7 +585,6 @@ def parse_review_content(raw_text: str) -> dict[str, Any]:
         "question_text": "\n".join(question_lines).strip(),
         "answer_choices": choices,
         "explanation": explanation,
-        "raw_visible_text": "\n".join(lines),
     }
 
 
@@ -741,7 +737,15 @@ class OutputManager:
             self.records[uid] = self._prepare_record_payload(record)
 
     def _prepare_record_payload(self, record: dict[str, Any]) -> dict[str, Any]:
-        payload = record.copy()
+        payload: dict[str, Any] = {}
+        for field_name, field_def in WrongQuestionRecord.__dataclass_fields__.items():
+            if field_name in record:
+                payload[field_name] = record[field_name]
+                continue
+            if field_def.default_factory is not MISSING:
+                payload[field_name] = field_def.default_factory()
+            elif field_def.default is not MISSING:
+                payload[field_name] = field_def.default
         payload["subject_bucket"] = payload.get("subject_bucket") or detect_subject(payload)
         payload["images"] = self._ensure_embeddable_images(payload)
         return payload
@@ -1466,16 +1470,6 @@ class SatBluebookScraper:
         if score_page is not page and not score_page.is_closed():
             score_page.close()
 
-    def process_test_by_name(self, page: Page, test_name: str) -> None:
-        test_page = self.click_with_possible_popup(
-            page,
-            lambda: self.click_by_text(page, test_name),
-            description=f"open test {test_name}",
-        )
-        self.process_test_from_current_page(test_page, test_name)
-        if test_page is not page and not test_page.is_closed():
-            test_page.close()
-
     def process_test_from_current_page(self, page: Page, test_name: str) -> None:
         score_page = self.click_with_possible_popup(
             page,
@@ -1663,23 +1657,6 @@ class SatBluebookScraper:
                 return
             page.wait_for_timeout(300)
 
-    def incorrect_row_indexes(self, page: Page) -> list[int]:
-        rows = self.questions_table_rows(page)
-        indexes: list[int] = []
-        try:
-            count = rows.count()
-        except PlaywrightError:
-            return indexes
-        for index in range(count):
-            text = self.safe_inner_text(rows.nth(index))
-            lowered = text.lower()
-            if "incorrect" not in lowered:
-                continue
-            if "questions overview" in lowered or "your answer" in lowered:
-                continue
-            indexes.append(index)
-        return indexes
-
     def incorrect_row_targets(self, page: Page) -> list[dict[str, Any]]:
         rows = self.questions_table_rows(page)
         targets: list[dict[str, Any]] = []
@@ -1846,10 +1823,7 @@ class SatBluebookScraper:
             images=paths["images"],
             screenshot_path=paths["screenshot"],
             html_snapshot_path=paths["html"],
-            review_url=page.url,
             source_row_text=merged.get("source_row_text", ""),
-            raw_visible_text=text_payload,
-            notes=paths["notes"],
         )
         return record
 
@@ -2084,7 +2058,6 @@ class SatBluebookScraper:
     def save_artifacts(self, container: Locator, uid: str) -> dict[str, Any]:
         screenshot_path = self.screenshot_dir / f"{uid}.png"
         html_path = self.html_dir / f"{uid}.html"
-        notes: list[str] = []
         screenshot_value = str(screenshot_path)
         html_value = str(html_path)
         html_markup = ""
@@ -2093,7 +2066,7 @@ class SatBluebookScraper:
             try:
                 container.screenshot(path=str(screenshot_path))
             except PlaywrightError as exc:
-                notes.append(f"Question screenshot failed: {exc}")
+                LOG.warning("Question screenshot failed for %s: %s", uid, exc)
                 self.main_page and self.capture_error(self.main_page, f"screenshot-failure-{uid}")
                 screenshot_value = ""
         else:
@@ -2102,7 +2075,7 @@ class SatBluebookScraper:
             html_markup = container.inner_html()
             atomic_write_text(html_path, html_markup)
         except PlaywrightError as exc:
-            notes.append(f"HTML snapshot failed: {exc}")
+            LOG.warning("HTML snapshot failed for %s: %s", uid, exc)
             html_value = ""
 
         images: list[str] = []
@@ -2110,7 +2083,7 @@ class SatBluebookScraper:
             try:
                 images.extend(extract_visual_assets_from_html(uid, html_markup, self.image_dir))
             except OSError as exc:
-                notes.append(f"Figure extraction failed: {exc}")
+                LOG.warning("Figure extraction failed for %s: %s", uid, exc)
 
         images.extend(self.capture_non_svg_figures(container, uid))
 
@@ -2134,7 +2107,6 @@ class SatBluebookScraper:
             "screenshot": screenshot_value,
             "html": html_value,
             "images": dedupe_preserve_order(images),
-            "notes": " | ".join(notes),
         }
 
     def capture_non_svg_figures(self, container: Locator, uid: str) -> list[str]:
@@ -2232,13 +2204,6 @@ class SatBluebookScraper:
         except PlaywrightError:
             pass
         return page.locator(".test-questions-modal").first
-
-    def review_modal_is_visible(self, page: Page) -> bool:
-        modal = page.locator(".test-questions-modal[aria-hidden='false'] [role='dialog']").first
-        try:
-            return modal.count() > 0 and modal.is_visible()
-        except (PlaywrightError, PlaywrightTimeoutError):
-            return False
 
     def close_review_modal(self, page: Page) -> None:
         closed = False
