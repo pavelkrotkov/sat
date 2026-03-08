@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import time
 from collections import Counter, defaultdict
-from dataclasses import asdict, dataclass, field
+from dataclasses import MISSING, asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -278,10 +278,7 @@ class WrongQuestionRecord:
     images: list[str] = field(default_factory=list)
     screenshot_path: str = ""
     html_snapshot_path: str = ""
-    review_url: str = ""
     source_row_text: str = ""
-    raw_visible_text: str = ""
-    notes: str = ""
 
 
 def parse_args() -> argparse.Namespace:
@@ -321,6 +318,21 @@ def parse_args() -> argparse.Namespace:
         "--rebuild-from-json",
         default="",
         help="Rebuild outputs from an existing JSON file and saved HTML snapshots; skips browser automation.",
+    )
+    parser.add_argument(
+        "--save-page-visits",
+        action="store_true",
+        help="Save full-page visit snapshots under artifacts/page_visits for debugging.",
+    )
+    parser.add_argument(
+        "--save-question-screenshots",
+        action="store_true",
+        help="Save per-question review screenshots under artifacts/screenshots.",
+    )
+    parser.add_argument(
+        "--save-error-screenshots",
+        action="store_true",
+        help="Save failure screenshots under artifacts/errors.",
     )
     return parser.parse_args()
 
@@ -484,7 +496,7 @@ def detect_subject(record: WrongQuestionRecord | dict[str, Any]) -> str:
         return "Math"
     haystack = " ".join(
         normalize_space(str(record.get(key, "") if isinstance(record, dict) else getattr(record, key, "")))
-        for key in ("section", "domain", "skill", "question_text", "raw_visible_text")
+        for key in ("section", "domain", "skill", "question_text")
     ).lower()
     if any(hint in haystack for hint in MATH_HINTS) or " math" in f" {haystack} ":
         return "Math"
@@ -573,7 +585,6 @@ def parse_review_content(raw_text: str) -> dict[str, Any]:
         "question_text": "\n".join(question_lines).strip(),
         "answer_choices": choices,
         "explanation": explanation,
-        "raw_visible_text": "\n".join(lines),
     }
 
 
@@ -624,6 +635,164 @@ def question_ref(item: dict[str, Any]) -> str:
     return f"{test_name}{suffix}"
 
 
+class ReviewParser:
+    def parse_container(self, container: Locator, row_meta: dict[str, Any]) -> tuple[dict[str, Any], str]:
+        structured = self.extract_review_structured_data(container)
+        merged = {**row_meta, **structured}
+        text_payload = ""
+        if self.review_parse_needs_fallback(merged):
+            text_payload = self.extract_visible_text(container)
+            parsed = parse_review_content(text_payload)
+            for key, value in parsed.items():
+                if value and not merged.get(key):
+                    merged[key] = value
+        return merged, text_payload
+
+    def review_parse_needs_fallback(self, merged: dict[str, Any]) -> bool:
+        required_groups = (
+            ("question_html", "question_text"),
+            ("explanation_html", "explanation"),
+            ("correct_answer",),
+        )
+        for group in required_groups:
+            if any(normalize_space(str(merged.get(key, ""))) for key in group):
+                continue
+            return True
+        return False
+
+    def extract_review_structured_data(self, container: Locator) -> dict[str, Any]:
+        try:
+            data = container.evaluate(
+                """
+                (root) => {
+                  const normalize = (text) => (text || "").replace(/\\s+/g, " ").trim();
+                  const heading = normalize(root.querySelector(".question-panel h3")?.innerText);
+                  const questionParts = Array.from(root.querySelectorAll(".question-panel p"))
+                    .map((node) => normalize(node.innerText))
+                    .filter(Boolean);
+                  const questionBody = root.querySelector(".question-panel > div") || root.querySelector(".question-panel");
+                  const questionHtml = (questionBody?.innerHTML || "").trim();
+                  const answerItems = Array.from(root.querySelectorAll(".answer-panel ol li"));
+                  const answerChoices = answerItems.map((item, index) => {
+                    const label = String.fromCharCode(65 + index);
+                    return `${label}. ${normalize(item.innerText)}`;
+                  });
+                  const answerChoicesHtml = answerItems.map((item) => (item.innerHTML || "").trim()).filter(Boolean);
+                  const correctChoiceIndex = answerItems.findIndex((item) =>
+                    item.classList.contains("correct") || item.querySelector(".correct")
+                  );
+                  const statusText = normalize(
+                    root.querySelector(".answer-panel p.incorrect, .answer-panel p.correct, .answer-panel p.response")?.innerText
+                  );
+                  const rationaleHeader = Array.from(root.querySelectorAll(".answer-panel h3"))
+                    .find((node) => /rationale/i.test(normalize(node.innerText)));
+                  let explanation = "";
+                  const explanationHtmlParts = [];
+                  if (rationaleHeader) {
+                    const parts = [];
+                    let sibling = rationaleHeader.nextElementSibling;
+                    while (sibling) {
+                      const value = normalize(sibling.innerText);
+                      if (value) parts.push(value);
+                      const html = (sibling.outerHTML || "").trim();
+                      if (html) explanationHtmlParts.push(html);
+                      sibling = sibling.nextElementSibling;
+                    }
+                    explanation = parts.join("\\n\\n");
+                  }
+                  const domain = normalize(
+                    root.querySelector(".header-with-ksd .ksd-title p span:last-child")?.innerText
+                    || root.querySelector(".header-with-ksd .ksd-title p")?.innerText
+                  ).replace(/^Knowledge and Skills:\\s*/i, "");
+                  return {
+                    heading,
+                    question_parts: questionParts,
+                    question_html: questionHtml,
+                    answer_choices: answerChoices,
+                    answer_choices_html: answerChoicesHtml,
+                    explanation,
+                    explanation_html: explanationHtmlParts.join("\\n"),
+                    status_text: statusText,
+                    domain,
+                    correct_choice_letter: correctChoiceIndex >= 0 ? String.fromCharCode(65 + correctChoiceIndex) : "",
+                  };
+                }
+                """
+            )
+        except PlaywrightError:
+            return {}
+
+        structured: dict[str, Any] = {}
+        heading = normalize_space(data.get("heading"))
+        if heading:
+            match = re.search(r"^(.*?):\s*Question\s*(\d+)\s*$", heading, flags=re.IGNORECASE)
+            if match:
+                structured["section"] = normalize_space(match.group(1))
+                structured["question_number"] = match.group(2)
+        question_parts = [normalize_space(part) for part in data.get("question_parts", []) if normalize_space(part)]
+        if question_parts:
+            structured["question_text"] = "\n".join(question_parts)
+        question_html = (data.get("question_html") or "").strip()
+        if question_html:
+            structured["question_html"] = question_html
+        answer_choices = [normalize_space(choice) for choice in data.get("answer_choices", []) if normalize_space(choice)]
+        if answer_choices:
+            structured["answer_choices"] = answer_choices
+        answer_choices_html = [fragment.strip() for fragment in data.get("answer_choices_html", []) if fragment and fragment.strip()]
+        if answer_choices_html:
+            structured["answer_choices_html"] = answer_choices_html
+        explanation = normalize_space(data.get("explanation"))
+        if explanation:
+            structured["explanation"] = explanation
+        explanation_html = (data.get("explanation_html") or "").strip()
+        if explanation_html:
+            structured["explanation_html"] = explanation_html
+        domain = normalize_space(data.get("domain"))
+        if domain:
+            structured["domain"] = domain
+        status_text = normalize_space(data.get("status_text"))
+        if status_text:
+            selected_match = re.search(r"You selected answer\s+([A-H])", status_text, flags=re.IGNORECASE)
+            correct_match = re.search(r"correct answer is\s+([A-H])", status_text, flags=re.IGNORECASE)
+            if selected_match:
+                structured["my_answer"] = f"{selected_match.group(1).upper()}; Incorrect"
+            if correct_match:
+                structured["correct_answer"] = correct_match.group(1).upper()
+        correct_choice = normalize_space(data.get("correct_choice_letter"))
+        if correct_choice and not structured.get("correct_answer"):
+            structured["correct_answer"] = correct_choice
+        return structured
+
+    def extract_visible_text(self, container: Locator) -> str:
+        try:
+            text = container.evaluate(
+                """
+                (root) => {
+                  const isVisible = (el) => {
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style && style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+                  };
+                  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+                  const pieces = [];
+                  while (walker.nextNode()) {
+                    const node = walker.currentNode;
+                    const parent = node.parentElement;
+                    if (!parent || !isVisible(parent)) continue;
+                    const value = (node.textContent || "").replace(/\\s+/g, " ").trim();
+                    if (!value) continue;
+                    pieces.push(value);
+                  }
+                  return pieces.join("\\n");
+                }
+                """
+            )
+            return text
+        except PlaywrightError:
+            return normalize_space(container.inner_text(timeout=1_500))
+
+
 class OutputManager:
     def __init__(self, outputs_dir: Path, *, fresh: bool = False) -> None:
         self.outputs_dir = ensure_dir(outputs_dir)
@@ -636,8 +805,7 @@ class OutputManager:
         self.drill_html_path = self.outputs_dir / "drill_pack.html"
         self.css_path = self.outputs_dir / "pandoc-report.css"
         self.pandoc_path = shutil.which("pandoc")
-        self.fragment_markdown_cache: dict[tuple[str, bool], str] = {}
-        self.fragment_plain_cache: dict[tuple[str, bool], str] = {}
+        self.fragment_conversion_cache: dict[tuple[str, str, bool], str] = {}
         self.records: dict[str, dict[str, Any]] = {} if fresh else self._load()
 
     def _load(self) -> dict[str, dict[str, Any]]:
@@ -656,10 +824,8 @@ class OutputManager:
         return uid in self.records
 
     def upsert(self, record: WrongQuestionRecord) -> None:
-        payload = asdict(record)
-        payload["subject_bucket"] = payload.get("subject_bucket") or detect_subject(payload)
+        payload = self._prepare_record_payload(asdict(record))
         self.records[payload["uid"]] = payload
-        self.save()
 
     def ordered_records(self) -> list[dict[str, Any]]:
         return sorted(
@@ -673,10 +839,12 @@ class OutputManager:
             ),
         )
 
-    def save(self) -> None:
-        self._refresh_record_assets()
+    def checkpoint_json(self) -> None:
         ordered = self.ordered_records()
         atomic_write_text(self.json_path, json_dump_pretty(ordered))
+
+    def save_reports(self) -> None:
+        ordered = self.ordered_records()
         atomic_write_text(self.csv_path, self._render_csv(ordered))
         atomic_write_text(self.md_path, self._render_markdown(ordered))
         atomic_write_text(self.llm_md_path, self._render_llm_markdown(ordered))
@@ -684,7 +852,9 @@ class OutputManager:
         atomic_write_text(self.css_path, PANDOC_REPORT_CSS)
 
     def finalize(self) -> None:
-        self.save()
+        self._refresh_record_assets()
+        self.checkpoint_json()
+        self.save_reports()
         self._render_html_reports()
 
     def _render_html_reports(self) -> None:
@@ -722,8 +892,21 @@ class OutputManager:
     def _refresh_record_assets(self) -> None:
         for uid, record in self.records.items():
             record["uid"] = uid
-            record["subject_bucket"] = record.get("subject_bucket") or detect_subject(record)
-            record["images"] = self._ensure_embeddable_images(record)
+            self.records[uid] = self._prepare_record_payload(record)
+
+    def _prepare_record_payload(self, record: dict[str, Any]) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        for field_name, field_def in WrongQuestionRecord.__dataclass_fields__.items():
+            if field_name in record:
+                payload[field_name] = record[field_name]
+                continue
+            if field_def.default_factory is not MISSING:
+                payload[field_name] = field_def.default_factory()
+            elif field_def.default is not MISSING:
+                payload[field_name] = field_def.default
+        payload["subject_bucket"] = payload.get("subject_bucket") or detect_subject(payload)
+        payload["images"] = self._ensure_embeddable_images(payload)
+        return payload
 
     def _ensure_embeddable_images(self, record: dict[str, Any]) -> list[str]:
         existing = dedupe_preserve_order(ensure_list_of_strings(record.get("images", [])))
@@ -758,207 +941,187 @@ class OutputManager:
         return output.getvalue()
 
     def _render_markdown(self, records: list[dict[str, Any]]) -> str:
+        return self._render_question_report(
+            records,
+            title="# Wrong SAT Bluebook Questions",
+            intro="",
+            include_images=True,
+            include_visual_context=False,
+        )
+
+    def _render_llm_markdown(self, records: list[dict[str, Any]]) -> str:
+        intro = (
+            "This file is optimized for LLM analysis. Math is preserved as Markdown math, "
+            "and visuals are converted to text descriptions or table-like plain text. "
+            "External image links are intentionally omitted."
+        )
+        return self._render_question_report(
+            records,
+            title="# Wrong SAT Bluebook Questions (LLM Analysis Edition)",
+            intro=intro,
+            include_images=False,
+            include_visual_context=True,
+        )
+
+    def _render_question_report(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        title: str,
+        intro: str,
+        include_images: bool,
+        include_visual_context: bool,
+    ) -> str:
         lines = [
-            "# Wrong SAT Bluebook Questions",
+            title,
             "",
             f"Generated {utc_now()}",
             "",
         ]
+        if intro:
+            lines.extend([intro, ""])
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for record in records:
             grouped[record.get("test_name") or "Unknown Test"].append(record)
         for test_name in sorted(grouped, key=natural_sort_key):
             lines.extend([f"## {test_name}", ""])
             for item in grouped[test_name]:
-                q_label = item.get("question_number") or item.get("uid")
-                lines.append(f"### Question {q_label}")
-                lines.append("")
-                lines.append(f"- Section: {item.get('section') or 'Unknown'}")
-                lines.append(f"- Subject: {item.get('subject_bucket') or 'Unknown'}")
-                lines.append(f"- Module: {item.get('module') or 'Unknown'}")
-                lines.append(f"- Domain / Skill: {item.get('domain') or 'Unknown'} / {item.get('skill') or 'Unknown'}")
-                lines.append(f"- My answer: {item.get('my_answer') or 'Unknown'}")
-                lines.append(f"- Correct answer: {item.get('correct_answer') or 'Unknown'}")
-                if item.get("images"):
-                    image_paths = [str(path) for path in item["images"] if path]
-                    if image_paths:
-                        lines.extend(["", "#### Figure", ""])
-                        for image_path in image_paths:
-                            image_uri = Path(image_path).resolve().as_uri()
-                            if image_path.lower().endswith(".svg"):
-                                lines.append(f"![Figure]({image_uri}){{.inline-svg}}")
-                            else:
-                                lines.append(f"![Figure]({image_uri})")
-                            lines.append("")
-                if item.get("screenshot_path"):
-                    lines.append(
-                        f"- Screenshot: {relative_markdown_path(self.outputs_dir, item['screenshot_path'])}"
-                    )
-                if item.get("html_snapshot_path"):
-                    lines.append(
-                        f"- HTML snapshot: {relative_markdown_path(self.outputs_dir, item['html_snapshot_path'])}"
-                    )
-                lines.extend(
-                    [
-                        "",
-                        "#### Question",
-                        "",
-                    ]
+                self._append_question_report_section(
+                    lines,
+                    item,
+                    include_images=include_images,
+                    include_visual_context=include_visual_context,
                 )
-                question_markdown = self._record_fragment_markdown(item, "question_html", item.get("question_text", ""))
-                lines.extend([question_markdown or "_Not parsed cleanly. See raw text / screenshot._", ""])
-                if item.get("answer_choices_html"):
-                    lines.extend(["#### Answer Choices", ""])
-                    for index, choice_html in enumerate(item["answer_choices_html"], start=1):
-                        label = chr(64 + index)
-                        converted = self._html_fragment_to_markdown(choice_html, strip_figures=True).strip()
-                        if not converted:
-                            continue
-                        choice_lines = converted.splitlines()
-                        lines.append(f"- {label}. {choice_lines[0]}")
-                        for line in choice_lines[1:]:
-                            lines.append(f"  {line}" if line else "")
-                    lines.append("")
-                elif item.get("answer_choices"):
-                    lines.extend(["#### Answer Choices", ""])
-                    lines.extend(f"- {choice}" for choice in item["answer_choices"])
-                    lines.append("")
-                lines.extend(["#### Explanation", ""])
-                explanation_markdown = self._record_fragment_markdown(item, "explanation_html", item.get("explanation", ""))
-                lines.extend([explanation_markdown or "_Not found._", ""])
             lines.append("")
         return self._clean_report_markdown("\n".join(lines))
 
-    def _render_llm_markdown(self, records: list[dict[str, Any]]) -> str:
-        lines = [
-            "# Wrong SAT Bluebook Questions (LLM Analysis Edition)",
-            "",
-            f"Generated {utc_now()}",
-            "",
-            (
-                "This file is optimized for LLM analysis. Math is preserved as Markdown math, "
-                "and visuals are converted to text descriptions or table-like plain text. "
-                "External image links are intentionally omitted."
-            ),
-            "",
-        ]
-        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for record in records:
-            grouped[record.get("test_name") or "Unknown Test"].append(record)
-        for test_name in sorted(grouped, key=natural_sort_key):
-            lines.extend([f"## {test_name}", ""])
-            for item in grouped[test_name]:
-                q_label = item.get("question_number") or item.get("uid")
-                lines.append(f"### Question {q_label}")
-                lines.append("")
-                lines.append(f"- Section: {item.get('section') or 'Unknown'}")
-                lines.append(f"- Subject: {item.get('subject_bucket') or 'Unknown'}")
-                lines.append(f"- Module: {item.get('module') or 'Unknown'}")
-                lines.append(f"- Domain / Skill: {item.get('domain') or 'Unknown'} / {item.get('skill') or 'Unknown'}")
-                lines.append(f"- My answer: {item.get('my_answer') or 'Unknown'}")
-                lines.append(f"- Correct answer: {item.get('correct_answer') or 'Unknown'}")
-                lines.extend(
-                    [
-                        "",
-                        "#### Question",
-                        "",
-                    ]
-                )
-                question_markdown = self._record_fragment_markdown(item, "question_html", item.get("question_text", ""))
-                lines.extend([question_markdown or "_Not parsed cleanly._", ""])
-                visual_contexts = self._extract_llm_visual_contexts(item)
-                if visual_contexts:
-                    lines.extend(["#### Visual Context", ""])
-                    for index, context in enumerate(visual_contexts, start=1):
-                        lines.extend([f"##### Visual {index}", ""])
-                        lines.extend(context.splitlines())
-                        lines.append("")
-                if item.get("answer_choices_html"):
-                    lines.extend(["#### Answer Choices", ""])
-                    for index, choice_html in enumerate(item["answer_choices_html"], start=1):
-                        label = chr(64 + index)
-                        converted = self._html_fragment_to_markdown(choice_html, strip_figures=True).strip()
-                        if not converted:
-                            continue
-                        choice_lines = converted.splitlines()
-                        lines.append(f"- {label}. {choice_lines[0]}")
-                        for line in choice_lines[1:]:
-                            lines.append(f"  {line}" if line else "")
-                    lines.append("")
-                elif item.get("answer_choices"):
-                    lines.extend(["#### Answer Choices", ""])
-                    lines.extend(f"- {choice}" for choice in item["answer_choices"])
-                    lines.append("")
-                lines.extend(["#### Explanation", ""])
-                explanation_markdown = self._record_fragment_markdown(item, "explanation_html", item.get("explanation", ""))
-                lines.extend([explanation_markdown or "_Not found._", ""])
+    def _append_question_report_section(
+        self,
+        lines: list[str],
+        item: dict[str, Any],
+        *,
+        include_images: bool,
+        include_visual_context: bool,
+    ) -> None:
+        q_label = item.get("question_number") or item.get("uid")
+        lines.append(f"### Question {q_label}")
+        lines.append("")
+        lines.append(f"- Section: {item.get('section') or 'Unknown'}")
+        lines.append(f"- Subject: {item.get('subject_bucket') or 'Unknown'}")
+        lines.append(f"- Module: {item.get('module') or 'Unknown'}")
+        lines.append(f"- Domain / Skill: {item.get('domain') or 'Unknown'} / {item.get('skill') or 'Unknown'}")
+        lines.append(f"- My answer: {item.get('my_answer') or 'Unknown'}")
+        lines.append(f"- Correct answer: {item.get('correct_answer') or 'Unknown'}")
+        if include_images:
+            self._append_record_images(lines, item)
+        if item.get("screenshot_path"):
+            lines.append(f"- Screenshot: {relative_markdown_path(self.outputs_dir, item['screenshot_path'])}")
+        if item.get("html_snapshot_path"):
+            lines.append(f"- HTML snapshot: {relative_markdown_path(self.outputs_dir, item['html_snapshot_path'])}")
+        lines.extend(["", "#### Question", ""])
+        question_markdown = self._record_fragment_markdown(item, "question_html", item.get("question_text", ""))
+        lines.extend([question_markdown or "_Not parsed cleanly._", ""])
+        if include_visual_context:
+            self._append_visual_context(lines, item)
+        self._append_answer_choices(lines, item)
+        lines.extend(["#### Explanation", ""])
+        explanation_markdown = self._record_fragment_markdown(item, "explanation_html", item.get("explanation", ""))
+        lines.extend([explanation_markdown or "_Not found._", ""])
+
+    def _append_record_images(self, lines: list[str], item: dict[str, Any]) -> None:
+        image_paths = [str(path) for path in item.get("images", []) if path]
+        if not image_paths:
+            return
+        lines.extend(["", "#### Figure", ""])
+        for image_path in image_paths:
+            image_uri = Path(image_path).resolve().as_uri()
+            if image_path.lower().endswith(".svg"):
+                lines.append(f"![Figure]({image_uri}){{.inline-svg}}")
+            else:
+                lines.append(f"![Figure]({image_uri})")
             lines.append("")
-        return self._clean_report_markdown("\n".join(lines))
+
+    def _append_visual_context(self, lines: list[str], item: dict[str, Any]) -> None:
+        visual_contexts = self._extract_llm_visual_contexts(item)
+        if not visual_contexts:
+            return
+        lines.extend(["#### Visual Context", ""])
+        for index, context in enumerate(visual_contexts, start=1):
+            lines.extend([f"##### Visual {index}", ""])
+            lines.extend(context.splitlines())
+            lines.append("")
+
+    def _append_answer_choices(self, lines: list[str], item: dict[str, Any]) -> None:
+        if item.get("answer_choices_html"):
+            lines.extend(["#### Answer Choices", ""])
+            for index, choice_html in enumerate(item["answer_choices_html"], start=1):
+                label = chr(64 + index)
+                converted = self._convert_html_fragment(
+                    choice_html,
+                    target_format="commonmark_x",
+                    strip_figures=True,
+                ).strip()
+                if not converted:
+                    continue
+                choice_lines = converted.splitlines()
+                lines.append(f"- {label}. {choice_lines[0]}")
+                for line in choice_lines[1:]:
+                    lines.append(f"  {line}" if line else "")
+            lines.append("")
+            return
+        if item.get("answer_choices"):
+            lines.extend(["#### Answer Choices", ""])
+            lines.extend(f"- {choice}" for choice in item["answer_choices"])
+            lines.append("")
 
     def _record_fragment_markdown(self, item: dict[str, Any], html_key: str, plain_text: str) -> str:
         html_fragment = item.get(html_key) or ""
         if html_fragment:
-            converted = self._html_fragment_to_markdown(html_fragment, strip_figures=True).strip()
+            converted = self._convert_html_fragment(
+                html_fragment,
+                target_format="commonmark_x",
+                strip_figures=True,
+            ).strip()
             if converted:
                 return converted
         return plain_text or ""
 
-    def _html_fragment_to_markdown(self, html_fragment: str, *, strip_figures: bool) -> str:
+    def _convert_html_fragment(
+        self,
+        html_fragment: str,
+        *,
+        target_format: str,
+        strip_figures: bool,
+    ) -> str:
         fragment = (html_fragment or "").strip()
         if not fragment:
             return ""
-        cache_key = (fragment, strip_figures)
-        cached = self.fragment_markdown_cache.get(cache_key)
+        cache_key = (fragment, target_format, strip_figures)
+        cached = self.fragment_conversion_cache.get(cache_key)
         if cached is not None:
             return cached
         if not self.pandoc_path:
-            self.fragment_markdown_cache[cache_key] = ""
+            self.fragment_conversion_cache[cache_key] = ""
             return ""
 
         prepared = self._prepare_fragment_for_markdown(fragment, strip_figures=strip_figures)
         try:
             result = subprocess.run(
-                [self.pandoc_path, "-f", "html", "-t", "commonmark_x"],
+                [self.pandoc_path, "-f", "html", "-t", target_format],
                 input=prepared,
                 capture_output=True,
                 text=True,
                 check=True,
             )
-            converted = self._postprocess_markdown_fragment(result.stdout)
+            if target_format == "plain":
+                converted = self._postprocess_plain_fragment(result.stdout)
+            else:
+                converted = self._postprocess_markdown_fragment(result.stdout)
         except subprocess.CalledProcessError as exc:
             stderr = normalize_space(exc.stderr)
             LOG.debug("Pandoc fragment conversion failed: %s", stderr or exc)
             converted = ""
-        self.fragment_markdown_cache[cache_key] = converted
-        return converted
-
-    def _html_fragment_to_plain(self, html_fragment: str, *, strip_figures: bool) -> str:
-        fragment = (html_fragment or "").strip()
-        if not fragment:
-            return ""
-        cache_key = (fragment, strip_figures)
-        cached = self.fragment_plain_cache.get(cache_key)
-        if cached is not None:
-            return cached
-        if not self.pandoc_path:
-            self.fragment_plain_cache[cache_key] = ""
-            return ""
-
-        prepared = self._prepare_fragment_for_markdown(fragment, strip_figures=strip_figures)
-        try:
-            result = subprocess.run(
-                [self.pandoc_path, "-f", "html", "-t", "plain"],
-                input=prepared,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            converted = self._postprocess_plain_fragment(result.stdout)
-        except subprocess.CalledProcessError as exc:
-            stderr = normalize_space(exc.stderr)
-            LOG.debug("Pandoc plain conversion failed: %s", stderr or exc)
-            converted = ""
-        self.fragment_plain_cache[cache_key] = converted
+        self.fragment_conversion_cache[cache_key] = converted
         return converted
 
     def _prepare_fragment_for_markdown(self, html_fragment: str, *, strip_figures: bool) -> str:
@@ -1049,7 +1212,11 @@ class OutputManager:
                 continue
             fragment_added = False
             for block in self._extract_visual_blocks(fragment):
-                rendered = self._html_fragment_to_plain(block, strip_figures=False)
+                rendered = self._convert_html_fragment(
+                    block,
+                    target_format="plain",
+                    strip_figures=False,
+                )
                 if self._is_meaningful_visual_context(rendered):
                     normalized = rendered.strip()
                     if normalized not in seen:
@@ -1174,15 +1341,16 @@ class SatBluebookScraper:
         self.outputs = outputs
         self.profile_dir = ensure_dir(Path(args.profile_dir))
         self.artifacts_dir = ensure_dir(Path(args.artifacts_dir))
-        self.error_dir = ensure_dir(self.artifacts_dir / "errors")
-        self.screenshot_dir = ensure_dir(self.artifacts_dir / "screenshots")
         self.html_dir = ensure_dir(self.artifacts_dir / "html")
         self.image_dir = ensure_dir(self.artifacts_dir / "images")
-        self.page_visit_dir = ensure_dir(self.artifacts_dir / "page_visits")
+        self.error_dir = self.artifacts_dir / "errors"
+        self.screenshot_dir = self.artifacts_dir / "screenshots"
+        self.page_visit_dir = self.artifacts_dir / "page_visits"
         self.context: BrowserContext | None = None
         self.main_page: Page | None = None
         self.page_visit_counter = 0
         self.attached_page_ids: set[int] = set()
+        self.review_parser = ReviewParser()
 
     def run(self) -> None:
         with sync_playwright() as playwright:
@@ -1194,7 +1362,8 @@ class SatBluebookScraper:
                 args=["--start-maximized"],
             )
             self.context.set_default_timeout(self.args.timeout_ms)
-            self.install_debug_hooks()
+            if self.args.save_page_visits:
+                self.install_debug_hooks()
             self.main_page = self.context.pages[0] if self.context.pages else self.context.new_page()
             self.main_page.set_default_timeout(self.args.timeout_ms)
             self.main_page.goto(self.args.start_url, wait_until="domcontentloaded")
@@ -1246,7 +1415,8 @@ class SatBluebookScraper:
             except PlaywrightTimeoutError:
                 pass
         page.wait_for_timeout(750)
-        self.snapshot_page(page, "wait_for_ready_state")
+        if self.args.save_page_visits:
+            self.snapshot_page(page, "wait_for_ready_state")
 
     def install_debug_hooks(self) -> None:
         assert self.context is not None
@@ -1273,6 +1443,8 @@ class SatBluebookScraper:
         self.snapshot_page(page, "framenavigated")
 
     def snapshot_page(self, page: Page, reason: str) -> str:
+        if not self.args.save_page_visits:
+            return ""
         if page.is_closed():
             return ""
         try:
@@ -1289,6 +1461,7 @@ class SatBluebookScraper:
             title = ""
         self.page_visit_counter += 1
         prefix = f"{self.page_visit_counter:05d}-{slugify(reason, 'event')}-{slugify(url, 'page', max_len=50)}"
+        ensure_dir(self.page_visit_dir)
         html_path = self.page_visit_dir / f"{prefix}.html"
         meta_path = self.page_visit_dir / f"{prefix}.json"
         atomic_write_text(html_path, html)
@@ -1452,21 +1625,9 @@ class SatBluebookScraper:
             lambda: self.click_score_details_for_card(page, int(card["card_index"]), test_name),
             description=f"open Score Details for {test_name}",
         )
-        self.wait_for_ready_state(score_page)
         self.process_questions_overview(score_page, test_name)
         if score_page is not page and not score_page.is_closed():
             score_page.close()
-
-    def process_test_by_name(self, page: Page, test_name: str) -> None:
-        test_page = self.click_with_possible_popup(
-            page,
-            lambda: self.click_by_text(page, test_name),
-            description=f"open test {test_name}",
-        )
-        self.wait_for_ready_state(test_page)
-        self.process_test_from_current_page(test_page, test_name)
-        if test_page is not page and not test_page.is_closed():
-            test_page.close()
 
     def process_test_from_current_page(self, page: Page, test_name: str) -> None:
         score_page = self.click_with_possible_popup(
@@ -1474,7 +1635,6 @@ class SatBluebookScraper:
             lambda: self.click_score_details(page),
             description=f"open Score Details for {test_name}",
         )
-        self.wait_for_ready_state(score_page)
         self.process_questions_overview(score_page, test_name)
         if score_page is not page and not score_page.is_closed():
             score_page.close()
@@ -1528,21 +1688,18 @@ class SatBluebookScraper:
                 f"Saved a diagnostic screenshot to {screenshot or 'artifacts/errors/'}."
             )
         self.set_view_all(page)
-        total_rows = len(self.incorrect_row_indexes(page))
+        row_targets = self.incorrect_row_targets(page)
+        total_rows = len(row_targets)
         LOG.info("%s: found %d incorrect question rows.", test_name, total_rows)
         if self.args.max_questions_per_test > 0:
-            total_rows = min(total_rows, self.args.max_questions_per_test)
-        for row_position in range(total_rows):
+            row_targets = row_targets[: self.args.max_questions_per_test]
+        for row_position, row_target in enumerate(row_targets):
             self.wait_for_questions_overview(page)
-            row_indexes = self.incorrect_row_indexes(page)
-            if row_position >= len(row_indexes):
-                LOG.warning(
-                    "The number of incorrect rows changed while scraping %s; stopping early.",
-                    test_name,
-                )
+            row = self.find_row_for_target(page, row_target)
+            if row is None:
+                LOG.warning("Could not refind incorrect row %d for %s; stopping early.", row_position + 1, test_name)
                 break
-            row = self.questions_table_rows(page).nth(row_indexes[row_position])
-            row_meta = self.read_row_metadata(row)
+            row_meta = row_target["meta"]
             tentative_uid = make_uid(
                 test_name=test_name,
                 section=row_meta.get("section", ""),
@@ -1560,12 +1717,12 @@ class SatBluebookScraper:
                     lambda: self.click_review(row),
                     description=f"open review for {test_name} row {row_position + 1}",
                 )
-                self.wait_for_ready_state(review_page)
                 record = self.scrape_review_page(review_page, test_name, row_meta)
                 if self.outputs.has_uid(record.uid) and not self.args.overwrite_existing:
                     LOG.info("Skipping existing UID after review scrape: %s", record.uid)
                 else:
                     self.outputs.upsert(record)
+                    self.outputs.checkpoint_json()
                     LOG.info("Saved %s.", record.uid)
             except Exception as exc:  # noqa: BLE001
                 self.capture_error(review_page, f"review-failure-{slugify(test_name)}-{row_position + 1}")
@@ -1625,37 +1782,6 @@ class SatBluebookScraper:
         except (PlaywrightError, PlaywrightTimeoutError):
             pass
 
-        selects = page.locator("select")
-        try:
-            select_count = min(selects.count(), 8)
-        except PlaywrightError:
-            select_count = 0
-        for index in range(select_count):
-            select = selects.nth(index)
-            try:
-                if not select.is_visible():
-                    continue
-                option_values = select.evaluate(
-                    """
-                    (node) => Array.from(node.options).map(option => ({
-                      label: (option.label || option.textContent || "").trim(),
-                      value: option.value || "",
-                    }))
-                    """
-                )
-                for option in option_values:
-                    label = normalize_space(option.get("label"))
-                    value = option.get("value", "")
-                    if label.lower() == "all" or value.lower() == "all":
-                        if value:
-                            select.select_option(value=value)
-                        else:
-                            select.select_option(label=label)
-                        page.wait_for_timeout(600)
-                        return
-            except (PlaywrightError, PlaywrightTimeoutError):
-                continue
-
         if self.click_by_text(page, r"\bAll\b", regex=True, required=False):
             page.wait_for_timeout(600)
 
@@ -1690,22 +1816,50 @@ class SatBluebookScraper:
                 return
             page.wait_for_timeout(300)
 
-    def incorrect_row_indexes(self, page: Page) -> list[int]:
+    def incorrect_row_targets(self, page: Page) -> list[dict[str, Any]]:
         rows = self.questions_table_rows(page)
-        indexes: list[int] = []
+        targets: list[dict[str, Any]] = []
         try:
             count = rows.count()
         except PlaywrightError:
-            return indexes
+            return targets
         for index in range(count):
-            text = self.safe_inner_text(rows.nth(index))
-            lowered = text.lower()
+            row = rows.nth(index)
+            row_text = self.safe_inner_text(row)
+            lowered = row_text.lower()
             if "incorrect" not in lowered:
                 continue
             if "questions overview" in lowered or "your answer" in lowered:
                 continue
-            indexes.append(index)
-        return indexes
+            targets.append(
+                {
+                    "row_index": index,
+                    "row_text": row_text,
+                    "meta": self.read_row_metadata(row),
+                }
+            )
+        return targets
+
+    def find_row_for_target(self, page: Page, target: dict[str, Any]) -> Locator | None:
+        rows = self.questions_table_rows(page)
+        target_index = int(target["row_index"])
+        target_text = target["row_text"]
+        try:
+            candidate = rows.nth(target_index)
+            if self.safe_inner_text(candidate) == target_text:
+                return candidate
+        except PlaywrightError:
+            pass
+
+        try:
+            count = rows.count()
+        except PlaywrightError:
+            return None
+        for index in range(count):
+            candidate = rows.nth(index)
+            if self.safe_inner_text(candidate) == target_text:
+                return candidate
+        return None
 
     def read_row_metadata(self, row: Locator) -> dict[str, str]:
         row_text = self.safe_inner_text(row)
@@ -1789,10 +1943,7 @@ class SatBluebookScraper:
         self.wait_for_review_screen(page)
         self.ensure_correct_answer_visible(page)
         container = self.review_container(page)
-        structured = self.extract_review_structured_data(container)
-        text_payload = self.extract_visible_text(container)
-        parsed = parse_review_content(text_payload)
-        merged = {**row_meta, **{key: value for key, value in parsed.items() if value}, **structured}
+        merged, _text_payload = self.review_parser.parse_container(container, row_meta)
         uid = make_uid(
             test_name=test_name,
             section=merged.get("section", ""),
@@ -1823,115 +1974,9 @@ class SatBluebookScraper:
             images=paths["images"],
             screenshot_path=paths["screenshot"],
             html_snapshot_path=paths["html"],
-            review_url=page.url,
             source_row_text=merged.get("source_row_text", ""),
-            raw_visible_text=merged.get("raw_visible_text", text_payload),
-            notes=paths["notes"],
         )
         return record
-
-    def extract_review_structured_data(self, container: Locator) -> dict[str, Any]:
-        try:
-            data = container.evaluate(
-                """
-                (root) => {
-                  const normalize = (text) => (text || "").replace(/\\s+/g, " ").trim();
-                  const heading = normalize(root.querySelector(".question-panel h3")?.innerText);
-                  const questionParts = Array.from(root.querySelectorAll(".question-panel p"))
-                    .map((node) => normalize(node.innerText))
-                    .filter(Boolean);
-                  const questionBody = root.querySelector(".question-panel > div") || root.querySelector(".question-panel");
-                  const questionHtml = (questionBody?.innerHTML || "").trim();
-                  const answerItems = Array.from(root.querySelectorAll(".answer-panel ol li"));
-                  const answerChoices = answerItems.map((item, index) => {
-                    const label = String.fromCharCode(65 + index);
-                    return `${label}. ${normalize(item.innerText)}`;
-                  });
-                  const answerChoicesHtml = answerItems.map((item) => (item.innerHTML || "").trim()).filter(Boolean);
-                  const correctChoiceIndex = answerItems.findIndex((item) =>
-                    item.classList.contains("correct") || item.querySelector(".correct")
-                  );
-                  const statusText = normalize(
-                    root.querySelector(".answer-panel p.incorrect, .answer-panel p.correct, .answer-panel p.response")?.innerText
-                  );
-                  const rationaleHeader = Array.from(root.querySelectorAll(".answer-panel h3"))
-                    .find((node) => /rationale/i.test(normalize(node.innerText)));
-                  let explanation = "";
-                  const explanationHtmlParts = [];
-                  if (rationaleHeader) {
-                    const parts = [];
-                    let sibling = rationaleHeader.nextElementSibling;
-                    while (sibling) {
-                      const value = normalize(sibling.innerText);
-                      if (value) parts.push(value);
-                      const html = (sibling.outerHTML || "").trim();
-                      if (html) explanationHtmlParts.push(html);
-                      sibling = sibling.nextElementSibling;
-                    }
-                    explanation = parts.join("\\n\\n");
-                  }
-                  const domain = normalize(
-                    root.querySelector(".header-with-ksd .ksd-title p span:last-child")?.innerText
-                    || root.querySelector(".header-with-ksd .ksd-title p")?.innerText
-                  ).replace(/^Knowledge and Skills:\\s*/i, "");
-                  return {
-                    heading,
-                    question_parts: questionParts,
-                    question_html: questionHtml,
-                    answer_choices: answerChoices,
-                    answer_choices_html: answerChoicesHtml,
-                    explanation,
-                    explanation_html: explanationHtmlParts.join("\\n"),
-                    status_text: statusText,
-                    domain,
-                    correct_choice_letter: correctChoiceIndex >= 0 ? String.fromCharCode(65 + correctChoiceIndex) : "",
-                  };
-                }
-                """
-            )
-        except PlaywrightError:
-            return {}
-
-        structured: dict[str, Any] = {}
-        heading = normalize_space(data.get("heading"))
-        if heading:
-            match = re.search(r"^(.*?):\s*Question\s*(\d+)\s*$", heading, flags=re.IGNORECASE)
-            if match:
-                structured["section"] = normalize_space(match.group(1))
-                structured["question_number"] = match.group(2)
-        question_parts = [normalize_space(part) for part in data.get("question_parts", []) if normalize_space(part)]
-        if question_parts:
-            structured["question_text"] = "\n".join(question_parts)
-        question_html = (data.get("question_html") or "").strip()
-        if question_html:
-            structured["question_html"] = question_html
-        answer_choices = [normalize_space(choice) for choice in data.get("answer_choices", []) if normalize_space(choice)]
-        if answer_choices:
-            structured["answer_choices"] = answer_choices
-        answer_choices_html = [fragment.strip() for fragment in data.get("answer_choices_html", []) if fragment and fragment.strip()]
-        if answer_choices_html:
-            structured["answer_choices_html"] = answer_choices_html
-        explanation = normalize_space(data.get("explanation"))
-        if explanation:
-            structured["explanation"] = explanation
-        explanation_html = (data.get("explanation_html") or "").strip()
-        if explanation_html:
-            structured["explanation_html"] = explanation_html
-        domain = normalize_space(data.get("domain"))
-        if domain:
-            structured["domain"] = domain
-        status_text = normalize_space(data.get("status_text"))
-        if status_text:
-            selected_match = re.search(r"You selected answer\s+([A-H])", status_text, flags=re.IGNORECASE)
-            correct_match = re.search(r"correct answer is\s+([A-H])", status_text, flags=re.IGNORECASE)
-            if selected_match:
-                structured["my_answer"] = f"{selected_match.group(1).upper()}; Incorrect"
-            if correct_match:
-                structured["correct_answer"] = correct_match.group(1).upper()
-        correct_choice = normalize_space(data.get("correct_choice_letter"))
-        if correct_choice and not structured.get("correct_answer"):
-            structured["correct_answer"] = correct_choice
-        return structured
 
     def wait_for_review_screen(self, page: Page) -> None:
         modal = page.locator(".test-questions-modal[aria-hidden='false'] [role='dialog']").first
@@ -2017,53 +2062,27 @@ class SatBluebookScraper:
                 continue
         return page.locator("body")
 
-    def extract_visible_text(self, container: Locator) -> str:
-        try:
-            text = container.evaluate(
-                """
-                (root) => {
-                  const isVisible = (el) => {
-                    if (!el) return false;
-                    const style = window.getComputedStyle(el);
-                    const rect = el.getBoundingClientRect();
-                    return style && style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
-                  };
-                  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-                  const pieces = [];
-                  while (walker.nextNode()) {
-                    const node = walker.currentNode;
-                    const parent = node.parentElement;
-                    if (!parent || !isVisible(parent)) continue;
-                    const value = (node.textContent || "").replace(/\\s+/g, " ").trim();
-                    if (!value) continue;
-                    pieces.push(value);
-                  }
-                  return pieces.join("\\n");
-                }
-                """
-            )
-            return text
-        except PlaywrightError:
-            return self.safe_inner_text(container)
-
     def save_artifacts(self, container: Locator, uid: str) -> dict[str, Any]:
         screenshot_path = self.screenshot_dir / f"{uid}.png"
         html_path = self.html_dir / f"{uid}.html"
-        notes: list[str] = []
         screenshot_value = str(screenshot_path)
         html_value = str(html_path)
         html_markup = ""
-        try:
-            container.screenshot(path=str(screenshot_path))
-        except PlaywrightError as exc:
-            notes.append(f"Question screenshot failed: {exc}")
-            self.main_page and self.capture_error(self.main_page, f"screenshot-failure-{uid}")
+        if self.args.save_question_screenshots:
+            ensure_dir(self.screenshot_dir)
+            try:
+                container.screenshot(path=str(screenshot_path))
+            except PlaywrightError as exc:
+                LOG.warning("Question screenshot failed for %s: %s", uid, exc)
+                self.main_page and self.capture_error(self.main_page, f"screenshot-failure-{uid}")
+                screenshot_value = ""
+        else:
             screenshot_value = ""
         try:
             html_markup = container.inner_html()
             atomic_write_text(html_path, html_markup)
         except PlaywrightError as exc:
-            notes.append(f"HTML snapshot failed: {exc}")
+            LOG.warning("HTML snapshot failed for %s: %s", uid, exc)
             html_value = ""
 
         images: list[str] = []
@@ -2071,7 +2090,7 @@ class SatBluebookScraper:
             try:
                 images.extend(extract_visual_assets_from_html(uid, html_markup, self.image_dir))
             except OSError as exc:
-                notes.append(f"Figure extraction failed: {exc}")
+                LOG.warning("Figure extraction failed for %s: %s", uid, exc)
 
         images.extend(self.capture_non_svg_figures(container, uid))
 
@@ -2095,7 +2114,6 @@ class SatBluebookScraper:
             "screenshot": screenshot_value,
             "html": html_value,
             "images": dedupe_preserve_order(images),
-            "notes": " | ".join(notes),
         }
 
     def capture_non_svg_figures(self, container: Locator, uid: str) -> list[str]:
@@ -2193,13 +2211,6 @@ class SatBluebookScraper:
         except PlaywrightError:
             pass
         return page.locator(".test-questions-modal").first
-
-    def review_modal_is_visible(self, page: Page) -> bool:
-        modal = page.locator(".test-questions-modal[aria-hidden='false'] [role='dialog']").first
-        try:
-            return modal.count() > 0 and modal.is_visible()
-        except (PlaywrightError, PlaywrightTimeoutError):
-            return False
 
     def close_review_modal(self, page: Page) -> None:
         closed = False
@@ -2315,6 +2326,9 @@ class SatBluebookScraper:
             return ""
 
     def capture_error(self, page: Page, label: str) -> str:
+        if not self.args.save_error_screenshots:
+            return ""
+        ensure_dir(self.error_dir)
         path = self.error_dir / f"{slugify(label)}-{int(time.time())}.png"
         try:
             page.screenshot(path=str(path), full_page=True)
@@ -2347,8 +2361,7 @@ def rehydrate_records_from_snapshots(args: argparse.Namespace, outputs: OutputMa
     if not pending:
         return
 
-    parser_outputs = OutputManager(Path(args.outputs_dir), fresh=True)
-    parser = SatBluebookScraper(args, parser_outputs)
+    parser = ReviewParser()
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         page = browser.new_page()
@@ -2359,10 +2372,10 @@ def rehydrate_records_from_snapshots(args: argparse.Namespace, outputs: OutputMa
                     continue
                 html_fragment = html_path.read_text(encoding="utf-8", errors="ignore")
                 page.set_content(f"<!DOCTYPE html><html><body>{html_fragment}</body></html>", wait_until="domcontentloaded")
-                structured = parser.extract_review_structured_data(page.locator("body"))
-                for key in ("question_html", "answer_choices_html", "explanation_html"):
-                    if structured.get(key):
-                        record[key] = structured[key]
+                merged, _text_payload = parser.parse_container(page.locator("body"), record)
+                for key, value in merged.items():
+                    if value:
+                        record[key] = value
         finally:
             page.close()
             browser.close()
