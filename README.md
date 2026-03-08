@@ -23,9 +23,9 @@ Generated under `artifacts/`:
 
 - `html/`: per-question HTML snapshots used for parser fixes and rebuilds
 - `images/`: extracted SVG or figure assets
-- `page_visits/`: full-page navigation snapshots for debugging live runs
-- `errors/`: failure screenshots when the live scrape hits an unexpected state
-- `screenshots/`: per-question screenshots
+- `page_visits/`: full-page navigation snapshots for debugging live runs, only when `--save-page-visits` is enabled
+- `errors/`: failure screenshots when the live scrape hits an unexpected state, only when `--save-error-screenshots` is enabled
+- `screenshots/`: per-question screenshots, only when `--save-question-screenshots` is enabled
 
 Most generated/debug files are ignored by Git via `.gitignore`.
 
@@ -39,7 +39,7 @@ Most generated/debug files are ignored by Git via `.gitignore`.
    - metadata such as section, module, domain, skill, and answer status
    - question/explanation rich HTML for math-preserving report generation
    - per-question HTML snapshots and figure assets
-6. Writes outputs incrementally after each question and renders standalone HTML at the end if `pandoc` is available
+6. Checkpoints JSON after each question for crash recovery, then renders the full report set and standalone HTML at the end if `pandoc` is available
 
 ## Setup
 
@@ -72,6 +72,8 @@ uv run scrape_wrong_questions.py --overwrite-existing
 uv run scrape_wrong_questions.py --fresh
 uv run scrape_wrong_questions.py --force-login-prompt
 uv run scrape_wrong_questions.py --headless
+uv run scrape_wrong_questions.py --save-page-visits --save-error-screenshots
+uv run scrape_wrong_questions.py --save-question-screenshots
 ```
 
 Rebuild reports from an existing JSON file plus saved HTML snapshots without opening the browser:
@@ -83,7 +85,10 @@ uv run scrape_wrong_questions.py --rebuild-from-json outputs/wrong_questions.jso
 ## Notes
 
 - The scraper runs headed by default because College Board login is often interactive.
-- Progress is saved after each question, so interrupted runs can be resumed.
+- Progress is checkpointed to `wrong_questions.json` after each question, so interrupted runs can be resumed without regenerating every report on the hot path.
+- If a run is interrupted, use `--rebuild-from-json outputs/wrong_questions.json` to regenerate Markdown, drill-pack, and HTML outputs from the saved snapshots.
+- `artifacts/html/` and `artifacts/images/` are the default artifact set because they support rebuilds and parser fixes.
+- The heavier debug artifacts are opt-in via `--save-page-visits`, `--save-question-screenshots`, and `--save-error-screenshots`.
 - If you delete `playwright_profile/`, the next run will recreate it and require a fresh login.
 - `wrong_questions.llm.md` is the best file to hand to an LLM for pattern analysis.
 - Standalone HTML export is skipped automatically if `pandoc` is not installed.
