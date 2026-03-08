@@ -1835,7 +1835,7 @@ class SatBluebookScraper:
                 {
                     "row_index": index,
                     "row_text": row_text,
-                    "meta": self.read_row_metadata(row),
+                    "meta": self.read_row_metadata(row, row_text),
                 }
             )
         return targets
@@ -1861,8 +1861,8 @@ class SatBluebookScraper:
                 return candidate
         return None
 
-    def read_row_metadata(self, row: Locator) -> dict[str, str]:
-        row_text = self.safe_inner_text(row)
+    def read_row_metadata(self, row: Locator, row_text: str = "") -> dict[str, str]:
+        row_text = row_text or self.safe_inner_text(row)
         header_cells = row.locator("th")
         cells = row.locator("td, [role='cell']")
         question_number = ""
