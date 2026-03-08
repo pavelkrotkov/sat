@@ -741,6 +741,7 @@ class OutputManager:
 
     def save_reports(self) -> None:
         ordered = self.ordered_records()
+        self._warm_fragment_conversion_cache(ordered)
         atomic_write_text(self.csv_path, self._render_csv(ordered))
         atomic_write_text(self.md_path, self._render_markdown(ordered))
         atomic_write_text(self.llm_md_path, self._render_llm_markdown(ordered))
@@ -784,6 +785,73 @@ class OutputManager:
             except subprocess.CalledProcessError as exc:
                 stderr = normalize_space(exc.stderr)
                 LOG.warning("Pandoc HTML export failed for %s: %s", markdown_path.name, stderr or exc)
+
+    def _warm_fragment_conversion_cache(self, records: list[dict[str, Any]]) -> None:
+        if not self.pandoc_path:
+            return
+
+        jobs_by_format: dict[str, list[tuple[tuple[str, str, bool], str]]] = defaultdict(list)
+        seen_keys: set[tuple[str, str, bool]] = set()
+        for record in records:
+            for fragment, target_format, strip_figures in self._fragment_conversion_requests(record):
+                prepared_fragment = (fragment or "").strip()
+                if not prepared_fragment:
+                    continue
+                cache_key = (prepared_fragment, target_format, strip_figures)
+                if cache_key in seen_keys or cache_key in self.fragment_conversion_cache:
+                    continue
+                prepared_html = self._prepare_fragment_for_markdown(prepared_fragment, strip_figures=strip_figures)
+                jobs_by_format[target_format].append((cache_key, prepared_html))
+                seen_keys.add(cache_key)
+
+        for target_format, jobs in jobs_by_format.items():
+            self._batch_convert_fragments(jobs, target_format)
+
+    def _fragment_conversion_requests(self, record: dict[str, Any]) -> list[tuple[str, str, bool]]:
+        requests: list[tuple[str, str, bool]] = []
+        for html_key in ("question_html", "explanation_html"):
+            fragment = (record.get(html_key) or "").strip()
+            if fragment:
+                requests.append((fragment, "commonmark_x", True))
+        for choice_html in record.get("answer_choices_html", []):
+            fragment = (choice_html or "").strip()
+            if fragment:
+                requests.append((fragment, "commonmark_x", True))
+        for fragment_key in ("question_html", "explanation_html"):
+            fragment = (record.get(fragment_key) or "").strip()
+            if not fragment:
+                continue
+            for block in self._extract_visual_blocks(fragment):
+                requests.append((block, "plain", False))
+        return requests
+
+    def _batch_convert_fragments(
+        self,
+        jobs: list[tuple[tuple[str, str, bool], str]],
+        target_format: str,
+    ) -> None:
+        if not jobs:
+            return
+
+        token = f"SAT_FRAGMENT_BREAK_{time.time_ns()}"
+        combined = f"\n<p>{token}</p>\n".join(prepared for _cache_key, prepared in jobs)
+        stdout = self._run_pandoc_html_conversion(combined, target_format)
+        if stdout:
+            parts = re.split(rf"^\s*{re.escape(token)}\s*$", stdout, flags=re.MULTILINE)
+            if len(parts) == len(jobs):
+                for (cache_key, _prepared), part in zip(jobs, parts, strict=True):
+                    self.fragment_conversion_cache[cache_key] = self._postprocess_fragment_output(part, target_format)
+                return
+            LOG.debug(
+                "Pandoc batch split mismatch for %s: expected %d parts, got %d",
+                target_format,
+                len(jobs),
+                len(parts),
+            )
+
+        for cache_key, prepared in jobs:
+            single_stdout = self._run_pandoc_html_conversion(prepared, target_format)
+            self.fragment_conversion_cache[cache_key] = self._postprocess_fragment_output(single_stdout, target_format)
 
     def _refresh_record_assets(self) -> None:
         for uid, record in self.records.items():
@@ -1002,24 +1070,34 @@ class OutputManager:
             return ""
 
         prepared = self._prepare_fragment_for_markdown(fragment, strip_figures=strip_figures)
+        stdout = self._run_pandoc_html_conversion(prepared, target_format)
+        converted = self._postprocess_fragment_output(stdout, target_format)
+        self.fragment_conversion_cache[cache_key] = converted
+        return converted
+
+    def _run_pandoc_html_conversion(self, prepared_html: str, target_format: str) -> str:
+        if not self.pandoc_path:
+            return ""
         try:
             result = subprocess.run(
                 [self.pandoc_path, "-f", "html", "-t", target_format],
-                input=prepared,
+                input=prepared_html,
                 capture_output=True,
                 text=True,
                 check=True,
             )
-            if target_format == "plain":
-                converted = self._postprocess_plain_fragment(result.stdout)
-            else:
-                converted = self._postprocess_markdown_fragment(result.stdout)
+            return result.stdout
         except subprocess.CalledProcessError as exc:
             stderr = normalize_space(exc.stderr)
             LOG.debug("Pandoc fragment conversion failed: %s", stderr or exc)
-            converted = ""
-        self.fragment_conversion_cache[cache_key] = converted
-        return converted
+            return ""
+
+    def _postprocess_fragment_output(self, output: str, target_format: str) -> str:
+        if not output:
+            return ""
+        if target_format == "plain":
+            return self._postprocess_plain_fragment(output)
+        return self._postprocess_markdown_fragment(output)
 
     def _prepare_fragment_for_markdown(self, html_fragment: str, *, strip_figures: bool) -> str:
         fragment = html_fragment
