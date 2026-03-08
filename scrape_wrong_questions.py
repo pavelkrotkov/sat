@@ -2274,7 +2274,7 @@ class SatBluebookScraper:
                 ({ needle, useRegex }) => {
                   const normalize = (text) => (text || "").replace(/\\s+/g, " ").trim();
                   const matcher = useRegex ? new RegExp(needle, "i") : null;
-                  const candidates = Array.from(document.querySelectorAll("a, button, [role='button'], [role='link'], div, span"));
+                  const candidates = Array.from(document.querySelectorAll("a, button, [role='button'], [role='link']"));
                   for (const el of candidates) {
                     const text = normalize(el.innerText);
                     if (!text) continue;
