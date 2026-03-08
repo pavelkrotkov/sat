@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import time
 from collections import Counter, defaultdict
-from dataclasses import MISSING, asdict, dataclass, field
+from dataclasses import MISSING, asdict, dataclass, field, fields
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -42,6 +42,7 @@ LOG = logging.getLogger("sat_wrong_questions")
 DEFAULT_START_URL = "https://mypractice.collegeboard.org/"
 DEFAULT_TIMEOUT_MS = 15_000
 MAX_BACK_ATTEMPTS = 3
+_JS_NORMALIZE = 'const normalize = (text) => (text || "").replace(/\\\\s+/g, " ").trim();'
 STOP_WORDS = {
     "about",
     "after",
@@ -119,140 +120,11 @@ RW_HINTS = {
     "words in context",
 }
 
-PANDOC_REPORT_CSS = """\
-html {
-  line-height: 1.5;
-  -webkit-text-size-adjust: 100%;
-}
+REPO_CSS_PATH = Path(__file__).with_name("pandoc-report.css")
 
-body {
-  margin: 0 !important;
-  max-width: none !important;
-  padding: 32px 40px 56px !important;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif !important;
-  color: #17212b;
-  background: #ffffff;
-}
 
-main {
-  max-width: none !important;
-}
-
-h1, h2, h3, h4 {
-  line-height: 1.2;
-  color: #0f172a;
-}
-
-h1 {
-  margin: 0 0 1rem;
-  font-size: 2rem;
-}
-
-h2 {
-  margin-top: 2rem;
-  padding-bottom: 0.25rem;
-  border-bottom: 1px solid #e5e7eb;
-}
-
-h3 {
-  margin-top: 1.5rem;
-}
-
-p, li {
-  max-width: 92ch;
-}
-
-.sat-rich-block,
-.sat-rich-block p,
-.sat-rich-block li {
-  max-width: none;
-}
-
-.sat-rich-block mjx-assistive-mml {
-  position: absolute !important;
-  width: 1px !important;
-  height: 1px !important;
-  padding: 0 !important;
-  margin: -1px !important;
-  overflow: hidden !important;
-  clip: rect(0, 0, 0, 0) !important;
-  clip-path: inset(50%) !important;
-  white-space: nowrap !important;
-  border: 0 !important;
-}
-
-.sat-rich-block mjx-container[jax="SVG"] {
-  display: inline-block;
-  max-width: 100%;
-}
-
-.sat-rich-block mjx-container[jax="SVG"] > svg {
-  max-width: 100%;
-  height: auto;
-}
-
-.sat-answer-choices {
-  padding-left: 1.6rem;
-}
-
-.sat-answer-choices li {
-  margin: 0.35rem 0;
-}
-
-a {
-  color: #0b63ce;
-}
-
-img, svg {
-  max-width: 100%;
-  height: auto;
-}
-
-figure {
-  margin: 1rem 0 1.25rem;
-}
-
-pre, code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-
-pre {
-  overflow-x: auto;
-  padding: 0.9rem 1rem;
-  border-radius: 10px;
-  background: #f6f8fa;
-}
-
-code {
-  padding: 0.12rem 0.3rem;
-  border-radius: 4px;
-  background: #f6f8fa;
-}
-
-pre code {
-  padding: 0;
-  background: transparent;
-}
-
-table {
-  border-collapse: collapse;
-}
-
-th, td {
-  padding: 0.4rem 0.6rem;
-  border: 1px solid #d7dce2;
-}
-
-@media (max-width: 900px) {
-  body {
-    padding: 20px 16px 40px !important;
-  }
-
-  p, li {
-    max-width: none;
-  }
-}
-"""
+def load_pandoc_report_css() -> str:
+    return REPO_CSS_PATH.read_text(encoding="utf-8")
 
 
 @dataclass
@@ -409,13 +281,14 @@ def dedupe_preserve_order(values: list[str]) -> list[str]:
     return deduped
 
 
-def extract_visual_assets_from_html(uid: str, html: str, image_dir: Path) -> list[str]:
+def extract_visual_assets_from_html_details(uid: str, html: str, image_dir: Path) -> tuple[list[str], set[str]]:
     figure_blocks = re.findall(r"<figure\b.*?</figure>", html, flags=re.IGNORECASE | re.DOTALL)
     if not figure_blocks:
-        return []
+        return [], set()
 
     ensure_dir(image_dir)
     assets: list[str] = []
+    handled_sources: set[str] = set()
     for figure_index, figure_html in enumerate(figure_blocks, start=1):
         svg_match = re.search(r"<svg\b.*?</svg>", figure_html, flags=re.IGNORECASE | re.DOTALL)
         if svg_match:
@@ -443,6 +316,7 @@ def extract_visual_assets_from_html(uid: str, html: str, image_dir: Path) -> lis
             )
             if not data_match:
                 continue
+            handled_sources.add(src)
             mime_type = data_match.group(1).lower()
             encoded = re.sub(r"\s+", "", data_match.group(2))
             extension = {
@@ -461,7 +335,12 @@ def extract_visual_assets_from_html(uid: str, html: str, image_dir: Path) -> lis
             image_path = image_dir / f"{uid}-figure-{figure_index}{suffix}.{extension}"
             atomic_write_bytes(image_path, payload)
             assets.append(str(image_path))
-    return dedupe_preserve_order(assets)
+    return dedupe_preserve_order(assets), handled_sources
+
+
+def extract_visual_assets_from_html(uid: str, html: str, image_dir: Path) -> list[str]:
+    assets, _ = extract_visual_assets_from_html_details(uid, html, image_dir)
+    return assets
 
 
 def detect_test_number(test_name: str) -> str:
@@ -488,21 +367,21 @@ def make_uid(
     return "-".join(part for part in parts if part)
 
 
-def detect_subject(record: WrongQuestionRecord | dict[str, Any]) -> str:
-    section = normalize_space(record.get("section", "") if isinstance(record, dict) else record.section).lower()
+def detect_subject(record: dict[str, Any]) -> str:
+    section = normalize_space(record.get("section", "")).lower()
     if "reading and writing" in section:
         return "Reading and Writing"
     if section == "math" or " math" in f" {section} ":
         return "Math"
     haystack = " ".join(
-        normalize_space(str(record.get(key, "") if isinstance(record, dict) else getattr(record, key, "")))
+        normalize_space(str(record.get(key, "")))
         for key in ("section", "domain", "skill", "question_text")
     ).lower()
     if any(hint in haystack for hint in MATH_HINTS) or " math" in f" {haystack} ":
         return "Math"
     if any(hint in haystack for hint in RW_HINTS) or "reading and writing" in haystack:
         return "Reading and Writing"
-    return normalize_space(record.get("section", "") if isinstance(record, dict) else record.section) or "Unspecified"
+    return normalize_space(record.get("section", "")) or "Unspecified"
 
 
 def looks_like_choice(line: str) -> bool:
@@ -517,17 +396,24 @@ def tokenize_keywords(text: str) -> list[str]:
     return [token for token in tokens if token not in STOP_WORDS]
 
 
-def pull_label(lines: list[str], *labels: str) -> str:
-    lowered = [line.lower() for line in lines]
-    for label in labels:
-        label_lower = label.lower()
-        for idx, line in enumerate(lines):
-            lowered_line = lowered[idx]
-            if lowered_line.startswith(label_lower + ":"):
-                return normalize_space(line.split(":", 1)[1])
-            if lowered_line == label_lower and idx + 1 < len(lines):
-                return normalize_space(lines[idx + 1])
-    return ""
+def build_label_index(lines: list[str], labels: list[str]) -> dict[str, str]:
+    label_values = {label.lower(): "" for label in labels}
+    pending_label = ""
+    for line in lines:
+        normalized = normalize_space(line)
+        lowered = normalized.lower()
+        if pending_label:
+            label_values[pending_label] = normalized
+            pending_label = ""
+            continue
+        for label_lower in label_values:
+            if lowered.startswith(label_lower + ":"):
+                label_values[label_lower] = normalize_space(normalized.split(":", 1)[1])
+                break
+            if lowered == label_lower:
+                pending_label = label_lower
+                break
+    return label_values
 
 
 def split_explanation(lines: list[str]) -> tuple[list[str], list[str]]:
@@ -546,6 +432,16 @@ def parse_review_content(raw_text: str) -> dict[str, Any]:
     lines = normalize_lines(raw_text)
     before_expl, explanation_lines = split_explanation(lines)
     choices = [line for line in before_expl if looks_like_choice(line)]
+    labels = [
+        "question",
+        "section",
+        "module",
+        "domain",
+        "skill",
+        "your answer",
+        "correct answer",
+    ]
+    label_values = build_label_index(lines, labels)
     question_number = ""
     for line in lines:
         match = re.search(r"\bquestion\s*(\d+)\b", line, flags=re.IGNORECASE)
@@ -575,13 +471,13 @@ def parse_review_content(raw_text: str) -> dict[str, Any]:
     if explanation.replace("\n", " ").strip() in {"Previous Next", "Next Previous", "Previous", "Next"}:
         explanation = ""
     return {
-        "question_number": question_number or pull_label(lines, "Question"),
-        "section": pull_label(lines, "Section"),
-        "module": pull_label(lines, "Module"),
-        "domain": pull_label(lines, "Domain"),
-        "skill": pull_label(lines, "Skill"),
-        "my_answer": pull_label(lines, "Your answer"),
-        "correct_answer": pull_label(lines, "Correct answer"),
+        "question_number": question_number or label_values["question"],
+        "section": label_values["section"],
+        "module": label_values["module"],
+        "domain": label_values["domain"],
+        "skill": label_values["skill"],
+        "my_answer": label_values["your answer"],
+        "correct_answer": label_values["correct answer"],
         "question_text": "\n".join(question_lines).strip(),
         "answer_choices": choices,
         "explanation": explanation,
@@ -665,7 +561,7 @@ class ReviewParser:
             data = container.evaluate(
                 """
                 (root) => {
-                  const normalize = (text) => (text || "").replace(/\\s+/g, " ").trim();
+                  __JS_NORMALIZE__
                   const heading = normalize(root.querySelector(".question-panel h3")?.innerText);
                   const questionParts = Array.from(root.querySelectorAll(".question-panel p"))
                     .map((node) => normalize(node.innerText))
@@ -717,7 +613,7 @@ class ReviewParser:
                     correct_choice_letter: correctChoiceIndex >= 0 ? String.fromCharCode(65 + correctChoiceIndex) : "",
                   };
                 }
-                """
+                """.replace("__JS_NORMALIZE__", _JS_NORMALIZE)
             )
         except PlaywrightError:
             return {}
@@ -845,11 +741,12 @@ class OutputManager:
 
     def save_reports(self) -> None:
         ordered = self.ordered_records()
+        self._warm_fragment_conversion_cache(ordered)
         atomic_write_text(self.csv_path, self._render_csv(ordered))
         atomic_write_text(self.md_path, self._render_markdown(ordered))
         atomic_write_text(self.llm_md_path, self._render_llm_markdown(ordered))
         atomic_write_text(self.drill_path, self._render_drill_pack(ordered))
-        atomic_write_text(self.css_path, PANDOC_REPORT_CSS)
+        atomic_write_text(self.css_path, load_pandoc_report_css())
 
     def finalize(self) -> None:
         self._refresh_record_assets()
@@ -889,6 +786,73 @@ class OutputManager:
                 stderr = normalize_space(exc.stderr)
                 LOG.warning("Pandoc HTML export failed for %s: %s", markdown_path.name, stderr or exc)
 
+    def _warm_fragment_conversion_cache(self, records: list[dict[str, Any]]) -> None:
+        if not self.pandoc_path:
+            return
+
+        jobs_by_format: dict[str, list[tuple[tuple[str, str, bool], str]]] = defaultdict(list)
+        seen_keys: set[tuple[str, str, bool]] = set()
+        for record in records:
+            for fragment, target_format, strip_figures in self._fragment_conversion_requests(record):
+                prepared_fragment = (fragment or "").strip()
+                if not prepared_fragment:
+                    continue
+                cache_key = (prepared_fragment, target_format, strip_figures)
+                if cache_key in seen_keys or cache_key in self.fragment_conversion_cache:
+                    continue
+                prepared_html = self._prepare_fragment_for_markdown(prepared_fragment, strip_figures=strip_figures)
+                jobs_by_format[target_format].append((cache_key, prepared_html))
+                seen_keys.add(cache_key)
+
+        for target_format, jobs in jobs_by_format.items():
+            self._batch_convert_fragments(jobs, target_format)
+
+    def _fragment_conversion_requests(self, record: dict[str, Any]) -> list[tuple[str, str, bool]]:
+        requests: list[tuple[str, str, bool]] = []
+        for html_key in ("question_html", "explanation_html"):
+            fragment = (record.get(html_key) or "").strip()
+            if fragment:
+                requests.append((fragment, "commonmark_x", True))
+        for choice_html in record.get("answer_choices_html", []):
+            fragment = (choice_html or "").strip()
+            if fragment:
+                requests.append((fragment, "commonmark_x", True))
+        for fragment_key in ("question_html", "explanation_html"):
+            fragment = (record.get(fragment_key) or "").strip()
+            if not fragment:
+                continue
+            for block in self._extract_visual_blocks(fragment):
+                requests.append((block, "plain", False))
+        return requests
+
+    def _batch_convert_fragments(
+        self,
+        jobs: list[tuple[tuple[str, str, bool], str]],
+        target_format: str,
+    ) -> None:
+        if not jobs:
+            return
+
+        token = f"SAT_FRAGMENT_BREAK_{time.time_ns()}"
+        combined = f"\n<p>{token}</p>\n".join(prepared for _cache_key, prepared in jobs)
+        stdout = self._run_pandoc_html_conversion(combined, target_format)
+        if stdout:
+            parts = re.split(rf"^\s*{re.escape(token)}\s*$", stdout, flags=re.MULTILINE)
+            if len(parts) == len(jobs):
+                for (cache_key, _prepared), part in zip(jobs, parts, strict=True):
+                    self.fragment_conversion_cache[cache_key] = self._postprocess_fragment_output(part, target_format)
+                return
+            LOG.debug(
+                "Pandoc batch split mismatch for %s: expected %d parts, got %d",
+                target_format,
+                len(jobs),
+                len(parts),
+            )
+
+        for cache_key, prepared in jobs:
+            single_stdout = self._run_pandoc_html_conversion(prepared, target_format)
+            self.fragment_conversion_cache[cache_key] = self._postprocess_fragment_output(single_stdout, target_format)
+
     def _refresh_record_assets(self) -> None:
         for uid, record in self.records.items():
             record["uid"] = uid
@@ -896,7 +860,8 @@ class OutputManager:
 
     def _prepare_record_payload(self, record: dict[str, Any]) -> dict[str, Any]:
         payload: dict[str, Any] = {}
-        for field_name, field_def in WrongQuestionRecord.__dataclass_fields__.items():
+        for field_def in fields(WrongQuestionRecord):
+            field_name = field_def.name
             if field_name in record:
                 payload[field_name] = record[field_name]
                 continue
@@ -928,7 +893,7 @@ class OutputManager:
         return dedupe_preserve_order(derived + existing)
 
     def _render_csv(self, records: list[dict[str, Any]]) -> str:
-        fieldnames = list(WrongQuestionRecord.__dataclass_fields__.keys())
+        fieldnames = [field_def.name for field_def in fields(WrongQuestionRecord)]
         output = io.StringIO()
         writer = csv.DictWriter(output, fieldnames=fieldnames)
         writer.writeheader()
@@ -1105,24 +1070,34 @@ class OutputManager:
             return ""
 
         prepared = self._prepare_fragment_for_markdown(fragment, strip_figures=strip_figures)
+        stdout = self._run_pandoc_html_conversion(prepared, target_format)
+        converted = self._postprocess_fragment_output(stdout, target_format)
+        self.fragment_conversion_cache[cache_key] = converted
+        return converted
+
+    def _run_pandoc_html_conversion(self, prepared_html: str, target_format: str) -> str:
+        if not self.pandoc_path:
+            return ""
         try:
             result = subprocess.run(
                 [self.pandoc_path, "-f", "html", "-t", target_format],
-                input=prepared,
+                input=prepared_html,
                 capture_output=True,
                 text=True,
                 check=True,
             )
-            if target_format == "plain":
-                converted = self._postprocess_plain_fragment(result.stdout)
-            else:
-                converted = self._postprocess_markdown_fragment(result.stdout)
+            return result.stdout
         except subprocess.CalledProcessError as exc:
             stderr = normalize_space(exc.stderr)
             LOG.debug("Pandoc fragment conversion failed: %s", stderr or exc)
-            converted = ""
-        self.fragment_conversion_cache[cache_key] = converted
-        return converted
+            return ""
+
+    def _postprocess_fragment_output(self, output: str, target_format: str) -> str:
+        if not output:
+            return ""
+        if target_format == "plain":
+            return self._postprocess_plain_fragment(output)
+        return self._postprocess_markdown_fragment(output)
 
     def _prepare_fragment_for_markdown(self, html_fragment: str, *, strip_figures: bool) -> str:
         fragment = html_fragment
@@ -1160,14 +1135,30 @@ class OutputManager:
             fragment = unwrapped
         return fragment.strip()
 
+    def _strip_pandoc_artifacts(self, text: str) -> str:
+        cleaned: list[str] = []
+        previous_blank = False
+        for line in text.replace("\u00a0", " ").replace("\\'", "'").splitlines():
+            stripped = line.strip()
+            if not stripped:
+                if cleaned and not previous_blank:
+                    cleaned.append("")
+                previous_blank = True
+                continue
+            cleaned.append(line.rstrip())
+            previous_blank = False
+        while cleaned and not cleaned[-1]:
+            cleaned.pop()
+        return "\n".join(cleaned).strip()
+
     def _postprocess_markdown_fragment(self, markdown: str) -> str:
         cleaned: list[str] = []
-        for line in markdown.replace("\u00a0", " ").splitlines():
+        for line in markdown.splitlines():
             stripped = line.strip()
             if stripped in {"::: {}", ":::"} or stripped.startswith(":::"):
                 continue
-            cleaned.append(line.rstrip())
-        text = "\n".join(cleaned).replace("\\'", "'")
+            cleaned.append(line)
+        text = self._strip_pandoc_artifacts("\n".join(cleaned))
         text = re.sub(
             r"\[(?:\\_)+\]\{[^{}]*\}\s*\[blank\]\{[^{}]*\}",
             "[blank]",
@@ -1180,7 +1171,7 @@ class OutputManager:
     def _postprocess_plain_fragment(self, plain_text: str) -> str:
         cleaned: list[str] = []
         skipping_attr_block = False
-        for line in plain_text.replace("\u00a0", " ").splitlines():
+        for line in plain_text.splitlines():
             line = line.replace("[]", "").rstrip()
             stripped = normalize_space(line)
             if skipping_attr_block:
@@ -1199,9 +1190,7 @@ class OutputManager:
                     skipping_attr_block = True
                 continue
             cleaned.append(line if line else stripped)
-        while cleaned and not cleaned[-1]:
-            cleaned.pop()
-        return "\n".join(cleaned).replace("\\'", "'").strip()
+        return self._strip_pandoc_artifacts("\n".join(cleaned))
 
     def _extract_llm_visual_contexts(self, item: dict[str, Any]) -> list[str]:
         contexts: list[str] = []
@@ -1289,20 +1278,7 @@ class OutputManager:
         return True
 
     def _clean_report_markdown(self, markdown: str) -> str:
-        text = markdown.strip().replace("\\'", "'")
-        text = re.sub(
-            r"\[(?:\\_)+\]\{[^{}]*\}\s*\[blank\]\{[^{}]*\}",
-            "[blank]",
-            text,
-            flags=re.DOTALL,
-        )
-        text = re.sub(r"\[([^\]]+)\]\{[^{}]*\}", r"\1", text, flags=re.DOTALL)
-        cleaned: list[str] = []
-        for line in text.splitlines():
-            if line.strip().startswith(":::"):
-                continue
-            cleaned.append(line.rstrip())
-        return "\n".join(cleaned).strip() + "\n"
+        return self._postprocess_markdown_fragment(markdown).strip() + "\n"
 
     def _render_drill_pack(self, records: list[dict[str, Any]]) -> str:
         lines = [
@@ -1560,7 +1536,7 @@ class SatBluebookScraper:
                     const rect = el.getBoundingClientRect();
                     return style && style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
                   };
-                  const normalize = (text) => (text || "").replace(/\\s+/g, " ").trim();
+                  __JS_NORMALIZE__
                   const out = [];
                   const cards = Array.from(document.querySelectorAll(".carousel-score-card"));
                   cards.forEach((card, index) => {
@@ -1579,7 +1555,7 @@ class SatBluebookScraper:
                   });
                   return out;
                 }
-                """
+                """.replace("__JS_NORMALIZE__", _JS_NORMALIZE)
             )
         except PlaywrightError:
             raw_cards = []
@@ -1835,7 +1811,7 @@ class SatBluebookScraper:
                 {
                     "row_index": index,
                     "row_text": row_text,
-                    "meta": self.read_row_metadata(row),
+                    "meta": self.read_row_metadata(row, row_text),
                 }
             )
         return targets
@@ -1861,8 +1837,8 @@ class SatBluebookScraper:
                 return candidate
         return None
 
-    def read_row_metadata(self, row: Locator) -> dict[str, str]:
-        row_text = self.safe_inner_text(row)
+    def read_row_metadata(self, row: Locator, row_text: str = "") -> dict[str, str]:
+        row_text = row_text or self.safe_inner_text(row)
         header_cells = row.locator("th")
         cells = row.locator("td, [role='cell']")
         question_number = ""
@@ -1985,6 +1961,15 @@ class SatBluebookScraper:
         except PlaywrightTimeoutError:
             page.wait_for_timeout(1_000)
 
+    def _first_visible(self, candidates: list[Locator]) -> Locator | None:
+        for candidate in candidates:
+            try:
+                if candidate.count() > 0 and candidate.first.is_visible():
+                    return candidate.first
+            except (PlaywrightError, PlaywrightTimeoutError):
+                continue
+        return None
+
     def ensure_correct_answer_visible(self, page: Page) -> None:
         modal = self.review_modal(page)
         if self.review_answer_reveal_visible(modal):
@@ -2035,13 +2020,7 @@ class SatBluebookScraper:
             modal.locator(".answer-panel h3").filter(has_text=re.compile(r"Rationale", re.IGNORECASE)),
             modal.locator(".answer-panel li.correct"),
         ]
-        for locator in candidates:
-            try:
-                if locator.count() > 0 and locator.first.is_visible():
-                    return True
-            except (PlaywrightError, PlaywrightTimeoutError):
-                continue
-        return False
+        return self._first_visible(candidates) is not None
 
     def review_container(self, page: Page) -> Locator:
         candidates = [
@@ -2054,13 +2033,7 @@ class SatBluebookScraper:
             page.locator("article"),
             page.locator("body"),
         ]
-        for candidate in candidates:
-            try:
-                if candidate.count() > 0 and candidate.first.is_visible():
-                    return candidate.first
-            except (PlaywrightError, PlaywrightTimeoutError):
-                continue
-        return page.locator("body")
+        return self._first_visible(candidates) or page.locator("body")
 
     def save_artifacts(self, container: Locator, uid: str) -> dict[str, Any]:
         screenshot_path = self.screenshot_dir / f"{uid}.png"
@@ -2086,12 +2059,15 @@ class SatBluebookScraper:
             html_value = ""
 
         images: list[str] = []
+        handled_image_sources: set[str] = set()
         if html_markup:
             try:
-                images.extend(extract_visual_assets_from_html(uid, html_markup, self.image_dir))
+                images, handled_image_sources = extract_visual_assets_from_html_details(uid, html_markup, self.image_dir)
             except OSError as exc:
                 LOG.warning("Figure extraction failed for %s: %s", uid, exc)
 
+        if html_markup:
+            ensure_dir(self.image_dir)
         images.extend(self.capture_non_svg_figures(container, uid))
 
         img_locator = container.locator("img")
@@ -2103,6 +2079,9 @@ class SatBluebookScraper:
             image = img_locator.nth(index)
             try:
                 if not image.is_visible():
+                    continue
+                src = normalize_space(image.get_attribute("src") or "")
+                if src and src in handled_image_sources:
                     continue
                 path = self.image_dir / f"{uid}-img-{index + 1}.png"
                 image.screenshot(path=str(path))
@@ -2168,7 +2147,7 @@ class SatBluebookScraper:
             heading = page.evaluate(
                 """
                 () => {
-                  const normalize = (text) => (text || "").replace(/\\s+/g, " ").trim();
+                  __JS_NORMALIZE__
                   for (const el of document.querySelectorAll("h1, h2, h3, [role='heading']")) {
                     const text = normalize(el.innerText);
                     if (/practice test/i.test(text)) {
@@ -2178,7 +2157,7 @@ class SatBluebookScraper:
                   }
                   return "";
                 }
-                """
+                """.replace("__JS_NORMALIZE__", _JS_NORMALIZE)
             )
         except PlaywrightError:
             heading = ""
@@ -2274,9 +2253,9 @@ class SatBluebookScraper:
             clicked = page.evaluate(
                 """
                 ({ needle, useRegex }) => {
-                  const normalize = (text) => (text || "").replace(/\\s+/g, " ").trim();
+                  __JS_NORMALIZE__
                   const matcher = useRegex ? new RegExp(needle, "i") : null;
-                  const candidates = Array.from(document.querySelectorAll("a, button, [role='button'], [role='link'], div, span"));
+                  const candidates = Array.from(document.querySelectorAll("a, button, [role='button'], [role='link']"));
                   for (const el of candidates) {
                     const text = normalize(el.innerText);
                     if (!text) continue;
@@ -2287,7 +2266,7 @@ class SatBluebookScraper:
                   }
                   return false;
                 }
-                """,
+                """.replace("__JS_NORMALIZE__", _JS_NORMALIZE),
                 {"needle": text, "useRegex": regex},
             )
             if clicked:
@@ -2366,12 +2345,13 @@ def rehydrate_records_from_snapshots(args: argparse.Namespace, outputs: OutputMa
         browser = playwright.chromium.launch(headless=True)
         page = browser.new_page()
         try:
+            page.set_content("<!DOCTYPE html><html><body></body></html>", wait_until="domcontentloaded")
             for record in pending:
                 html_path = Path(record["html_snapshot_path"])
                 if not html_path.exists():
                     continue
                 html_fragment = html_path.read_text(encoding="utf-8", errors="ignore")
-                page.set_content(f"<!DOCTYPE html><html><body>{html_fragment}</body></html>", wait_until="domcontentloaded")
+                page.evaluate("(html) => { document.body.innerHTML = html; }", html_fragment)
                 merged, _text_payload = parser.parse_container(page.locator("body"), record)
                 for key, value in merged.items():
                     if value:
