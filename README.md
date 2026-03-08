@@ -18,7 +18,7 @@ Generated under `outputs/`:
 - `wrong_questions.html`: standalone HTML export of `wrong_questions.md` when `pandoc` is installed
 - `drill_pack.md`: condensed drill sheet
 - `drill_pack.html`: standalone HTML export of `drill_pack.md` when `pandoc` is installed
-- `pandoc-report.css`: CSS used for standalone HTML export
+- `pandoc-report.css`: generated copy of the repo-level stylesheet used for standalone HTML export
 
 Generated under `artifacts/`:
 
@@ -40,7 +40,7 @@ Most generated/debug files are ignored by Git via `.gitignore`.
    - metadata such as section, module, domain, skill, and answer status
    - question/explanation rich HTML for math-preserving report generation
    - per-question HTML snapshots and figure assets
-6. Checkpoints JSON after each question for crash recovery, then renders the full report set and standalone HTML at the end if `pandoc` is available
+6. Checkpoints JSON after each question for crash recovery, then renders the full report set once at the end using batched Pandoc conversions if `pandoc` is available
 
 ## Setup
 
@@ -96,7 +96,7 @@ Export any Markdown file to PDF through Pandoc HTML plus headless Chrome printin
 
 Notes for the PDF script:
 
-- it uses [pandoc-report.css](/Users/pavel/dev/sat/pandoc-report.css) by default
+- it uses the repo-level [pandoc-report.css](/Users/pavel/dev/sat/pandoc-report.css) by default
 - it applies a print-time `90%` zoom
 - override the stylesheet with `CSS_PATH=/path/to/pandoc-report.css`
 - override the browser binary with `CHROME_BIN=/path/to/chrome`
@@ -106,9 +106,11 @@ Notes for the PDF script:
 - The scraper runs headed by default because College Board login is often interactive.
 - Progress is checkpointed to `wrong_questions.json` after each question, so interrupted runs can be resumed without regenerating every report on the hot path.
 - If a run is interrupted, use `--rebuild-from-json outputs/wrong_questions.json` to regenerate Markdown, drill-pack, and HTML outputs from the saved snapshots.
+- Report generation and rebuilds batch Pandoc fragment conversions internally now, so end-of-run rendering is much faster than the original one-fragment-per-process approach.
 - `artifacts/html/` and `artifacts/images/` are the default artifact set because they support rebuilds and parser fixes.
 - The heavier debug artifacts are opt-in via `--save-page-visits`, `--save-question-screenshots`, and `--save-error-screenshots`.
 - If you delete `playwright_profile/`, the next run will recreate it and require a fresh login.
 - `wrong_questions.llm.md` is the best file to hand to an LLM for pattern analysis.
 - Standalone HTML export is skipped automatically if `pandoc` is not installed.
+- The repo-level [pandoc-report.css](/Users/pavel/dev/sat/pandoc-report.css) is the source of truth for report styling; the scraper copies it into `outputs/` for standalone HTML exports.
 - `export_md_to_pdf.sh` depends on both `pandoc` and a local Chrome/Chromium binary.
