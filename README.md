@@ -5,6 +5,7 @@ This repo contains a local Playwright scraper for College Board My Practice. It 
 ## Main script
 
 - `scrape_wrong_questions.py`: single-file scraper runnable with `uv`
+- `export_md_to_pdf.sh`: render a Markdown file to standalone HTML with Pandoc, then print it to PDF with headless Chrome/Chromium
 
 ## Outputs
 
@@ -55,6 +56,10 @@ Optional but recommended for standalone HTML export:
 brew install pandoc
 ```
 
+Required for `export_md_to_pdf.sh`:
+
+- Google Chrome or Chromium installed locally
+
 ## Usage
 
 Run the live scraper:
@@ -82,6 +87,20 @@ Rebuild reports from an existing JSON file plus saved HTML snapshots without ope
 uv run scrape_wrong_questions.py --rebuild-from-json outputs/wrong_questions.json
 ```
 
+Export any Markdown file to PDF through Pandoc HTML plus headless Chrome printing:
+
+```bash
+./export_md_to_pdf.sh outputs/wrong_questions.md
+./export_md_to_pdf.sh cram_gemini/answer_tactics.md /tmp/answer_tactics.pdf
+```
+
+Notes for the PDF script:
+
+- it uses [pandoc-report.css](/Users/pavel/dev/sat/pandoc-report.css) by default
+- it applies a print-time `90%` zoom
+- override the stylesheet with `CSS_PATH=/path/to/pandoc-report.css`
+- override the browser binary with `CHROME_BIN=/path/to/chrome`
+
 ## Notes
 
 - The scraper runs headed by default because College Board login is often interactive.
@@ -92,3 +111,4 @@ uv run scrape_wrong_questions.py --rebuild-from-json outputs/wrong_questions.jso
 - If you delete `playwright_profile/`, the next run will recreate it and require a fresh login.
 - `wrong_questions.llm.md` is the best file to hand to an LLM for pattern analysis.
 - Standalone HTML export is skipped automatically if `pandoc` is not installed.
+- `export_md_to_pdf.sh` depends on both `pandoc` and a local Chrome/Chromium binary.
