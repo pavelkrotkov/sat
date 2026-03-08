@@ -635,6 +635,164 @@ def question_ref(item: dict[str, Any]) -> str:
     return f"{test_name}{suffix}"
 
 
+class ReviewParser:
+    def parse_container(self, container: Locator, row_meta: dict[str, Any]) -> tuple[dict[str, Any], str]:
+        structured = self.extract_review_structured_data(container)
+        merged = {**row_meta, **structured}
+        text_payload = ""
+        if self.review_parse_needs_fallback(merged):
+            text_payload = self.extract_visible_text(container)
+            parsed = parse_review_content(text_payload)
+            for key, value in parsed.items():
+                if value and not merged.get(key):
+                    merged[key] = value
+        return merged, text_payload
+
+    def review_parse_needs_fallback(self, merged: dict[str, Any]) -> bool:
+        required_groups = (
+            ("question_html", "question_text"),
+            ("explanation_html", "explanation"),
+            ("correct_answer",),
+        )
+        for group in required_groups:
+            if any(normalize_space(str(merged.get(key, ""))) for key in group):
+                continue
+            return True
+        return False
+
+    def extract_review_structured_data(self, container: Locator) -> dict[str, Any]:
+        try:
+            data = container.evaluate(
+                """
+                (root) => {
+                  const normalize = (text) => (text || "").replace(/\\s+/g, " ").trim();
+                  const heading = normalize(root.querySelector(".question-panel h3")?.innerText);
+                  const questionParts = Array.from(root.querySelectorAll(".question-panel p"))
+                    .map((node) => normalize(node.innerText))
+                    .filter(Boolean);
+                  const questionBody = root.querySelector(".question-panel > div") || root.querySelector(".question-panel");
+                  const questionHtml = (questionBody?.innerHTML || "").trim();
+                  const answerItems = Array.from(root.querySelectorAll(".answer-panel ol li"));
+                  const answerChoices = answerItems.map((item, index) => {
+                    const label = String.fromCharCode(65 + index);
+                    return `${label}. ${normalize(item.innerText)}`;
+                  });
+                  const answerChoicesHtml = answerItems.map((item) => (item.innerHTML || "").trim()).filter(Boolean);
+                  const correctChoiceIndex = answerItems.findIndex((item) =>
+                    item.classList.contains("correct") || item.querySelector(".correct")
+                  );
+                  const statusText = normalize(
+                    root.querySelector(".answer-panel p.incorrect, .answer-panel p.correct, .answer-panel p.response")?.innerText
+                  );
+                  const rationaleHeader = Array.from(root.querySelectorAll(".answer-panel h3"))
+                    .find((node) => /rationale/i.test(normalize(node.innerText)));
+                  let explanation = "";
+                  const explanationHtmlParts = [];
+                  if (rationaleHeader) {
+                    const parts = [];
+                    let sibling = rationaleHeader.nextElementSibling;
+                    while (sibling) {
+                      const value = normalize(sibling.innerText);
+                      if (value) parts.push(value);
+                      const html = (sibling.outerHTML || "").trim();
+                      if (html) explanationHtmlParts.push(html);
+                      sibling = sibling.nextElementSibling;
+                    }
+                    explanation = parts.join("\\n\\n");
+                  }
+                  const domain = normalize(
+                    root.querySelector(".header-with-ksd .ksd-title p span:last-child")?.innerText
+                    || root.querySelector(".header-with-ksd .ksd-title p")?.innerText
+                  ).replace(/^Knowledge and Skills:\\s*/i, "");
+                  return {
+                    heading,
+                    question_parts: questionParts,
+                    question_html: questionHtml,
+                    answer_choices: answerChoices,
+                    answer_choices_html: answerChoicesHtml,
+                    explanation,
+                    explanation_html: explanationHtmlParts.join("\\n"),
+                    status_text: statusText,
+                    domain,
+                    correct_choice_letter: correctChoiceIndex >= 0 ? String.fromCharCode(65 + correctChoiceIndex) : "",
+                  };
+                }
+                """
+            )
+        except PlaywrightError:
+            return {}
+
+        structured: dict[str, Any] = {}
+        heading = normalize_space(data.get("heading"))
+        if heading:
+            match = re.search(r"^(.*?):\s*Question\s*(\d+)\s*$", heading, flags=re.IGNORECASE)
+            if match:
+                structured["section"] = normalize_space(match.group(1))
+                structured["question_number"] = match.group(2)
+        question_parts = [normalize_space(part) for part in data.get("question_parts", []) if normalize_space(part)]
+        if question_parts:
+            structured["question_text"] = "\n".join(question_parts)
+        question_html = (data.get("question_html") or "").strip()
+        if question_html:
+            structured["question_html"] = question_html
+        answer_choices = [normalize_space(choice) for choice in data.get("answer_choices", []) if normalize_space(choice)]
+        if answer_choices:
+            structured["answer_choices"] = answer_choices
+        answer_choices_html = [fragment.strip() for fragment in data.get("answer_choices_html", []) if fragment and fragment.strip()]
+        if answer_choices_html:
+            structured["answer_choices_html"] = answer_choices_html
+        explanation = normalize_space(data.get("explanation"))
+        if explanation:
+            structured["explanation"] = explanation
+        explanation_html = (data.get("explanation_html") or "").strip()
+        if explanation_html:
+            structured["explanation_html"] = explanation_html
+        domain = normalize_space(data.get("domain"))
+        if domain:
+            structured["domain"] = domain
+        status_text = normalize_space(data.get("status_text"))
+        if status_text:
+            selected_match = re.search(r"You selected answer\s+([A-H])", status_text, flags=re.IGNORECASE)
+            correct_match = re.search(r"correct answer is\s+([A-H])", status_text, flags=re.IGNORECASE)
+            if selected_match:
+                structured["my_answer"] = f"{selected_match.group(1).upper()}; Incorrect"
+            if correct_match:
+                structured["correct_answer"] = correct_match.group(1).upper()
+        correct_choice = normalize_space(data.get("correct_choice_letter"))
+        if correct_choice and not structured.get("correct_answer"):
+            structured["correct_answer"] = correct_choice
+        return structured
+
+    def extract_visible_text(self, container: Locator) -> str:
+        try:
+            text = container.evaluate(
+                """
+                (root) => {
+                  const isVisible = (el) => {
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style && style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+                  };
+                  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+                  const pieces = [];
+                  while (walker.nextNode()) {
+                    const node = walker.currentNode;
+                    const parent = node.parentElement;
+                    if (!parent || !isVisible(parent)) continue;
+                    const value = (node.textContent || "").replace(/\\s+/g, " ").trim();
+                    if (!value) continue;
+                    pieces.push(value);
+                  }
+                  return pieces.join("\\n");
+                }
+                """
+            )
+            return text
+        except PlaywrightError:
+            return normalize_space(container.inner_text(timeout=1_500))
+
+
 class OutputManager:
     def __init__(self, outputs_dir: Path, *, fresh: bool = False) -> None:
         self.outputs_dir = ensure_dir(outputs_dir)
@@ -1192,6 +1350,7 @@ class SatBluebookScraper:
         self.main_page: Page | None = None
         self.page_visit_counter = 0
         self.attached_page_ids: set[int] = set()
+        self.review_parser = ReviewParser()
 
     def run(self) -> None:
         with sync_playwright() as playwright:
@@ -1784,15 +1943,7 @@ class SatBluebookScraper:
         self.wait_for_review_screen(page)
         self.ensure_correct_answer_visible(page)
         container = self.review_container(page)
-        structured = self.extract_review_structured_data(container)
-        merged = {**row_meta, **structured}
-        text_payload = ""
-        if self.review_parse_needs_fallback(merged):
-            text_payload = self.extract_visible_text(container)
-            parsed = parse_review_content(text_payload)
-            for key, value in parsed.items():
-                if value and not merged.get(key):
-                    merged[key] = value
+        merged, _text_payload = self.review_parser.parse_container(container, row_meta)
         uid = make_uid(
             test_name=test_name,
             section=merged.get("section", ""),
@@ -1826,121 +1977,6 @@ class SatBluebookScraper:
             source_row_text=merged.get("source_row_text", ""),
         )
         return record
-
-    def review_parse_needs_fallback(self, merged: dict[str, Any]) -> bool:
-        required_groups = (
-            ("question_html", "question_text"),
-            ("explanation_html", "explanation"),
-            ("correct_answer",),
-        )
-        for group in required_groups:
-            if any(normalize_space(str(merged.get(key, ""))) for key in group):
-                continue
-            return True
-        return False
-
-    def extract_review_structured_data(self, container: Locator) -> dict[str, Any]:
-        try:
-            data = container.evaluate(
-                """
-                (root) => {
-                  const normalize = (text) => (text || "").replace(/\\s+/g, " ").trim();
-                  const heading = normalize(root.querySelector(".question-panel h3")?.innerText);
-                  const questionParts = Array.from(root.querySelectorAll(".question-panel p"))
-                    .map((node) => normalize(node.innerText))
-                    .filter(Boolean);
-                  const questionBody = root.querySelector(".question-panel > div") || root.querySelector(".question-panel");
-                  const questionHtml = (questionBody?.innerHTML || "").trim();
-                  const answerItems = Array.from(root.querySelectorAll(".answer-panel ol li"));
-                  const answerChoices = answerItems.map((item, index) => {
-                    const label = String.fromCharCode(65 + index);
-                    return `${label}. ${normalize(item.innerText)}`;
-                  });
-                  const answerChoicesHtml = answerItems.map((item) => (item.innerHTML || "").trim()).filter(Boolean);
-                  const correctChoiceIndex = answerItems.findIndex((item) =>
-                    item.classList.contains("correct") || item.querySelector(".correct")
-                  );
-                  const statusText = normalize(
-                    root.querySelector(".answer-panel p.incorrect, .answer-panel p.correct, .answer-panel p.response")?.innerText
-                  );
-                  const rationaleHeader = Array.from(root.querySelectorAll(".answer-panel h3"))
-                    .find((node) => /rationale/i.test(normalize(node.innerText)));
-                  let explanation = "";
-                  const explanationHtmlParts = [];
-                  if (rationaleHeader) {
-                    const parts = [];
-                    let sibling = rationaleHeader.nextElementSibling;
-                    while (sibling) {
-                      const value = normalize(sibling.innerText);
-                      if (value) parts.push(value);
-                      const html = (sibling.outerHTML || "").trim();
-                      if (html) explanationHtmlParts.push(html);
-                      sibling = sibling.nextElementSibling;
-                    }
-                    explanation = parts.join("\\n\\n");
-                  }
-                  const domain = normalize(
-                    root.querySelector(".header-with-ksd .ksd-title p span:last-child")?.innerText
-                    || root.querySelector(".header-with-ksd .ksd-title p")?.innerText
-                  ).replace(/^Knowledge and Skills:\\s*/i, "");
-                  return {
-                    heading,
-                    question_parts: questionParts,
-                    question_html: questionHtml,
-                    answer_choices: answerChoices,
-                    answer_choices_html: answerChoicesHtml,
-                    explanation,
-                    explanation_html: explanationHtmlParts.join("\\n"),
-                    status_text: statusText,
-                    domain,
-                    correct_choice_letter: correctChoiceIndex >= 0 ? String.fromCharCode(65 + correctChoiceIndex) : "",
-                  };
-                }
-                """
-            )
-        except PlaywrightError:
-            return {}
-
-        structured: dict[str, Any] = {}
-        heading = normalize_space(data.get("heading"))
-        if heading:
-            match = re.search(r"^(.*?):\s*Question\s*(\d+)\s*$", heading, flags=re.IGNORECASE)
-            if match:
-                structured["section"] = normalize_space(match.group(1))
-                structured["question_number"] = match.group(2)
-        question_parts = [normalize_space(part) for part in data.get("question_parts", []) if normalize_space(part)]
-        if question_parts:
-            structured["question_text"] = "\n".join(question_parts)
-        question_html = (data.get("question_html") or "").strip()
-        if question_html:
-            structured["question_html"] = question_html
-        answer_choices = [normalize_space(choice) for choice in data.get("answer_choices", []) if normalize_space(choice)]
-        if answer_choices:
-            structured["answer_choices"] = answer_choices
-        answer_choices_html = [fragment.strip() for fragment in data.get("answer_choices_html", []) if fragment and fragment.strip()]
-        if answer_choices_html:
-            structured["answer_choices_html"] = answer_choices_html
-        explanation = normalize_space(data.get("explanation"))
-        if explanation:
-            structured["explanation"] = explanation
-        explanation_html = (data.get("explanation_html") or "").strip()
-        if explanation_html:
-            structured["explanation_html"] = explanation_html
-        domain = normalize_space(data.get("domain"))
-        if domain:
-            structured["domain"] = domain
-        status_text = normalize_space(data.get("status_text"))
-        if status_text:
-            selected_match = re.search(r"You selected answer\s+([A-H])", status_text, flags=re.IGNORECASE)
-            correct_match = re.search(r"correct answer is\s+([A-H])", status_text, flags=re.IGNORECASE)
-            if selected_match:
-                structured["my_answer"] = f"{selected_match.group(1).upper()}; Incorrect"
-            if correct_match:
-                structured["correct_answer"] = correct_match.group(1).upper()
-        correct_choice = normalize_space(data.get("correct_choice_letter"))
-        if correct_choice and not structured.get("correct_answer"):
-            structured["correct_answer"] = correct_choice
-        return structured
 
     def wait_for_review_screen(self, page: Page) -> None:
         modal = page.locator(".test-questions-modal[aria-hidden='false'] [role='dialog']").first
@@ -2025,35 +2061,6 @@ class SatBluebookScraper:
             except (PlaywrightError, PlaywrightTimeoutError):
                 continue
         return page.locator("body")
-
-    def extract_visible_text(self, container: Locator) -> str:
-        try:
-            text = container.evaluate(
-                """
-                (root) => {
-                  const isVisible = (el) => {
-                    if (!el) return false;
-                    const style = window.getComputedStyle(el);
-                    const rect = el.getBoundingClientRect();
-                    return style && style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
-                  };
-                  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-                  const pieces = [];
-                  while (walker.nextNode()) {
-                    const node = walker.currentNode;
-                    const parent = node.parentElement;
-                    if (!parent || !isVisible(parent)) continue;
-                    const value = (node.textContent || "").replace(/\\s+/g, " ").trim();
-                    if (!value) continue;
-                    pieces.push(value);
-                  }
-                  return pieces.join("\\n");
-                }
-                """
-            )
-            return text
-        except PlaywrightError:
-            return self.safe_inner_text(container)
 
     def save_artifacts(self, container: Locator, uid: str) -> dict[str, Any]:
         screenshot_path = self.screenshot_dir / f"{uid}.png"
@@ -2354,8 +2361,7 @@ def rehydrate_records_from_snapshots(args: argparse.Namespace, outputs: OutputMa
     if not pending:
         return
 
-    parser_outputs = OutputManager(Path(args.outputs_dir), fresh=True)
-    parser = SatBluebookScraper(args, parser_outputs)
+    parser = ReviewParser()
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         page = browser.new_page()
@@ -2366,10 +2372,10 @@ def rehydrate_records_from_snapshots(args: argparse.Namespace, outputs: OutputMa
                     continue
                 html_fragment = html_path.read_text(encoding="utf-8", errors="ignore")
                 page.set_content(f"<!DOCTYPE html><html><body>{html_fragment}</body></html>", wait_until="domcontentloaded")
-                structured = parser.extract_review_structured_data(page.locator("body"))
-                for key in ("question_html", "answer_choices_html", "explanation_html"):
-                    if structured.get(key):
-                        record[key] = structured[key]
+                merged, _text_payload = parser.parse_container(page.locator("body"), record)
+                for key, value in merged.items():
+                    if value:
+                        record[key] = value
         finally:
             page.close()
             browser.close()
