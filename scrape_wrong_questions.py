@@ -1040,14 +1040,30 @@ class OutputManager:
             fragment = unwrapped
         return fragment.strip()
 
+    def _strip_pandoc_artifacts(self, text: str) -> str:
+        cleaned: list[str] = []
+        previous_blank = False
+        for line in text.replace("\u00a0", " ").replace("\\'", "'").splitlines():
+            stripped = line.strip()
+            if not stripped:
+                if cleaned and not previous_blank:
+                    cleaned.append("")
+                previous_blank = True
+                continue
+            cleaned.append(line.rstrip())
+            previous_blank = False
+        while cleaned and not cleaned[-1]:
+            cleaned.pop()
+        return "\n".join(cleaned).strip()
+
     def _postprocess_markdown_fragment(self, markdown: str) -> str:
         cleaned: list[str] = []
-        for line in markdown.replace("\u00a0", " ").splitlines():
+        for line in markdown.splitlines():
             stripped = line.strip()
             if stripped in {"::: {}", ":::"} or stripped.startswith(":::"):
                 continue
-            cleaned.append(line.rstrip())
-        text = "\n".join(cleaned).replace("\\'", "'")
+            cleaned.append(line)
+        text = self._strip_pandoc_artifacts("\n".join(cleaned))
         text = re.sub(
             r"\[(?:\\_)+\]\{[^{}]*\}\s*\[blank\]\{[^{}]*\}",
             "[blank]",
@@ -1060,7 +1076,7 @@ class OutputManager:
     def _postprocess_plain_fragment(self, plain_text: str) -> str:
         cleaned: list[str] = []
         skipping_attr_block = False
-        for line in plain_text.replace("\u00a0", " ").splitlines():
+        for line in plain_text.splitlines():
             line = line.replace("[]", "").rstrip()
             stripped = normalize_space(line)
             if skipping_attr_block:
@@ -1079,9 +1095,7 @@ class OutputManager:
                     skipping_attr_block = True
                 continue
             cleaned.append(line if line else stripped)
-        while cleaned and not cleaned[-1]:
-            cleaned.pop()
-        return "\n".join(cleaned).replace("\\'", "'").strip()
+        return self._strip_pandoc_artifacts("\n".join(cleaned))
 
     def _extract_llm_visual_contexts(self, item: dict[str, Any]) -> list[str]:
         contexts: list[str] = []
@@ -1169,20 +1183,7 @@ class OutputManager:
         return True
 
     def _clean_report_markdown(self, markdown: str) -> str:
-        text = markdown.strip().replace("\\'", "'")
-        text = re.sub(
-            r"\[(?:\\_)+\]\{[^{}]*\}\s*\[blank\]\{[^{}]*\}",
-            "[blank]",
-            text,
-            flags=re.DOTALL,
-        )
-        text = re.sub(r"\[([^\]]+)\]\{[^{}]*\}", r"\1", text, flags=re.DOTALL)
-        cleaned: list[str] = []
-        for line in text.splitlines():
-            if line.strip().startswith(":::"):
-                continue
-            cleaned.append(line.rstrip())
-        return "\n".join(cleaned).strip() + "\n"
+        return self._postprocess_markdown_fragment(markdown).strip() + "\n"
 
     def _render_drill_pack(self, records: list[dict[str, Any]]) -> str:
         lines = [
