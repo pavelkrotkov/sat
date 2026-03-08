@@ -488,21 +488,21 @@ def make_uid(
     return "-".join(part for part in parts if part)
 
 
-def detect_subject(record: WrongQuestionRecord | dict[str, Any]) -> str:
-    section = normalize_space(record.get("section", "") if isinstance(record, dict) else record.section).lower()
+def detect_subject(record: dict[str, Any]) -> str:
+    section = normalize_space(record.get("section", "")).lower()
     if "reading and writing" in section:
         return "Reading and Writing"
     if section == "math" or " math" in f" {section} ":
         return "Math"
     haystack = " ".join(
-        normalize_space(str(record.get(key, "") if isinstance(record, dict) else getattr(record, key, "")))
+        normalize_space(str(record.get(key, "")))
         for key in ("section", "domain", "skill", "question_text")
     ).lower()
     if any(hint in haystack for hint in MATH_HINTS) or " math" in f" {haystack} ":
         return "Math"
     if any(hint in haystack for hint in RW_HINTS) or "reading and writing" in haystack:
         return "Reading and Writing"
-    return normalize_space(record.get("section", "") if isinstance(record, dict) else record.section) or "Unspecified"
+    return normalize_space(record.get("section", "")) or "Unspecified"
 
 
 def looks_like_choice(line: str) -> bool:
