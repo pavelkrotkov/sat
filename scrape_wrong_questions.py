@@ -42,6 +42,7 @@ LOG = logging.getLogger("sat_wrong_questions")
 DEFAULT_START_URL = "https://mypractice.collegeboard.org/"
 DEFAULT_TIMEOUT_MS = 15_000
 MAX_BACK_ATTEMPTS = 3
+_JS_NORMALIZE = 'const normalize = (text) => (text || "").replace(/\\\\s+/g, " ").trim();'
 STOP_WORDS = {
     "about",
     "after",
@@ -665,7 +666,7 @@ class ReviewParser:
             data = container.evaluate(
                 """
                 (root) => {
-                  const normalize = (text) => (text || "").replace(/\\s+/g, " ").trim();
+                  __JS_NORMALIZE__
                   const heading = normalize(root.querySelector(".question-panel h3")?.innerText);
                   const questionParts = Array.from(root.querySelectorAll(".question-panel p"))
                     .map((node) => normalize(node.innerText))
@@ -717,7 +718,7 @@ class ReviewParser:
                     correct_choice_letter: correctChoiceIndex >= 0 ? String.fromCharCode(65 + correctChoiceIndex) : "",
                   };
                 }
-                """
+                """.replace("__JS_NORMALIZE__", _JS_NORMALIZE)
             )
         except PlaywrightError:
             return {}
@@ -1561,7 +1562,7 @@ class SatBluebookScraper:
                     const rect = el.getBoundingClientRect();
                     return style && style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
                   };
-                  const normalize = (text) => (text || "").replace(/\\s+/g, " ").trim();
+                  __JS_NORMALIZE__
                   const out = [];
                   const cards = Array.from(document.querySelectorAll(".carousel-score-card"));
                   cards.forEach((card, index) => {
@@ -1580,7 +1581,7 @@ class SatBluebookScraper:
                   });
                   return out;
                 }
-                """
+                """.replace("__JS_NORMALIZE__", _JS_NORMALIZE)
             )
         except PlaywrightError:
             raw_cards = []
@@ -2166,7 +2167,7 @@ class SatBluebookScraper:
             heading = page.evaluate(
                 """
                 () => {
-                  const normalize = (text) => (text || "").replace(/\\s+/g, " ").trim();
+                  __JS_NORMALIZE__
                   for (const el of document.querySelectorAll("h1, h2, h3, [role='heading']")) {
                     const text = normalize(el.innerText);
                     if (/practice test/i.test(text)) {
@@ -2176,7 +2177,7 @@ class SatBluebookScraper:
                   }
                   return "";
                 }
-                """
+                """.replace("__JS_NORMALIZE__", _JS_NORMALIZE)
             )
         except PlaywrightError:
             heading = ""
@@ -2272,7 +2273,7 @@ class SatBluebookScraper:
             clicked = page.evaluate(
                 """
                 ({ needle, useRegex }) => {
-                  const normalize = (text) => (text || "").replace(/\\s+/g, " ").trim();
+                  __JS_NORMALIZE__
                   const matcher = useRegex ? new RegExp(needle, "i") : null;
                   const candidates = Array.from(document.querySelectorAll("a, button, [role='button'], [role='link']"));
                   for (const el of candidates) {
@@ -2285,7 +2286,7 @@ class SatBluebookScraper:
                   }
                   return false;
                 }
-                """,
+                """.replace("__JS_NORMALIZE__", _JS_NORMALIZE),
                 {"needle": text, "useRegex": regex},
             )
             if clicked:
