@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import time
 from collections import Counter, defaultdict
-from dataclasses import MISSING, asdict, dataclass, field
+from dataclasses import MISSING, asdict, dataclass, field, fields
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -896,7 +896,8 @@ class OutputManager:
 
     def _prepare_record_payload(self, record: dict[str, Any]) -> dict[str, Any]:
         payload: dict[str, Any] = {}
-        for field_name, field_def in WrongQuestionRecord.__dataclass_fields__.items():
+        for field_def in fields(WrongQuestionRecord):
+            field_name = field_def.name
             if field_name in record:
                 payload[field_name] = record[field_name]
                 continue
@@ -928,7 +929,7 @@ class OutputManager:
         return dedupe_preserve_order(derived + existing)
 
     def _render_csv(self, records: list[dict[str, Any]]) -> str:
-        fieldnames = list(WrongQuestionRecord.__dataclass_fields__.keys())
+        fieldnames = [field_def.name for field_def in fields(WrongQuestionRecord)]
         output = io.StringIO()
         writer = csv.DictWriter(output, fieldnames=fieldnames)
         writer.writeheader()
