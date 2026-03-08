@@ -1986,6 +1986,15 @@ class SatBluebookScraper:
         except PlaywrightTimeoutError:
             page.wait_for_timeout(1_000)
 
+    def _first_visible(self, candidates: list[Locator]) -> Locator | None:
+        for candidate in candidates:
+            try:
+                if candidate.count() > 0 and candidate.first.is_visible():
+                    return candidate.first
+            except (PlaywrightError, PlaywrightTimeoutError):
+                continue
+        return None
+
     def ensure_correct_answer_visible(self, page: Page) -> None:
         modal = self.review_modal(page)
         if self.review_answer_reveal_visible(modal):
@@ -2036,13 +2045,7 @@ class SatBluebookScraper:
             modal.locator(".answer-panel h3").filter(has_text=re.compile(r"Rationale", re.IGNORECASE)),
             modal.locator(".answer-panel li.correct"),
         ]
-        for locator in candidates:
-            try:
-                if locator.count() > 0 and locator.first.is_visible():
-                    return True
-            except (PlaywrightError, PlaywrightTimeoutError):
-                continue
-        return False
+        return self._first_visible(candidates) is not None
 
     def review_container(self, page: Page) -> Locator:
         candidates = [
@@ -2055,13 +2058,7 @@ class SatBluebookScraper:
             page.locator("article"),
             page.locator("body"),
         ]
-        for candidate in candidates:
-            try:
-                if candidate.count() > 0 and candidate.first.is_visible():
-                    return candidate.first
-            except (PlaywrightError, PlaywrightTimeoutError):
-                continue
-        return page.locator("body")
+        return self._first_visible(candidates) or page.locator("body")
 
     def save_artifacts(self, container: Locator, uid: str) -> dict[str, Any]:
         screenshot_path = self.screenshot_dir / f"{uid}.png"
