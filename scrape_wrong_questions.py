@@ -2267,12 +2267,13 @@ def rehydrate_records_from_snapshots(args: argparse.Namespace, outputs: OutputMa
         browser = playwright.chromium.launch(headless=True)
         page = browser.new_page()
         try:
+            page.set_content("<!DOCTYPE html><html><body></body></html>", wait_until="domcontentloaded")
             for record in pending:
                 html_path = Path(record["html_snapshot_path"])
                 if not html_path.exists():
                     continue
                 html_fragment = html_path.read_text(encoding="utf-8", errors="ignore")
-                page.set_content(f"<!DOCTYPE html><html><body>{html_fragment}</body></html>", wait_until="domcontentloaded")
+                page.evaluate("(html) => { document.body.innerHTML = html; }", html_fragment)
                 merged, _text_payload = parser.parse_container(page.locator("body"), record)
                 for key, value in merged.items():
                     if value:
