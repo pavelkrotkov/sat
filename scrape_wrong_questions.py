@@ -396,17 +396,24 @@ def tokenize_keywords(text: str) -> list[str]:
     return [token for token in tokens if token not in STOP_WORDS]
 
 
-def pull_label(lines: list[str], *labels: str) -> str:
-    lowered = [line.lower() for line in lines]
-    for label in labels:
-        label_lower = label.lower()
-        for idx, line in enumerate(lines):
-            lowered_line = lowered[idx]
-            if lowered_line.startswith(label_lower + ":"):
-                return normalize_space(line.split(":", 1)[1])
-            if lowered_line == label_lower and idx + 1 < len(lines):
-                return normalize_space(lines[idx + 1])
-    return ""
+def build_label_index(lines: list[str], labels: list[str]) -> dict[str, str]:
+    label_values = {label.lower(): "" for label in labels}
+    pending_label = ""
+    for line in lines:
+        normalized = normalize_space(line)
+        lowered = normalized.lower()
+        if pending_label:
+            label_values[pending_label] = normalized
+            pending_label = ""
+            continue
+        for label_lower in label_values:
+            if lowered.startswith(label_lower + ":"):
+                label_values[label_lower] = normalize_space(normalized.split(":", 1)[1])
+                break
+            if lowered == label_lower:
+                pending_label = label_lower
+                break
+    return label_values
 
 
 def split_explanation(lines: list[str]) -> tuple[list[str], list[str]]:
@@ -425,6 +432,16 @@ def parse_review_content(raw_text: str) -> dict[str, Any]:
     lines = normalize_lines(raw_text)
     before_expl, explanation_lines = split_explanation(lines)
     choices = [line for line in before_expl if looks_like_choice(line)]
+    labels = [
+        "question",
+        "section",
+        "module",
+        "domain",
+        "skill",
+        "your answer",
+        "correct answer",
+    ]
+    label_values = build_label_index(lines, labels)
     question_number = ""
     for line in lines:
         match = re.search(r"\bquestion\s*(\d+)\b", line, flags=re.IGNORECASE)
@@ -454,13 +471,13 @@ def parse_review_content(raw_text: str) -> dict[str, Any]:
     if explanation.replace("\n", " ").strip() in {"Previous Next", "Next Previous", "Previous", "Next"}:
         explanation = ""
     return {
-        "question_number": question_number or pull_label(lines, "Question"),
-        "section": pull_label(lines, "Section"),
-        "module": pull_label(lines, "Module"),
-        "domain": pull_label(lines, "Domain"),
-        "skill": pull_label(lines, "Skill"),
-        "my_answer": pull_label(lines, "Your answer"),
-        "correct_answer": pull_label(lines, "Correct answer"),
+        "question_number": question_number or label_values["question"],
+        "section": label_values["section"],
+        "module": label_values["module"],
+        "domain": label_values["domain"],
+        "skill": label_values["skill"],
+        "my_answer": label_values["your answer"],
+        "correct_answer": label_values["correct answer"],
         "question_text": "\n".join(question_lines).strip(),
         "answer_choices": choices,
         "explanation": explanation,
