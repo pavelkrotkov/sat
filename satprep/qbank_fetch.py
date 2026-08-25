@@ -82,7 +82,6 @@ def _normalize(detail: dict, meta: dict) -> dict | None:
     options = detail.get("answerOptions") or []
     if len(options) < 2:
         return None
-    key = detail.get("correct_answer") or detail.get("keys") and None
     letters = [chr(ord("A") + i) for i in range(len(options))]
     correct_letter = ""
     ca = detail.get("correct_answer")

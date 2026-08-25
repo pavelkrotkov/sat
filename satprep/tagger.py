@@ -349,14 +349,13 @@ def run_full_tagging(db_path=None) -> dict:
     ).fetchall()
     stats = {"questions": len(rows), "tagged": 0, "skills_derived": 0}
     for row in rows:
-        choices = [c["text"] for c in json_load(row["choices_json"])]
+        choice_texts = [c["text"] for c in json_load(row["choices_json"])]
         # choice-less questions (Bluebook omits options on correct reviews)
         # are still tagged from passage+stem so they inform the weakness model
-        tag_question_row(conn, row["id"], row["passage"], row["stem"], choices)
+        tag_question_row(conn, row["id"], row["passage"], row["stem"], choice_texts)
         stats["tagged"] += 1
         if not row["official_skill"]:
-            skill, domain = derive_official_skill(row["stem"], row["passage"],
-                                                  [c["text"] for c in json_load(row["choices_json"])])
+            skill, domain = derive_official_skill(row["stem"], row["passage"], choice_texts)
             if skill or domain:
                 conn.execute(
                     "UPDATE questions SET official_skill=?, official_domain=?, skill_source=? WHERE id=?",

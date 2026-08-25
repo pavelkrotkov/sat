@@ -59,10 +59,6 @@ def _recency(attempted_at: str | None, now: datetime) -> float:
     return math.pow(0.5, age_days / config.WEAKNESS_RECENCY_HALF_LIFE_DAYS)
 
 
-def _difficulty_bonus(rows) -> float:
-    hard_seen = sum(1 for r in rows if (r["difficulty"] or "") == "hard")
-    return min(6.0, 1.2 * hard_seen)
-
 
 def compute_weakness(conn=None, now: datetime | None = None) -> dict:
     """Compute weakness scores for skills, reasoning tags, error tags.
@@ -76,64 +72,59 @@ def compute_weakness(conn=None, now: datetime | None = None) -> dict:
 
     base_sql = """
         SELECT a.correct AS correct, a.confidence AS confidence,
-               a.attempted_at AS attempted_at, q.difficulty AS difficulty
+               a.attempted_at AS attempted_at, a.time_ms AS time_ms,
+               q.difficulty AS difficulty
         FROM attempts a JOIN questions q ON q.id=a.question_id
-        WHERE q.active=1 AND q.official_skill != 'Math'
-          AND ({join}) = ? AND ({cond})
+        WHERE q.active=1 AND ({join}) = ?
     """
 
-    def collect(join_clause: str, cond: str, entity_value: str):
-        sql = base_sql.format(join=join_clause, cond=cond)
-        rows = conn.execute(sql, (entity_value,)).fetchall()
-        alpha_wrong = 0.0
-        alpha_right = 0.0
-        n = 0.0
-        wrong = correct = 0
-        recent_wrong = 0.0
+    SLOW_CORRECT_MS = config.SLOW_CORRECT_THRESHOLD_S * 1000
+
+    def collect(join_clause: str, entity_value: str):
+        rows = conn.execute(base_sql.format(join=join_clause), (entity_value,)).fetchall()
+        alpha_wrong = alpha_right = 0.0
+        slow_penalty = 0.0
+        n = wrong = correct = 0.0
+        times = []
         for r in rows:
             w = _weight_for(r["correct"], r["confidence"] or 0)
             decay = _recency(r["attempted_at"], now)
             weighted = w * decay
             n += decay if r["correct"] else weighted
             if r["correct"]:
-                # correct answers shrink toward mastery via their own weight
                 alpha_right += weighted
                 correct += 1
-                if decay > 0.8:
-                    pass
+                # spec section 12: a slow correct answer still indicates friction
+                t = r["time_ms"] or 0
+                if t >= SLOW_CORRECT_MS:
+                    slow_penalty += 0.35
+                    times.append(t)
             else:
                 alpha_wrong += weighted
                 wrong += 1
-                recent_wrong += weighted
         return {
-            "n": round(n, 3),
-            "n_raw": len(rows),
-            "wrong": wrong,
-            "correct": correct,
+            "n": round(n, 3), "n_raw": len(rows),
+            "wrong": int(wrong), "correct": int(correct),
             "alpha_wrong": round(alpha_wrong, 3),
             "alpha_right": round(alpha_right, 3),
-            "recent_wrong": round(recent_wrong, 3),
-        }, rows
+            "slow_correct": len([t for t in times]),
+        }, rows, slow_penalty
 
-    out = {"skill": {}, "tag": {}, "error_tag": {}}
-    k = config.WEAKNESS_PRIOR_STRENGTH
-    prior_p = 0.25  # expected error rate for a strong student
-
-    def score_from(stats: dict, rows) -> tuple[float, dict]:
+    def score_from(stats: dict, rows, slow_penalty: float = 0.0) -> tuple[float, dict]:
         denom = stats["alpha_wrong"] + stats["alpha_right"] + k
         post_err = (stats["alpha_wrong"] + k * prior_p) / denom if denom else prior_p
-        score = post_err * 100.0
-        score += _difficulty_bonus(rows)
-        # mastery discount when recent history is confidently correct-heavy
+        score = post_err * 100.0 + min(6.0, slow_penalty)
         if stats["correct"] >= 4 and stats["wrong"] == 0:
             score *= (1 - config.MASTERY_RECENT_CORRECT_DISCOUNT)
-        # shrink excess-over-baseline by evidence volume so a 2-question bucket
-        # cannot outrank a 40-question signal scraped from the same source mix
         baseline = prior_p * 100.0
         vol = max(stats.get("n_raw", stats["n"]), 1)
         shrink = min(1.0, vol / (vol + config.WEAKNESS_SHRINK_N))
         score = baseline + (score - baseline) * shrink
         return round(min(100.0, score), 1), stats
+
+    out = {"skill": {}, "tag": {}, "error_tag": {}}
+    k = config.WEAKNESS_PRIOR_STRENGTH
+    prior_p = 0.25  # expected error rate for a strong student
 
     # official skills
     for skill_row in conn.execute(
@@ -141,16 +132,17 @@ def compute_weakness(conn=None, now: datetime | None = None) -> dict:
            WHERE q.active=1 AND q.official_skill != ''"""
     ).fetchall():
         skill = skill_row["s"]
-        stats, rows = collect("q.official_skill", "a.mode='historical' OR 1=1", skill)
-        if stats["n"] == 0:
+        stats, rows, slow_pen = collect("q.official_skill", skill)
+        if stats["n"] == 0 and stats["n_raw"] == 0:
             continue
-        sc, st = score_from(stats, rows)
+        sc, st = score_from(stats, rows, slow_pen)
         out["skill"][skill] = {"score": sc, **st}
 
     # reasoning tags (demand tags)
     tag_rows = conn.execute(
         """SELECT qt.tag AS tag, a.correct AS correct, a.confidence AS confidence,
-                  a.attempted_at AS attempted_at, q.difficulty AS difficulty
+                  a.attempted_at AS attempted_at, a.time_ms AS time_ms,
+                  q.difficulty AS difficulty
            FROM question_tags qt
            JOIN questions q ON q.id=qt.question_id AND q.active=1
            LEFT JOIN attempts a ON a.question_id=q.id"""
@@ -159,42 +151,33 @@ def compute_weakness(conn=None, now: datetime | None = None) -> dict:
     for r in tag_rows:
         per_tag.setdefault(r["tag"], []).append(r)
     for tag, trows in per_tag.items():
-        seen_ids = set()
         alpha_wrong = alpha_right = 0.0
-        wrong = correct = 0
-        hard_wrong = 0
+        wrong = correct = hard_wrong = slow_correct = 0
         now_decayed_n = 0.0
         for r in trows:
             if r["correct"] is None:
                 continue
-            key = id(r)
             w = _weight_for(r["correct"], r["confidence"] or 0)
             decay = _recency(r["attempted_at"], now)
+            now_decayed_n += decay
             if r["correct"]:
                 alpha_right += w * decay
                 correct += 1
+                if (r["time_ms"] or 0) >= config.SLOW_CORRECT_THRESHOLD_S * 1000:
+                    slow_correct += 1
             else:
                 alpha_wrong += w * decay
                 wrong += 1
                 if (r["difficulty"] or "") == "hard":
                     hard_wrong += 1
-            now_decayed_n += decay
-            seen_ids.add(key)
         stats = {"n": round(now_decayed_n, 3), "wrong": wrong, "correct": correct,
-                 "hard_questions_wrong": hard_wrong,
-                 "alpha_wrong": round(alpha_wrong, 3)}
-        if now_decayed_n == 0:
+                 "hard_questions_wrong": hard_wrong, "slow_correct": slow_correct,
+                 "alpha_wrong": round(alpha_wrong, 3),
+                 "alpha_right": round(alpha_right, 3)}
+        if wrong + correct == 0:
             continue
-        denom = alpha_wrong + alpha_right + k
-        post_err = (alpha_wrong + k * prior_p) / denom
-        score = post_err * 100.0 + min(6.0, 1.2 * hard_wrong)
-        if correct >= 4 and wrong == 0:
-            score *= (1 - config.MASTERY_RECENT_CORRECT_DISCOUNT)
-        baseline = prior_p * 100.0
-        vol = max(wrong + correct, 1)
-        shrink = min(1.0, vol / (vol + config.WEAKNESS_SHRINK_N))
-        score = baseline + (score - baseline) * shrink
-        out["tag"][tag] = {"score": round(min(100.0, score), 1), **stats}
+        sc, st = score_from(stats, trows, min(6.0, 1.2 * hard_wrong + 0.3 * slow_correct))
+        out["tag"][tag] = {"score": sc, **stats}
 
     # diagnosed student error tags
     err_rows = conn.execute(

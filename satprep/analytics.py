@@ -1,7 +1,7 @@
 """Analytics for the dashboard: patterns, not anecdotes (spec section 14)."""
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from .db import connect
 
@@ -151,7 +151,7 @@ def transfer_performance(conn) -> dict:
 
 def trend_by_tag(conn, window: int = 30) -> list[dict]:
     """Rolling recent performance by reasoning tag across in-app sessions."""
-    cutoff = (datetime.now().astimezone() - timedelta(days=window)).isoformat()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=window)).isoformat()
     rows = conn.execute(
         """SELECT qt.tag AS tag,
                   SUM(a.correct) AS c, COUNT(*) AS n
@@ -168,9 +168,23 @@ def trend_by_tag(conn, window: int = 30) -> list[dict]:
     ]
 
 
+def corpus_summary_conn(conn) -> dict:
+    q = lambda s: conn.execute(s).fetchone()[0]  # noqa: E731
+    return {
+        "questions_total": q("SELECT COUNT(*) FROM questions WHERE active=1"),
+        "rw_historical": q("SELECT COUNT(*) FROM questions WHERE pool='historical'"),
+        "fresh_training": q("SELECT COUNT(*) FROM questions WHERE pool='fresh_training'"),
+        "protected_benchmark_unseen": q("SELECT COUNT(*) FROM questions WHERE pool='protected_benchmark' AND seen_benchmark=0"),
+        "attempts_total": q("SELECT COUNT(*) FROM attempts"),
+        "sessions_total": q("SELECT COUNT(*) FROM sessions WHERE status='completed'"),
+    }
+
+
 def corpus_summary(db_path=None) -> dict:
     conn = connect(db_path)
-    q = lambda s: conn.execute(s).fetchone()[0]  # noqa: E731
+    summary = corpus_summary_conn(conn)
+    conn.close()
+    return summary  # noqa: E731
     summary = {
         "questions_total": q("SELECT COUNT(*) FROM questions WHERE active=1"),
         "rw_historical": q("SELECT COUNT(*) FROM questions WHERE pool='historical'"),
@@ -186,7 +200,7 @@ def corpus_summary(db_path=None) -> dict:
 def full_dashboard(db_path=None) -> dict:
     conn = connect(db_path)
     data = {
-        "corpus": corpus_summary(db_path=db_path),
+        "corpus": corpus_summary_conn(conn),
         "skills": skill_accuracy(conn),
         "tags": tag_accuracy(conn),
         "misconceptions": high_value_misconceptions(conn),

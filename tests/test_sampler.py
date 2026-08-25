@@ -58,7 +58,6 @@ def test_targeted_mix_includes_old_wrong_and_fresh(db):
 
 def test_transfer_mode_excludes_previously_wrong(db):
     path = _seed(db)
-    conn = None
     from satprep.db import connect
     c = connect(path)
     wrong_ids = {r[0] for r in c.execute(

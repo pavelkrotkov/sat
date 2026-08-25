@@ -78,6 +78,8 @@ def test_answered_benchmark_enters_training_and_never_returns(db):
 def test_pool_split_stable_across_rebuilds():
     from satprep.fingerprint import fingerprint, pool_for_fingerprint
 
-    fps = [fingerprint("passage x", "stem y", ["a", "b"]) for _ in range(1)]
-    assert [pool_for_fingerprint(fp) for fp in fps] == \
-           [pool_for_fingerprint(fp) for fp in fps]
+    fp = fingerprint("passage x", "stem y", ["a", "b"])
+    # same content must map to the same pool on every evaluation/rebuild
+    assert pool_for_fingerprint(fp) == pool_for_fingerprint(fp)
+    # and the split must be a pure function of the fingerprint
+    assert pool_for_fingerprint(fp) in ("fresh_training", "protected_benchmark")

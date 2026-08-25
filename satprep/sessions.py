@@ -133,6 +133,7 @@ def review_payload(session_id: str, db_path=None) -> list[dict]:
             "confidence": r["confidence"],
             "key_letter": r["correct_letter"],
             "key_text": cmap.get(r["correct_letter"], ""),
+            "why_key_works": _why_key_works(r["rationale"] or ""),
             "official_skill": r["official_skill"],
             "reasoning_tags": tags,
             "trap_tags": trap_tags,
@@ -146,22 +147,16 @@ def review_payload(session_id: str, db_path=None) -> list[dict]:
     return out
 
 
-_TRAP_FALLBACK = {
-    "Inferences": ["unsupported_inference", "over_inference"],
-    "Command of Evidence": ["evidence_strength", "claim_vs_evidence"],
-    "Central Ideas and Details": ["main_claim_vs_detail", "irrelevant_detail"],
-    "Text Structure and Purpose": ["author_purpose"],
-    "Words in Context": ["word_sense_in_context", "near_synonym_distinction"],
-    "Cross-Text Connections": ["cross_text_disagreement"],
-    "Transitions": ["logical_connector"],
-}
-
-
 def _infer_trap(tags):
     return tags[:2]
 
 
-_CONTRAST_Split = None
+def _why_key_works(rationale: str) -> str:
+    """First paragraph of the official rationale states why the key works."""
+    if not rationale:
+        return ""
+    first = rationale.split("\n")[0]
+    return first[:600]
 
 
 def _logical_skeleton(passage: str) -> list[str]:
@@ -194,6 +189,3 @@ def _logical_skeleton(passage: str) -> list[str]:
         picked = [sentences[0].strip()]
     return picked
 
-
-if __name__ == "__main__":
-    print("sessions module")

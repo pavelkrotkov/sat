@@ -20,7 +20,12 @@
   {% else %}
     <p class="muted">no official rationale stored; lesson below is rule-derived.</p>
   {% endif %}
-  <p><label>why your choice fails:</label> {{ r.key_text[:220] }} vs yours: {{ r.chosen_text[:220] }}</p>
+  <p><label>decisive evidence:</label></p>
+  <ul>
+    <li><b>{{ r.key_letter }}</b> works because: {{ r.key_text }}</li>
+    {% if not r.correct %}<li><b>{{ r.chosen_letter or '—' }}</b> fails: {{ r.chosen_text or 'no answer recorded' }}</li>{% endif %}
+  </ul>
+  {% if r.why_key_works %}<details><summary>official reasoning for the key</summary><p>{{ r.why_key_works }}</p></details>{% endif %}
   {% if r.lesson %}<p class="lesson"><label>rule:</label> {{ r.lesson }}</p>{% endif %}
 </article>
 {% endfor %}

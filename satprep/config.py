@@ -21,8 +21,6 @@ SUBJECT = "Reading and Writing"
 PROTECTED_MOD = 4
 PROTECTED_TARGET = 3  # => 25% protected
 
-SEEN_BENCH_PCT_TARGET = (75, 25)  # documentation of intent
-
 # ---------------------------------------------------------------- taxonomy --
 
 OFFICIAL_DOMAINS = [
@@ -168,10 +166,10 @@ TAG_LESSONS: dict[str, str] = {
 WEAKNESS_PRIOR_STRENGTH = 6.0      # beta prior pseudo-count (smoothing)
 WEAKNESS_RECENCY_HALF_LIFE_DAYS = 120.0
 WEAKNESS_SHRINK_N = 10.0           # evidence shrinkage toward baseline
+SLOW_CORRECT_THRESHOLD_S = 90.0    # spec section 12: slow-correct friction signal
 CONFIDENT_WRONG_MULTIPLIER = 1.6   # wrong + confidence 3 counts extra
 LOW_CONF_CORRECT_WEIGHT = 0.55     # correct-but-guessing proves less
 MASTERY_RECENT_CORRECT_DISCOUNT = 0.25
-DIFFICULTY_BOOST = {"hard": 1.2, "medium": 0.5, "easy": 0.0, "": 0.7}
 
 # ------------------------------------------------------------- sampler -----
 # Relative weights for the additive selection score (see sampler.py).
@@ -182,6 +180,7 @@ W_FRESH_MATCHING_WEAK = 2.5
 W_FRESH_NEIGHBOR = 1.0
 W_DUE_INCORRECT = 2.0
 W_TRANSFER_CORRECT = 0.9
+W_SEMANTIC_BIAS = 0.6
 W_HARD_DIFFICULTY = 1.2
 W_NOT_SEEN_LONG_AGO = 1.2
 PENALTY_EXPOSURE_PER_SEEN = 0.55
@@ -190,3 +189,13 @@ PENALTY_RECENT_MASTERED = 1.0
 
 DEFAULT_DRILL_SIZE = 12
 HARD_MIXED_SIZE = 27
+
+# Skills representing hard semantic/reasoning work (spec section 16).
+SEMANTIC_SKILLS = {
+    "Inferences",
+    "Command of Evidence",
+    "Words in Context",
+    "Text Structure and Purpose",
+    "Cross-Text Connections",
+    "Central Ideas and Details",
+}

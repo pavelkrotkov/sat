@@ -51,7 +51,7 @@ def test_correct_low_confidence_proves_less_than_confident_correct(db):
                            source="bluebook_test", pool="historical", tags=("shaky_tag",))
     q_solid = add_question(conn, passage="F", stem="F?", choices=["a", "b"], correct="A",
                            source="bluebook_test", pool="historical", tags=("solid_tag",))
-    for i in range(10):
+    for i in range(20):
         add_attempt(conn, q_shaky, 1, confidence=1, session_id=f"s{i}")
         add_attempt(conn, q_solid, 1, confidence=3, session_id=f"d{i}")
     conn.commit()
