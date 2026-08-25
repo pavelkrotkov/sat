@@ -55,3 +55,39 @@ def test_known_external_ids_roundtrip(db):
     conn, path = db
     insert_qbank_row(conn, _normalize(DETAIL, META), batch="b1")
     assert "ext-1" in known_external_ids(conn)
+
+
+def test_cross_source_duplicate_enriches_choiceless_row(db):
+    """Greptile P1: bank item matching a choice-less Bluebook row backfills choices."""
+    from satprep.fingerprint import fingerprint
+    from satprep.qbank_fetch import insert_qbank_row
+
+    # historical stats-only row: no choices, unknown difficulty
+    add_question(db[0], passage="shared passage", stem="shared stem?",
+                 choices=[], correct="A", source="bluebook_test", pool="historical")
+    # force the bank row to collide: compute fingerprint of its content and pre-insert
+    from satprep.db import connect as c2
+    conn = db[0]
+    conn.execute("DELETE FROM questions")
+    conn.execute("""INSERT INTO questions (fingerprint, source, source_test, source_question_number,
+                     module, passage, stem, choices_json, correct_letter, rationale, images_json,
+                     official_domain, official_skill, skill_source, difficulty, pool,
+                     seen_benchmark, is_new_bank, import_batch, imported_at, provenance_json)
+                   VALUES ('preseed', 'bluebook_test', 'SAT Practice Test 4', '7', '',
+                     'shared passage', 'shared stem?', '[]', 'A', '', '[]',
+                     '', '', 'unknown', '', 'historical', 0, 0, '', '2026-01-01', '{}')""")
+    fp = fingerprint("shared passage", "shared stem?", ["opt a", "opt b", "opt c", "opt d"])
+    # the incoming bank row must hash identically: same passage/stem/choice texts
+    row = {"passage": "shared passage", "stem": "shared stem?",
+           "choices": [{"letter": l, "text": t, "is_correct": l == "B"}
+                       for l, t in zip("ABCD", ["opt a", "opt b", "opt c", "opt d"])],
+           "correct": "B", "difficulty": "hard", "skill": "Inferences",
+           "domain": "Information and Ideas", "ext_id": "ext-9"}
+    outcome = insert_qbank_row(conn, row, batch="b9")
+    assert outcome == "duplicate"
+    r = conn.execute("SELECT choices_json, difficulty, official_skill, pool, is_new_bank FROM questions WHERE fingerprint='preseed'").fetchone()
+    import json as _json
+    assert len(_json.loads(r["choices_json"])) == 4   # enriched, now displayable
+    assert r["difficulty"] == "hard" and r["official_skill"] == "Inferences"
+    assert r["pool"] == "historical"                  # still not counted fresh
+    assert r["is_new_bank"] == 0

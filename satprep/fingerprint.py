@@ -51,3 +51,17 @@ def pool_for_fingerprint(fp: str) -> str:
     """
     digest = int(hashlib.sha256(("pool:" + fp).encode()).hexdigest(), 16)
     return "protected_benchmark" if digest % config.PROTECTED_MOD == config.PROTECTED_TARGET else "fresh_training"
+
+
+def fingerprint_loose(passage: str | None, stem: str | None) -> str:
+    """Content hash ignoring answer choices.
+
+    Used ONLY to reconcile choice-less records (Bluebook omits options on
+    correct-answer reviews) against full official bank items. Same normalized
+    passage + stem is treated as the same question.
+    """
+    payload = "\n".join([
+        "P:" + normalize_text(passage),
+        "Q:" + normalize_text(stem),
+    ])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()

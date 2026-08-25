@@ -186,12 +186,18 @@ def select_drill(mode: str, count: int | None = None, seed: str | None = None,
             ],
         }
 
-    include_pools = {
+    pools_by_mode = {
         "targeted_drill": ("historical", "fresh_training"),
         "error_clinic": ("historical",),
         "transfer_drill": ("historical", "fresh_training"),
         "hard_mixed": ("historical", "fresh_training"),
-    }[mode]
+    }
+    if mode not in pools_by_mode:
+        conn.close()
+        raise ValueError(
+            f"Invalid mode: {mode}. Must be one of: {', '.join(sorted(pools_by_mode))}, fresh_benchmark"
+        )
+    include_pools = pools_by_mode[mode]
 
     candidates = _load_candidates(conn, include_pools)
     scored = [score_candidate(c, weakness, focus_tags, now) for c in candidates]
@@ -248,7 +254,9 @@ def select_drill(mode: str, count: int | None = None, seed: str | None = None,
             chosen_ids[c.row["id"]] = "best_available"
 
     for qid, bucket in chosen_ids.items():
-        cand = next(c for c in scored if c.row["id"] == qid)
+        cand = next((c for c in scored if c.row["id"] == qid), None)
+        if cand is None:
+            continue
         plan_items.append({
             "question_id": qid,
             "weight": cand.score,

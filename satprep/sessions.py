@@ -38,7 +38,30 @@ def submit_answer(session_id: str, question_id: int, chosen_letter: str,
                   confidence: int, time_ms: int, db_path=None) -> dict:
     """Record one attempt; returns {'correct', 'key'} without revealing more."""
     conn = connect(db_path)
+    sess = conn.execute("SELECT status, plan_json, mode FROM sessions WHERE id=?", (session_id,)).fetchone()
+    if sess is None:
+        conn.close()
+        raise ValueError(f"Unknown session {session_id}")
+    if sess["status"] != "open":
+        conn.close()
+        raise ValueError(f"Session {session_id} is not open")
+    plan_ids = {item["question_id"] for item in json.loads(sess["plan_json"])}
+    if question_id not in plan_ids:
+        conn.close()
+        raise ValueError(f"Question {question_id} is not part of session {session_id}")
+    prior = conn.execute(
+        "SELECT id, correct, chosen_letter FROM attempts WHERE session_id=? AND question_id=?",
+        (session_id, question_id),
+    ).fetchone()
+    if prior is not None:
+        # retried submission: never double-count attempts or spacing updates
+        conn.close()
+        return {"correct": bool(prior["correct"]), "key": "",
+                "error_tags": [], "duplicate": True}
     q = conn.execute("SELECT * FROM questions WHERE id=?", (question_id,)).fetchone()
+    if q is None:
+        conn.close()
+        raise ValueError(f"Question {question_id} not found")
     correct = 1 if q["correct_letter"].upper() == chosen_letter.strip().upper()[:1] else 0
     confidence = max(1, min(3, int(confidence)))
     conn.execute(

@@ -18,6 +18,7 @@ import time
 import urllib.error
 import urllib.request
 
+from .config import SKILL_TO_DOMAIN
 from .db import connect
 
 BASE = "https://qbank-api.collegeboard.org/msreportingquestionbank-prod/questionbank"
@@ -129,9 +130,48 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
     if len(choices) < 2 or not correct:
         return "invalid"
     fp = fpmod.fingerprint(row["passage"], row["stem"], [c["text"] for c in choices])
-    exists = conn.execute("SELECT id FROM questions WHERE fingerprint=?", (fp,)).fetchone()
-    if exists:
+    exists = conn.execute(
+        "SELECT id, choices_json, official_skill, difficulty, pool FROM questions WHERE fingerprint=?",
+        (fp,),
+    ).fetchone()
+
+    def _reconcile(target_id: int) -> str:
+        skill = exists_row["official_skill"] or row.get("skill", "")
+        domain = SKILL_TO_DOMAIN.get(skill, "") if skill else ""
+        diff = (row.get("difficulty") or "").strip().lower()
+        conn.execute(
+            """UPDATE questions SET choices_json=?, correct_letter=?,
+                   difficulty=CASE WHEN ?!='' THEN ? ELSE difficulty END,
+                   official_skill=?, official_domain=?,
+                   skill_source=CASE WHEN ?!='' THEN 'reconciled' ELSE skill_source END,
+                   rationale=CASE WHEN rationale='' THEN ? ELSE rationale END
+               WHERE id=?""",
+            (json.dumps(choices), row["correct"], diff, diff,
+             skill, domain,
+             exists_row["official_skill"] == "" and bool(skill),
+             row.get("rationale", ""), target_id),
+        )
         return "duplicate"
+
+    exists_row = None
+    if exists:
+        # Cross-source match (spec section 2): never counted as fresh.
+        exists_row = exists
+        if exists["choices_json"] == "[]" and choices:
+            return _reconcile(exists["id"])
+        return "duplicate"
+
+    # Loose reconciliation pass: a stored choice-less record whose normalized
+    # passage+stem matches this bank item IS the same question seen before.
+    loose = fpmod.fingerprint_loose(row["passage"], row["stem"])
+    for cand in conn.execute(
+        """SELECT id, passage, stem, official_skill, choices_json FROM questions
+           WHERE active=1 AND choices_json='[]'"""
+    ).fetchall():
+        if fpmod.fingerprint_loose(cand["passage"], cand["stem"]) != loose:
+            continue
+        exists_row = cand
+        return _reconcile(cand["id"])
     pool = fpmod.pool_for_fingerprint(fp)
     diff = (row.get("difficulty") or "").strip().lower()
     conn.execute(
