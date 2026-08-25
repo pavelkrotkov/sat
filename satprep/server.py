@@ -6,8 +6,6 @@ traces).
 """
 
 import json
-import time
-import uuid
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -17,7 +15,6 @@ from fastapi.templating import Jinja2Templates
 from . import config
 from .analytics import full_dashboard
 from .db import connect
-from .sampler import select_drill
 
 app = FastAPI(title="satprep", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=str(config.REPO_ROOT / "satprep" / "static")), name="static")

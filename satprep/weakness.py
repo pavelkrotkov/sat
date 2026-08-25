@@ -33,7 +33,6 @@ def _parse_ts(value: str | None) -> datetime | None:
     except ValueError:
         return None
     if ts.tzinfo is None:
-        from datetime import timezone as _tz
         return ts.astimezone()
     return ts
 
@@ -107,10 +106,10 @@ def compute_weakness(conn=None, now: datetime | None = None) -> dict:
             "wrong": int(wrong), "correct": int(correct),
             "alpha_wrong": round(alpha_wrong, 3),
             "alpha_right": round(alpha_right, 3),
-            "slow_correct": len([t for t in times]),
+            "slow_correct": len(times),
         }, rows, slow_penalty
 
-    def score_from(stats: dict, rows, slow_penalty: float = 0.0) -> tuple[float, dict]:
+    def score_from(stats: dict, slow_penalty: float = 0.0) -> tuple[float, dict]:
         denom = stats["alpha_wrong"] + stats["alpha_right"] + k
         post_err = (stats["alpha_wrong"] + k * prior_p) / denom if denom else prior_p
         score = post_err * 100.0 + min(6.0, slow_penalty)
@@ -135,7 +134,7 @@ def compute_weakness(conn=None, now: datetime | None = None) -> dict:
         stats, rows, slow_pen = collect("q.official_skill", skill)
         if stats["n"] == 0 and stats["n_raw"] == 0:
             continue
-        sc, st = score_from(stats, rows, slow_pen)
+        sc, st = score_from(stats, slow_pen)
         out["skill"][skill] = {"score": sc, **st}
 
     # reasoning tags (demand tags)
@@ -176,7 +175,7 @@ def compute_weakness(conn=None, now: datetime | None = None) -> dict:
                  "alpha_right": round(alpha_right, 3)}
         if wrong + correct == 0:
             continue
-        sc, st = score_from(stats, trows, min(6.0, 1.2 * hard_wrong + 0.3 * slow_correct))
+        sc, st = score_from(stats, min(6.0, 1.2 * hard_wrong + 0.3 * slow_correct))
         out["tag"][tag] = {"score": sc, **stats}
 
     # diagnosed student error tags

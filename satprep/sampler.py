@@ -17,6 +17,16 @@ from .ingest import utc_now
 from .spacing import is_due
 
 
+def row_field(state, key: str, default=None):
+    """Read a field from sqlite3.Row or a duck-typed state object."""
+    if state is None:
+        return default
+    try:
+        return state[key]
+    except (KeyError, TypeError, IndexError):
+        return getattr(state, key, default)
+
+
 class Candidate:
     __slots__ = ("row", "tags", "components", "score", "state", "hist_correct")
 
@@ -105,10 +115,7 @@ def score_candidate(cand: Candidate, weakness: dict, focus_tags: list[str] | Non
 
     state = cand.state
     def _sget(key, default=0):
-        try:
-            return state[key] if state is not None else default
-        except (KeyError, TypeError, IndexError):
-            return getattr(state, key, default)
+        return row_field(state, key, default)
 
     seen_times = _sget("times_seen")
     hist_correct = cand.hist_correct if q["pool"] == "historical" else False
@@ -198,17 +205,13 @@ def select_drill(mode: str, count: int | None = None, seed: str | None = None,
 
     def bucket_pool(name: str) -> list[Candidate]:
         if name == "old_wrong_due":
-            def _due(c):
-                st = c.state
-                if st is None:
-                    return True
-                try:
-                    return not st["due_at"] or is_due(st)
-                except (KeyError, TypeError, IndexError):
-                    return not getattr(st, "due_at", None) or is_due(st)
             # due = never scheduled / never drilled in-app yet, or schedule says due
             pred = lambda c: (  # noqa: E731
-                c.row["pool"] == "historical" and c.hist_correct == 0 and _due(c)
+                c.row["pool"] == "historical"
+                and c.hist_correct == 0
+                and (c.state is None
+                     or row_field(c.state, "due_at") is None
+                     or is_due(c.state))
             )
         elif name == "old_correct_transfer":
             pred = lambda c: (  # noqa: E731

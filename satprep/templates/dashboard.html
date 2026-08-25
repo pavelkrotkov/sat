@@ -45,6 +45,18 @@
   <a class="btn ghost" href="/benchmark">Fresh benchmark</a>
 </section>
 
+{% if d.recent_trend %}
+<section>
+  <h2>Recent trend by reasoning tag (last sessions)</h2>
+  <table>
+    <tr><th>tag</th><th>n</th><th>recent accuracy %</th></tr>
+    {% for t in d.recent_trend %}
+      <tr><td>{{ t.tag }}</td><td>{{ t.recent_n }}</td><td>{{ t.recent_accuracy }}</td></tr>
+    {% endfor %}
+  </table>
+</section>
+{% endif %}
+
 <section>
   <h2>High-value misconceptions</h2>
   <ul class="misconceptions">
