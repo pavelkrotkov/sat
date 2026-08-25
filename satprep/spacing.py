@@ -42,34 +42,28 @@ def update_after_attempt(conn, question_id: int, correct: int, confidence: int,
     ).fetchone()
     prev = row["interval_days"] if row else 1.0
     interval, due_at = next_due(prev, correct, confidence, now)
-    existing = conn.execute(
-        "SELECT 1 FROM question_state WHERE question_id=?", (question_id,)
-    ).fetchone()
-    if existing is None:
-        conn.execute(
-            """INSERT INTO question_state (question_id, times_seen, times_correct, times_wrong,
-                                           confident_wrong_streak, interval_days, due_at, last_attempted_at)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (question_id, 1, 1 if correct else 0, 0 if correct else 1,
-             1 if (not correct and confidence >= 3) else 0,
-             interval, due_at, now.isoformat()),
-        )
-    else:
-        conn.execute(
-            """UPDATE question_state SET
-                 times_seen = times_seen + 1,
-                 times_correct = times_correct + ?,
-                 times_wrong = times_wrong + ?,
-                 confident_wrong_streak = CASE WHEN ?=0 AND ?>=3
-                     THEN confident_wrong_streak+1 ELSE 0 END,
-                 interval_days = ?,
-                 due_at = ?,
-                 last_attempted_at = ?
-               WHERE question_id = ?""",
-            (1 if correct else 0, 0 if correct else 1,
-             int(correct), int(confidence or 0),
-             interval, due_at, now.isoformat(), question_id),
-        )
+    conf = int(confidence or 0)
+    conn.execute(
+        """INSERT INTO question_state (question_id, times_seen, times_correct, times_wrong,
+                                       confident_wrong_streak, interval_days, due_at, last_attempted_at)
+           VALUES (?, 1, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(question_id) DO UPDATE SET
+             times_seen = times_seen + 1,
+             times_correct = times_correct + excluded.times_correct,
+             times_wrong = times_wrong + excluded.times_wrong,
+             confident_wrong_streak = CASE WHEN ?=0 AND ?>=3
+                 THEN question_state.confident_wrong_streak + 1 ELSE 0 END,
+             interval_days = excluded.interval_days,
+             due_at = excluded.due_at,
+             last_attempted_at = excluded.last_attempted_at""",
+        (
+            question_id,
+            1 if correct else 0, 0 if correct else 1,
+            1 if (not correct and conf >= 3) else 0,
+            interval, due_at, now.isoformat(),
+            int(bool(correct)), conf,
+        ),
+    )
     return interval
 
 

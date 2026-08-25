@@ -187,7 +187,10 @@ def admin(request: Request):
 def admin_why(request: Request, sid: str):
     conn = connect()
     plan_row = conn.execute("SELECT plan_json, mode, seed FROM sessions WHERE id=?", (sid,)).fetchone()
-    items = json.loads(plan_row["plan_json"]) if plan_row else []
+    if not plan_row:
+        conn.close()
+        return RedirectResponse("/admin", status_code=303)
+    items = json.loads(plan_row["plan_json"])
     enriched = []
     for it in items:
         q = conn.execute(

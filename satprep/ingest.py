@@ -292,46 +292,24 @@ def ingest_qbank(path_or_dir=None, batch_name: str | None = None, db_path=None) 
         except Exception as exc:
             print(f"[warn] could not parse {path.name}: {exc}")
             continue
+        from .qbank_fetch import insert_qbank_row
+
         for row in rows:
             stats["rows_seen"] += 1
             choices = _normalize_qbank_choices(row["choices"])
             correct = _letter(row["correct"])
-            if not correct:
-                # maybe key spelled out inside a field like "Correct Answer: B"
-                pass
             if len(choices) < 2 or not correct:
                 stats["invalid"] += 1
                 continue
             for c in choices:
                 c["is_correct"] = c["letter"] == correct
-            fp = fpmod.fingerprint(row["passage"], row["stem"], [c["text"] for c in choices])
-            exists = conn.execute("SELECT id FROM questions WHERE fingerprint=?", (fp,)).fetchone()
-            if exists:
+            row["choices"] = choices
+            row["correct"] = correct
+            outcome = insert_qbank_row(conn, row, batch)
+            if outcome == "added":
+                stats["added_fresh"] += 1
+            elif outcome == "duplicate":
                 stats["duplicates"] += 1
-                continue
-            pool = fpmod.pool_for_fingerprint(fp)
-            diff = row["difficulty"].strip().lower()
-            if diff not in ("easy", "medium", "hard"):
-                diff = ""
-            conn.execute(
-                """INSERT INTO questions
-                   (fingerprint, source, source_test, source_question_number, module,
-                    passage, stem, choices_json, correct_letter, rationale, images_json,
-                    official_domain, official_skill, skill_source, difficulty,
-                    pool, seen_benchmark, is_new_bank, import_batch, imported_at, provenance_json)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,1,?,?,?)""",
-                (
-                    fp, "college_board_question_bank", batch, row["ext_id"], "",
-                    row["passage"], row["stem"], json.dumps(choices), correct,
-                    row["rationale"], "[]",
-                    row["domain"], row["skill"],
-                    "metadata" if row["skill"] else "unknown",
-                    diff, pool, batch, utc_now(),
-                    json.dumps({"import_file": str(path)}),
-                ),
-            )
-            conn.execute("INSERT INTO question_state (question_id) VALUES (?)", (conn.execute("SELECT last_insert_rowid()").fetchone()[0],))
-            stats["added_fresh"] += 1
     conn.commit()
     conn.close()
     return stats

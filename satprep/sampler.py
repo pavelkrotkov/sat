@@ -43,15 +43,6 @@ MODE_COMPOSITIONS = {
     "fresh_benchmark": {"protected_unseen": None},  # size set by caller
 }
 
-NEIGHBOR_SKILLS = {
-    "Inferences": ["Central Ideas and Details", "Command of Evidence"],
-    "Command of Evidence": ["Inferences", "Central Ideas and Details"],
-    "Central Ideas and Details": ["Inferences", "Text Structure and Purpose"],
-    "Text Structure and Purpose": ["Central Ideas and Details", "Cross-Text Connections"],
-    "Cross-Text Connections": ["Text Structure and Purpose", "Inferences"],
-    "Words in Context": ["Near synonym distinction"],
-}
-
 
 def _load_candidates(conn, include_pools: tuple[str, ...]) -> list[Candidate]:
     qmarks = ",".join("?" for _ in include_pools)
@@ -105,6 +96,9 @@ def score_candidate(cand: Candidate, weakness: dict, focus_tags: list[str] | Non
     skill = q["official_skill"]
     if skill and skill in weak_skills:
         cand.add(f"skill-weakness:{skill}", config.W_SKILL_WEAKNESS * weak_skills[skill]["score"] / 100.0)
+    if skill in config.SEMANTIC_SKILLS:
+        # spec section 16: default bias toward hard semantic/reasoning content
+        cand.add("semantic-content-bias", config.W_SEMANTIC_BIAS)
 
     diff_bonus = {"hard": config.W_HARD_DIFFICULTY, "medium": 0.5}.get(q["difficulty"], 0.7)
     cand.add("difficulty" + (f":{q['difficulty']}" if q["difficulty"] else ":unknown"), diff_bonus)
@@ -127,6 +121,8 @@ def score_candidate(cand: Candidate, weakness: dict, focus_tags: list[str] | Non
             cand.add("fresh-neighbor-skill", config.W_FRESH_NEIGHBOR)
     if q["pool"] == "historical" and due_now and hist_correct == 0:
         cand.add("due-for-review-previously-wrong", config.W_DUE_INCORRECT)
+    if q["pool"] == "historical" and hist_correct == 1 and matched:
+        cand.add("transfer-correct-shares-weak-tag", config.W_TRANSFER_CORRECT)
 
     exposure_penalty = min(config.PENALTY_EXPOSURE_CAP, config.PENALTY_EXPOSURE_PER_SEEN * seen_times)
     if exposure_penalty:
@@ -167,12 +163,13 @@ def select_drill(mode: str, count: int | None = None, seed: str | None = None,
     focus_tags = [focus_tag] if focus_tag else None
 
     if mode == "fresh_benchmark":
+        n = count or config.DEFAULT_DRILL_SIZE
         rows = conn.execute(
             """SELECT * FROM questions
-               WHERE active=1 AND pool='protected_benchmark' AND seen_benchmark=0
-               ORDER BY RANDOM() LIMIT ?""",
-            (count or config.DEFAULT_DRILL_SIZE,),
+               WHERE active=1 AND pool='protected_benchmark' AND seen_benchmark=0"""
         ).fetchall()
+        rng.shuffle(rows)
+        rows = rows[:n]
         conn.close()
         return {
             "session_id": "", "mode": mode, "seed": seed, "algo_version": ALGO_VERSION,
@@ -201,10 +198,23 @@ def select_drill(mode: str, count: int | None = None, seed: str | None = None,
 
     def bucket_pool(name: str) -> list[Candidate]:
         if name == "old_wrong_due":
-            pred = lambda c: c.row["pool"] == "historical" and c.hist_correct == 0  # noqa: E731
+            def _due(c):
+                st = c.state
+                if st is None:
+                    return True
+                try:
+                    return not st["due_at"] or is_due(st)
+                except (KeyError, TypeError, IndexError):
+                    return not getattr(st, "due_at", None) or is_due(st)
+            # due = never scheduled / never drilled in-app yet, or schedule says due
+            pred = lambda c: (  # noqa: E731
+                c.row["pool"] == "historical" and c.hist_correct == 0 and _due(c)
+            )
         elif name == "old_correct_transfer":
-            pred = lambda c: c.row["pool"] == "historical" and c.tags and any(  # noqa: E731
-                t in weakness.get("tag", {}) and weakness["tag"][t]["score"] >= 45 for t in c.tags
+            pred = lambda c: (  # noqa: E731
+                c.row["pool"] == "historical"
+                and c.hist_correct == 1  # previously answered CORRECTLY only
+                and any(t in weakness.get("tag", {}) and weakness["tag"][t]["score"] >= 45 for t in c.tags)
             )
         elif name == "fresh_weak":
             pred = lambda c: c.row["pool"] == "fresh_training" and (c.tags or c.row["official_skill"])  # noqa: E731
@@ -242,7 +252,7 @@ def select_drill(mode: str, count: int | None = None, seed: str | None = None,
             "why": cand.components,
             "bucket": bucket,
         })
-    plan_items.sort(key=lambda i: i["question_id"])
+    rng.shuffle(plan_items)  # spec section 10: randomize presentation order
 
     import uuid
     session_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{mode}:{seed}").hex[:16]
