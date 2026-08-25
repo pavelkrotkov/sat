@@ -141,6 +141,7 @@ class WrongQuestionRecord:
     skill: str = ""
     my_answer: str = ""
     correct_answer: str = ""
+    answer_status: str = ""
     question_text: str = ""
     question_html: str = ""
     answer_choices: list[str] = field(default_factory=list)
@@ -169,7 +170,12 @@ def parse_args() -> argparse.Namespace:
         "--max-questions-per-test",
         type=int,
         default=0,
-        help="Limit how many incorrect questions to scrape per test.",
+        help="Limit how many questions to scrape per test.",
+    )
+    parser.add_argument(
+        "--all-questions",
+        action="store_true",
+        help="Scrape every question row (correct and incorrect), not just incorrect ones.",
     )
     parser.add_argument(
         "--force-login-prompt",
@@ -577,9 +583,10 @@ class ReviewParser:
                   const correctChoiceIndex = answerItems.findIndex((item) =>
                     item.classList.contains("correct") || item.querySelector(".correct")
                   );
-                  const statusText = normalize(
-                    root.querySelector(".answer-panel p.incorrect, .answer-panel p.correct, .answer-panel p.response")?.innerText
-                  );
+                  const statusNode = root.querySelector(".answer-panel p.incorrect")
+                    || root.querySelector(".answer-panel p.correct")
+                    || root.querySelector(".answer-panel p.response");
+                  const statusText = normalize(statusNode?.innerText);
                   const rationaleHeader = Array.from(root.querySelectorAll(".answer-panel h3"))
                     .find((node) => /rationale/i.test(normalize(node.innerText)));
                   let explanation = "";
@@ -609,6 +616,10 @@ class ReviewParser:
                     explanation,
                     explanation_html: explanationHtmlParts.join("\\n"),
                     status_text: statusText,
+                    status_kind: statusNode
+                      ? (statusNode.classList.contains("incorrect") ? "Incorrect"
+                        : statusNode.classList.contains("correct") ? "Correct" : "")
+                      : "",
                     domain,
                     correct_choice_letter: correctChoiceIndex >= 0 ? String.fromCharCode(65 + correctChoiceIndex) : "",
                   };
@@ -647,13 +658,27 @@ class ReviewParser:
         if domain:
             structured["domain"] = domain
         status_text = normalize_space(data.get("status_text"))
+        status_kind = normalize_space(data.get("status_kind"))
+        if status_kind not in {"Correct", "Incorrect"}:
+            lowered_status = status_text.lower()
+            if re.search(r"\bincorrect\b", lowered_status):
+                status_kind = "Incorrect"
+            elif re.search(r"\bcorrect\b", lowered_status):
+                status_kind = "Correct"
+            else:
+                status_kind = ""
+        if status_kind:
+            structured["answer_status"] = status_kind
         if status_text:
             selected_match = re.search(r"You selected answer\s+([A-H])", status_text, flags=re.IGNORECASE)
             correct_match = re.search(r"correct answer is\s+([A-H])", status_text, flags=re.IGNORECASE)
             if selected_match:
-                structured["my_answer"] = f"{selected_match.group(1).upper()}; Incorrect"
+                suffix = "Correct" if status_kind == "Correct" else "Incorrect"
+                structured["my_answer"] = f"{selected_match.group(1).upper()}; {suffix}"
             if correct_match:
                 structured["correct_answer"] = correct_match.group(1).upper()
+            if status_kind == "Correct" and not structured.get("my_answer") and structured.get("correct_answer"):
+                structured["my_answer"] = f"{structured['correct_answer']}; Correct"
         correct_choice = normalize_space(data.get("correct_choice_letter"))
         if correct_choice and not structured.get("correct_answer"):
             structured["correct_answer"] = correct_choice
@@ -1664,9 +1689,10 @@ class SatBluebookScraper:
                 f"Saved a diagnostic screenshot to {screenshot or 'artifacts/errors/'}."
             )
         self.set_view_all(page)
-        row_targets = self.incorrect_row_targets(page)
+        row_targets = self.question_row_targets(page)
         total_rows = len(row_targets)
-        LOG.info("%s: found %d incorrect question rows.", test_name, total_rows)
+        mode_label = "question" if self.args.all_questions else "incorrect question"
+        LOG.info("%s: found %d %s rows.", test_name, total_rows, mode_label)
         if self.args.max_questions_per_test > 0:
             row_targets = row_targets[: self.args.max_questions_per_test]
         for row_position, row_target in enumerate(row_targets):
@@ -1792,7 +1818,7 @@ class SatBluebookScraper:
                 return
             page.wait_for_timeout(300)
 
-    def incorrect_row_targets(self, page: Page) -> list[dict[str, Any]]:
+    def question_row_targets(self, page: Page) -> list[dict[str, Any]]:
         rows = self.questions_table_rows(page)
         targets: list[dict[str, Any]] = []
         try:
@@ -1803,9 +1829,12 @@ class SatBluebookScraper:
             row = rows.nth(index)
             row_text = self.safe_inner_text(row)
             lowered = row_text.lower()
-            if "incorrect" not in lowered:
-                continue
             if "questions overview" in lowered or "your answer" in lowered:
+                continue
+            if self.args.all_questions:
+                if not re.search(r"\breview\b", lowered):
+                    continue
+            elif "incorrect" not in lowered:
                 continue
             targets.append(
                 {
@@ -1875,7 +1904,18 @@ class SatBluebookScraper:
                 if match:
                     question_number = match.group(1) or match.group(2)
                     break
-        my_answer = next((value for value in values if "incorrect" in value.lower()), "")
+        my_answer = ""
+        answer_status = ""
+        for value in values:
+            match = re.search(r"^([A-H]);\s*(correct|incorrect)$", value.strip(), flags=re.IGNORECASE)
+            if match:
+                my_answer = f"{match.group(1).upper()}; {match.group(2).capitalize()}"
+                answer_status = match.group(2).capitalize()
+                break
+        if not my_answer:
+            my_answer = next((value for value in values if "incorrect" in value.lower()), "")
+            if my_answer:
+                answer_status = "Incorrect"
         correct_answer = values[1] if len(values) >= 2 else ""
         domain = values[4] if len(values) >= 5 else ""
         return {
@@ -1885,6 +1925,7 @@ class SatBluebookScraper:
             "domain": domain,
             "my_answer": my_answer,
             "correct_answer": correct_answer,
+            "answer_status": answer_status,
             "source_row_text": row_text,
         }
 
@@ -1941,6 +1982,7 @@ class SatBluebookScraper:
             skill=merged.get("skill", ""),
             my_answer=merged.get("my_answer", ""),
             correct_answer=merged.get("correct_answer", ""),
+            answer_status=merged.get("answer_status", ""),
             question_text=merged.get("question_text", ""),
             question_html=merged.get("question_html", ""),
             answer_choices=merged.get("answer_choices", []),
