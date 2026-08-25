@@ -11,3 +11,12 @@ artifacts/
 
 # OS metadata
 .DS_Store
+
+# satprep generated state
+data/
+.venv/
+imports/
+
+# python packaging
+*.egg-info/
+dist/

@@ -1,0 +1,28 @@
+[project]
+name = "satprep"
+version = "0.1.0"
+description = "Local-first personalized SAT R&W training system built on the scraped Bluebook history."
+requires-python = ">=3.11"
+dependencies = [
+    "beautifulsoup4>=4.12",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+]
+
+[project.scripts]
+satprep = "satprep.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["satprep"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Why was this question selected? <span class="muted">{{ mode }} · seed {{ seed }}</span></h1>
+{% for it in items %}
+<details class="why">
+  <summary>question {{ it.question_id }} — weight {{ it.weight }} — bucket {{ it.bucket }} <span class="muted">{{ it.meta.official_skill }} · {{ it.meta.source_test }} Q{{ it.meta.source_question_number }}</span></summary>
+  <table class="weights">
+  {% for label, delta in it['why'] %}
+    <tr><td>{{ label }}</td><td class="{{ 'pos' if delta >= 0 else 'neg' }}">{{ '%+.1f'|format(delta) }}</td></tr>
+  {% endfor %}
+    <tr><th>selection weight</th><th>{{ it.weight }}</th></tr>
+  </table>
+  <a href="/admin/tags/{{ it.question_id }}">inspect/correct tags →</a>
+</details>
+{% endfor %}
+{% endblock %}

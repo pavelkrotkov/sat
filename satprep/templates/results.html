@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Results</h1>
+<section class="cards">
+  <div class="card"><span class="big">{{ summary.correct }}/{{ summary.total }}</span><label>correct</label></div>
+  <div class="card"><span class="big">{{ summary.confident_wrong }}</span><label>confidently wrong</label></div>
+  <div class="card"><span class="big">{{ summary.low_conf_right }}</span><label>lucky rights</label></div>
+  <div class="card"><span class="big">{{ summary.median_time_s or '—' }}s</span><label>median time</label></div>
+</section>
+<p>The weakness profile has been updated with this session.</p>
+<a class="btn" href="/review/{{ sid }}">Review mistakes</a>
+<a class="btn ghost" href="/">Dashboard</a>
+{% endblock %}
