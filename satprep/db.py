@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS attempts (
     confidence INTEGER DEFAULT 0,          -- 1..3; 0 = not collected (historical)
     time_ms INTEGER DEFAULT 0,
     mode TEXT DEFAULT '',
-    attempted_at TEXT NOT NULL
+    attempted_at TEXT NOT NULL,
+    error_tags TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_attempts_q ON attempts(question_id);
 CREATE INDEX IF NOT EXISTS idx_attempts_time ON attempts(attempted_at);
@@ -119,7 +120,15 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Lightweight column migrations for pre-existing databases."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(attempts)")}
+    if "error_tags" not in cols:
+        conn.execute("ALTER TABLE attempts ADD COLUMN error_tags TEXT NOT NULL DEFAULT '[]'")
 
 
 @contextmanager

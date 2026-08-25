@@ -58,19 +58,24 @@ def cmd_drill(args) -> None:
         print("No questions available for this mode. Run 'satprep ingest' first.")
         return
     sid = plan["session_id"]
-    start = datetime.now().astimezone()
     print(f"\n== {mode} | session {sid} | {len(questions)} questions ==\n")
     for i, q in enumerate(questions, 1):
         print(f"--- Question {i}/{len(questions)} ---")
         if q["passage"]:
             print(q["passage"][:1800])
             print()
+        for img in q.get("images") or []:
+            print(f"  [figure: {img}]")
         print(q["stem"])
         for c in sorted(q["choices"], key=lambda c: c["letter"]):
             print(f"  {c['letter']}. {c['text'][:300]}")
+        q_start = datetime.now().astimezone()  # spec section 12: per-question time
         letter, conf = _interactive_answer()
-        ms = int((datetime.now().astimezone() - start).total_seconds() * 1000 / max(1, i))
+        ms = int((datetime.now().astimezone() - q_start).total_seconds() * 1000)
         res = submit_answer(sid, q["id"], letter, conf, ms)
+        if res.get("duplicate"):
+            print("already answered - not recorded again\n")
+            continue
         print(("correct" if res["correct"] else f"wrong (key: {res['key']})") + "\n")
     summary = complete_session(sid)
     print("summary:", json.dumps(summary))

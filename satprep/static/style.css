@@ -43,3 +43,5 @@ form button[type=submit] { margin-top: .3rem; }
 .weights td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
 .pos { color: var(--accent); } .neg { color: var(--bad); }
 tr.ok td:nth-child(6) { color: var(--accent); }
+
+.figures img { max-width: 100%; border: 1px solid var(--line); border-radius: 8px; margin: .4rem 0; }

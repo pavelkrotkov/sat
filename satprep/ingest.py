@@ -26,10 +26,11 @@ def utc_now() -> str:
 
 
 def _letter(value: str | None) -> str:
+    """Extract an answer letter; labels like 'Correct Answer: B' yield B, not C."""
     if not value:
         return ""
-    m = re.search(r"([A-H])", str(value).upper())
-    return m.group(1) if m else ""
+    matches = re.findall(r"(?:^|[^A-Za-z])([A-H])(?:[^A-Za-z]|$)", str(value).upper())
+    return matches[-1] if matches else ""
 
 
 def _status_of(rec: dict) -> tuple[str, str]:

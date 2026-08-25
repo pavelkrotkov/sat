@@ -29,6 +29,7 @@ def create_session(mode: str, count: int | None = None, seed: str | None = None,
                 "passage": row["passage"],
                 "stem": row["stem"] or "Select the best answer.",
                 "choices": json.loads(row["choices_json"]),
+                "images": json.loads(row["images_json"] or "[]"),
             })
     conn.close()
     return {"plan": plan, "questions": questions}
@@ -64,7 +65,7 @@ def submit_answer(session_id: str, question_id: int, chosen_letter: str,
         raise ValueError(f"Question {question_id} not found")
     correct = 1 if q["correct_letter"].upper() == chosen_letter.strip().upper()[:1] else 0
     confidence = max(1, min(3, int(confidence)))
-    conn.execute(
+    cur = conn.execute(
         """INSERT INTO attempts (session_id, question_id, chosen_letter, correct,
                                  confidence, time_ms, mode, attempted_at)
            VALUES (?,?,?,?,?,?,(SELECT mode FROM sessions WHERE id=?),?)""",
@@ -80,6 +81,10 @@ def submit_answer(session_id: str, question_id: int, chosen_letter: str,
     elif not correct:
         error_tags = diagnose_attempt(conn, question_id, choices,
                                       q["correct_letter"], chosen_letter[:1].upper())
+        # spec section 6/13: diagnoses belong to THIS attempt, so older
+        # reviews never inherit a later attempt's trap analysis
+        conn.execute("UPDATE attempts SET error_tags=? WHERE id=?",
+                     (json.dumps(error_tags), cur.lastrowid))
     conn.commit()
     conn.close()
     return {"correct": bool(correct), "key": q["correct_letter"], "error_tags": error_tags}

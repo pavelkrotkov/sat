@@ -8,7 +8,7 @@
 <ul class="taglist">
 {% for t in tags %}
   <li>{{ t.tag }} <em>({{ t.origin }})</em>
-    {% if t.origin == 'manual' %}<form method="post" action="/admin/tags/{{ q.id }}" class="inline">
+    {% if t.origin != 'suppressed' %}<form method="post" action="/admin/tags/{{ q.id }}" class="inline">
       <input type="hidden" name="tag" value="{{ t.tag }}"><input type="hidden" name="action" value="remove">
       <button type="submit">×</button></form>{% endif %}
   </li>
