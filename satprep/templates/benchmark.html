@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Fresh Benchmark</h1>
+<p><b>{{ remaining }}</b> protected unseen questions remain.</p>
+<p class="muted">These have never been shown in drills, review, or search. After you answer each one it joins the normal training pool. This is the closest thing here to an honest measurement.</p>
+<form method="post" action="/benchmark/begin">
+  <label>Questions <input type="number" name="count" value="8" min="4" max="25"></label>
+  <button type="submit" {{ 'disabled' if remaining < 4 }}>Begin benchmark</button>
+</form>
+{% endblock %}

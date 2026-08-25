@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Question History</h1>
+<h2>Sessions</h2>
+<table>
+<tr><th>when</th><th>mode</th><th>status</th><th>answered</th><th>correct</th><th>why?</th></tr>
+{% for s in sessions %}
+<tr>
+  <td>{{ s.created_at[:19] }}</td><td>{{ s.mode }}</td><td>{{ s.status }}</td>
+  <td>{{ s.answered }}</td><td>{{ s.correct }}</td>
+  <td><a href="/admin/why/{{ s.id }}">trace</a></td>
+</tr>
+{% endfor %}
+</table>
+<h2>Recent attempts</h2>
+<table>
+<tr><th>when</th><th>mode</th><th>yours</th><th>key</th><th>conf</th><th>ok</th><th>skill</th></tr>
+{% for a in attempts %}
+<tr class="{{ 'ok' if a.correct else 'bad' }}">
+  <td>{{ a.attempted_at[:16] }}</td><td>{{ a.mode }}</td>
+  <td>{{ a.chosen_letter }}</td><td>{{ a.correct_letter }}</td>
+  <td>{{ a.confidence }}</td><td>{{ '✓' if a.correct else '✗' }}</td><td>{{ a.official_skill }}</td>
+</tr>
+{% endfor %}
+</table>
+{% endblock %}

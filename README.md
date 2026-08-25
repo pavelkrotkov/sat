@@ -1,4 +1,129 @@
-# SAT Bluebook Wrong-Question Scraper
+# SAT R&W Trainer (satprep)
+
+Local-first, personalized SAT Reading & Writing training built on top of this repo's
+scraped Bluebook history. **Train the weakness, not the remembered question.**
+
+Part 1 of this README documents the original scraper; satprep documentation follows.
+
+---
+
+## satprep
+
+### Architecture
+
+```
+raw sources (read-only)          generated state
+----------------------------     ------------------------------------------
+outputs/wrong_questions.json --> data/satprep.db (SQLite canonical store)
+artifacts/html/*.html        -->   questions (normalized, fingerprinted)
+                                   attempts  (history + in-app sessions)
+imports/*.csv|json (CB bank) -->   tags, weaknesses, sessions, traces
+```
+
+* `satprep/ingest.py` rebuilds the corpus from raw sources; **idempotent** — reruns
+  never duplicate questions or attempt history.
+* Questions are fingerprinted by normalized `passage + stem + choices`
+  (`satprep/fingerprint.py`), so duplicates across exports/banks collapse.
+* Fresh Question Bank items split deterministically ~75/25 into
+  `fresh_training` / `protected_benchmark` (`pool_for_fingerprint`). Protected
+  items are excluded at the query level from every mode except Fresh Benchmark,
+  and enter the normal pool only after being answered there.
+* Two-level taxonomy: official CB skills (metadata or deterministic stem rules,
+  never guessed) plus a granular reasoning-tag layer (`satprep/tagger.py`,
+  `satprep/config.py`). Rule-based tagging is cached in SQLite; an
+  `llm_tag_cache` table exists for optional out-of-band LLM classification;
+  manual corrections via the admin UI always win.
+* Weakness model (`satprep/weakness.py`): recency-decayed, confidence-weighted
+  Bayesian error rate per skill/tag with evidence shrinkage, difficulty bonus,
+  and a mastery discount. Uses ALL historical questions, not just errors.
+* Sampler (`satprep/sampler.py`): additive, fully explainable weights; every drill
+  stores its seed, algorithm version, chosen IDs and per-question score breakdown.
+* Spacing (`satprep/spacing.py`): SM-2-lite intervals; confidently-wrong → soonest,
+  confidently-correct → longest; exact repeats yield to same-tag different-question.
+
+### Install & run
+
+Requires [uv](https://docs.astral.sh/uv/).
+
+```bash
+uv sync                      # create venv from pyproject.toml
+uv run satprep ingest        # build/rebuild corpus from outputs/ + imports/
+uv run satprep analyze       # compute weakness profile
+uv run satprep serve         # web UI on http://127.0.0.1:8765
+```
+
+CLI: `ingest | analyze | drill [--count N] [--mode M] [--focus TAG] | benchmark |
+stats | serve`. Web UI and CLI share the same DB and selection logic.
+
+### Ingesting new official material
+
+**Automated (preferred):** the College Board Educator Question Bank is public
+(no login). satprep talks to its JSON API directly:
+
+```bash
+uv run satprep fetch-qbank                  # all SAT R&W items (~1.8k)
+uv run satprep fetch-qbank --hard-only      # only CB-marked Hard items
+uv run satprep fetch-qbank --domains INI,CAS
+```
+
+Each import becomes a dated batch (`eqb-YYYYMMDD`); reruns skip already-stored
+`external_id`s, so it is fully resumable/idempotent.
+
+**Manual:** drop official exports (CSV/JSON) into:
+
+```
+imports/          # gitignored
+```
+
+Supported keys (case-insensitive): `passage/stimulus`, `stem/question`,
+`choices/answer_options`, `correct/correct_answer/answer_key`, `domain`, `skill`,
+`difficulty`, `rationale/explanation`. Each file becomes a batch; fingerprints are
+matched against everything already stored, so bank questions overlapping the eight
+practice tests are not double-counted as fresh. The custom PDFs under `cram_claude/`
+are third-party approximations and are deliberately *not* ingested as official.
+
+Note: Bluebook's review view omits answer options for correctly-answered questions,
+so 425 historical questions are stats-only (no choice text stored anywhere in this
+repo). They still inform the weakness model but cannot be displayed until choice
+data is imported from an official source.
+
+### Screens
+
+Dashboard · Start Drill · Question (passage/A-D/confidence/timer) · Results ·
+Review Mistakes · Weakness Analysis · History · Fresh Benchmark · Admin
+(selection traces "why was this picked?" + tag inspector/corrector).
+
+Drill modes: **Targeted Drill** (12q, 4 old-miss / 3 correct-but-relevant /
+5 fresh targets, gracefully degraded), **Error Clinic**, **Transfer Drill**
+(no memorized errors), **Hard Mixed Module** (27q), **Fresh Benchmark**.
+
+### How selection works
+
+Each candidate accumulates transparent components, e.g.:
+`weak-tag:hypothesis_vs_result +1.2`, `fresh-matching-weak-tags +2.5`,
+`difficulty:hard +1.2`, `exposure-penalty −1.1` → total weight. Inspect any
+session at `/admin/why/<session_id>`.
+
+### Backup
+
+Everything lives in one file: copy `data/satprep.db` (plus `data/satprep.db-wal`
+if present). Raw sources remain untouched; a full rebuild is always possible via
+`rm data/satprep.db && uv run satprep ingest`.
+
+### Tests
+
+```bash
+uv run pytest -q
+```
+
+Includes leakage tests hammering every mode × 25 seeds asserting protected
+benchmark questions can never appear outside benchmark mode.
+
+---
+
+# Original scraper docs
+
+## SAT Bluebook Wrong-Question Scraper
 
 This repo contains a local Playwright scraper for College Board My Practice. It opens Chromium, pauses for manual login when needed, walks SAT Practice Tests, captures incorrect-question review pages, and exports multiple report formats.
 
@@ -42,75 +167,5 @@ Most generated/debug files are ignored by Git via `.gitignore`.
    - per-question HTML snapshots and figure assets
 6. Checkpoints JSON after each question for crash recovery, then renders the full report set once at the end using batched Pandoc conversions if `pandoc` is available
 
-## Setup
-
-Install the Playwright browser once:
-
-```bash
-uv run --with playwright python -m playwright install chromium
-```
-
-Optional but recommended for standalone HTML export:
-
-```bash
-brew install pandoc
-```
-
-Required for `export_md_to_pdf.sh`:
-
-- Google Chrome or Chromium installed locally
-
-## Usage
-
-Run the live scraper:
-
-```bash
-uv run scrape_wrong_questions.py
-```
-
-Useful flags:
-
-```bash
-uv run scrape_wrong_questions.py --slow-mo 200 --max-tests 2
-uv run scrape_wrong_questions.py --max-questions-per-test 3
-uv run scrape_wrong_questions.py --overwrite-existing
-uv run scrape_wrong_questions.py --fresh
-uv run scrape_wrong_questions.py --force-login-prompt
-uv run scrape_wrong_questions.py --headless
-uv run scrape_wrong_questions.py --save-page-visits --save-error-screenshots
-uv run scrape_wrong_questions.py --save-question-screenshots
-```
-
-Rebuild reports from an existing JSON file plus saved HTML snapshots without opening the browser:
-
-```bash
-uv run scrape_wrong_questions.py --rebuild-from-json outputs/wrong_questions.json
-```
-
-Export any Markdown file to PDF through Pandoc HTML plus headless Chrome printing:
-
-```bash
-./export_md_to_pdf.sh outputs/wrong_questions.md
-./export_md_to_pdf.sh cram_gemini/answer_tactics.md /tmp/answer_tactics.pdf
-```
-
-Notes for the PDF script:
-
-- it uses the repo-level [pandoc-report.css](/Users/pavel/dev/sat/pandoc-report.css) by default
-- it applies a print-time `90%` zoom
-- override the stylesheet with `CSS_PATH=/path/to/pandoc-report.css`
-- override the browser binary with `CHROME_BIN=/path/to/chrome`
-
-## Notes
-
-- The scraper runs headed by default because College Board login is often interactive.
-- Progress is checkpointed to `wrong_questions.json` after each question, so interrupted runs can be resumed without regenerating every report on the hot path.
-- If a run is interrupted, use `--rebuild-from-json outputs/wrong_questions.json` to regenerate Markdown, drill-pack, and HTML outputs from the saved snapshots.
-- Report generation and rebuilds batch Pandoc fragment conversions internally now, so end-of-run rendering is much faster than the original one-fragment-per-process approach.
-- `artifacts/html/` and `artifacts/images/` are the default artifact set because they support rebuilds and parser fixes.
-- The heavier debug artifacts are opt-in via `--save-page-visits`, `--save-question-screenshots`, and `--save-error-screenshots`.
-- If you delete `playwright_profile/`, the next run will recreate it and require a fresh login.
-- `wrong_questions.llm.md` is the best file to hand to an LLM for pattern analysis.
-- Standalone HTML export is skipped automatically if `pandoc` is not installed.
-- The repo-level [pandoc-report.css](/Users/pavel/dev/sat/pandoc-report.css) is the source of truth for report styling; the scraper copies it into `outputs/` for standalone HTML exports.
-- `export_md_to_pdf.sh` depends on both `pandoc` and a local Chrome/Chromium binary.
+Run it with `--all-questions` to capture every row (correct rows get an
+`answer_status` field too), which is what fed satprep's corpus.

@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Start Drill</h1>
+<p class="muted">pools: historical {{ pool_counts.get('historical',0) }} · fresh {{ pool_counts.get('fresh_training',0) }} · protected {{ pool_counts.get('protected_benchmark',0) }} (never shown outside Benchmark)</p>
+<form method="post" action="/begin">
+  <label>Mode
+    <select name="mode">
+      <option value="targeted_drill">Targeted Drill — 12q / ~15min, weakness-weighted</option>
+      <option value="error_clinic">Error Clinic — mostly due errors</option>
+      <option value="transfer_drill">Transfer Drill — correct-but-relevant + fresh analogs</option>
+      <option value="hard_mixed">Hard Mixed Module — 27q / ~32min</option>
+    </select>
+  </label>
+  <label>Count <input type="number" name="count" min="0" max="40" placeholder="(mode default)"></label>
+  <label>Focus tag (optional)
+    <select name="focus_tag">
+      <option value="">auto (weakest)</option>
+      {% for t in weak_tags %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+      <optgroup label="all tags">
+      {% for t in reasoning_tags %}{% if t not in weak_tags %}<option value="{{ t }}">{{ t }}</option>{% endif %}{% endfor %}
+      </optgroup>
+    </select>
+  </label>
+  <button type="submit">Begin</button>
+</form>
+{% endblock %}
