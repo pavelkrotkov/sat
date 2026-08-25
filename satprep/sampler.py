@@ -205,6 +205,7 @@ def select_drill(mode: str, count: int | None = None, seed: str | None = None,
     comp = MODE_COMPOSITIONS[mode]
     total_target = count or sum(v for v in comp.values() if v) or config.DEFAULT_DRILL_SIZE
     scale = total_target / max(1, sum(v for v in comp.values() if v))
+    # largest-remainder allocation so rounded shares sum EXACTLY to target
 
     chosen_ids: dict[int, str] = {}
     plan_items = []
@@ -233,24 +234,31 @@ def select_drill(mode: str, count: int | None = None, seed: str | None = None,
             pred = lambda c: True  # noqa: E731
         return [c for c in scored if c.row["id"] not in chosen_ids and pred(c)]
 
-    for bucket, share in comp.items():
-        want = int(round((share or 0) * scale)) if share else 0
+    active = [(b, (share or 0) * scale) for b, share in comp.items() if share]
+    wants = {b: int(x) for b, x in active}
+    leftover = total_target - sum(wants.values())
+    fracs = sorted(active, key=lambda bx: -(bx[1] - int(bx[1])))
+    for b, _x in fracs[:leftover]:
+        wants[b] += 1
+    for bucket, want in wants.items():
         pool_cands = bucket_pool(bucket)
-        if bucket == "old_wrong_due":
-            pool_cands.sort(key=lambda c: -c.score)
-        else:
-            pool_cands.sort(key=lambda c: -c.score)
-        take = pool_cands[:want]
-        for c in take:
+        pool_cands.sort(key=lambda c: -c.score)
+        for c in pool_cands[:want]:
             chosen_ids[c.row["id"]] = bucket
 
-    # graceful fill if composition underfilled
+    # graceful fill if composition underfilled; each mode keeps its guarantee
     remaining = total_target - len(chosen_ids)
     if remaining > 0:
-        rest = sorted([c for c in scored if c.row["id"] not in chosen_ids], key=lambda c: -c.score)
-        # jitter among near-equal top scores so order isn't fully deterministic per seed... but seed IS fixed:
-        rng.shuffle(rest[:max(6, remaining)])
-        for c in rest[:remaining]:
+        def _eligible_fallback(c):
+            if c.row["id"] in chosen_ids:
+                return False
+            if mode == "transfer_drill" and c.row["pool"] == "historical" and c.hist_correct == 0:
+                return False  # spec section 11C: transfer drills contain no memorized errors
+            return True
+        rest = [c for c in scored if _eligible_fallback(c)]
+        rest.sort(key=lambda c: -c.score)
+        rng.shuffle(rest)  # jitter among candidates; slice AFTER shuffling
+        for c in rest[:max(0, remaining)]:
             chosen_ids[c.row["id"]] = "best_available"
 
     for qid, bucket in chosen_ids.items():
@@ -267,6 +275,9 @@ def select_drill(mode: str, count: int | None = None, seed: str | None = None,
 
     import uuid
     session_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{mode}:{seed}").hex[:16]
+    while conn.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,)).fetchone():
+        # seed reuse or same-second default seeds must never resurrect a session
+        session_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{mode}:{seed}:{uuid.uuid4()}").hex[:16]
     result = {
         "session_id": session_id,
         "mode": mode,

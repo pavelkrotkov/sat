@@ -145,7 +145,7 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
                    official_skill=?, official_domain=?,
                    skill_source=CASE WHEN ?!='' THEN 'reconciled' ELSE skill_source END,
                    rationale=CASE WHEN rationale='' THEN ? ELSE rationale END
-               WHERE id=?""",
+               WHERE id=?""",  # noqa: E501
             (json.dumps(choices), row["correct"], diff, diff,
              skill, domain,
              exists_row["official_skill"] == "" and bool(skill),
@@ -159,6 +159,20 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
         exists_row = exists
         if exists["choices_json"] == "[]" and choices:
             return _reconcile(exists["id"])
+        # full duplicate: still reconcile authoritative metadata the historical
+        # scrape lacked (difficulty was never recorded by Bluebook)
+        diff = (row.get("difficulty") or "").strip().lower()
+        skill = row.get("skill", "")
+        conn.execute(
+            """UPDATE questions SET
+                   difficulty=CASE WHEN difficulty='' AND ?!='' THEN ? ELSE difficulty END,
+                   official_skill=CASE WHEN official_skill='' AND ?!='' THEN ? ELSE official_skill END,
+                   official_domain=CASE WHEN official_skill='' AND ?!='' THEN ? ELSE official_domain END,
+                   rationale=CASE WHEN rationale='' AND ?!='' THEN ? ELSE rationale END
+               WHERE id=?""",
+            (diff, diff, skill, skill, skill, SKILL_TO_DOMAIN.get(skill, ""),
+             row.get("rationale", ""), row.get("rationale", ""), exists["id"]),
+        )
         return "duplicate"
 
     # Loose reconciliation pass: a stored choice-less record whose normalized

@@ -113,8 +113,14 @@ def transfer_performance(conn) -> dict:
         tag_map.setdefault(r["question_id"], []).append(r["tag"])
 
     rows = conn.execute(
-        """SELECT a.correct AS c, q.pool AS pool FROM attempts a
-           JOIN questions q ON q.id=a.question_id WHERE a.mode != 'historical'"""
+        """SELECT a.correct AS c,
+                  CASE WHEN s.mode='fresh_benchmark' THEN 'benchmark_session'
+                       ELSE '' END AS bench,
+                  q.pool AS pool
+           FROM attempts a
+           JOIN sessions s ON s.id=a.session_id
+           JOIN questions q ON q.id=a.question_id
+           WHERE a.mode != 'historical'"""
     ).fetchall()
     buckets = {
         "old_exact": [0, 0],
@@ -123,12 +129,12 @@ def transfer_performance(conn) -> dict:
         "protected_benchmark": [0, 0],
     }
     for r in rows:
-        if r["pool"] == "historical":
-            buckets["old_exact"][0] += r["c"]
-            buckets["old_exact"][1] += 1
-        elif r["pool"] == "protected_benchmark":
+        if r["bench"] == "benchmark_session":
             buckets["protected_benchmark"][0] += r["c"]
             buckets["protected_benchmark"][1] += 1
+        elif r["pool"] == "historical":
+            buckets["old_exact"][0] += r["c"]
+            buckets["old_exact"][1] += 1
         elif any(t in weak_tag_names for t in tag_map.get(r["question_id"], []) or []):
             buckets["new_same_weak_tag"][0] += r["c"]
             buckets["new_same_weak_tag"][1] += 1

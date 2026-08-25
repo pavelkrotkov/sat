@@ -18,7 +18,9 @@ from .db import connect
 
 app = FastAPI(title="satprep", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=str(config.REPO_ROOT / "satprep" / "static")), name="static")
+app.mount("/figures", StaticFiles(directory=str(config.REPO_ROOT / "artifacts" / "images")), name="figures")
 templates = Jinja2Templates(directory=str(config.REPO_ROOT / "satprep" / "templates"))
+templates.env.filters["basename"] = lambda p: str(p).rsplit("/", 1)[-1]
 
 
 def _q(conn, qid: int):
@@ -40,6 +42,7 @@ def dashboard(request: Request):
 def start_drill(request: Request):
     from .config import REASONING_TAGS
 
+    focus = request.query_params.get("focus") or ""
     conn = connect()
     weak = conn.execute(
         "SELECT entity FROM weakness_cache WHERE entity_type='tag' ORDER BY score DESC LIMIT 12"
@@ -51,6 +54,7 @@ def start_drill(request: Request):
     return templates.TemplateResponse(request, "start.html", {"weak_tags": [w["entity"] for w in weak],
         "reasoning_tags": sorted(REASONING_TAGS),
         "pool_counts": counts,
+        "focus": focus,
     })
 
 
@@ -225,13 +229,18 @@ async def admin_tags_save(request: Request, qid: int, tag: str = Form(...),
 
     conn = connect()
     if action == "add":
+        # manual add wins over rule/llm origin (spec section 7, step 4)
         conn.execute(
-            "INSERT OR IGNORE INTO question_tags (question_id, tag, origin, created_at) VALUES (?,?,'manual',?)",
+            """INSERT INTO question_tags (question_id, tag, origin, created_at)
+               VALUES (?,?,'manual',?)
+               ON CONFLICT(question_id, tag) DO UPDATE SET origin='manual'""",
             (qid, tag, utc_now()),
         )
     else:
+        # removing a rule tag suppresses it: full tagging runs respect this
         conn.execute(
-            "DELETE FROM question_tags WHERE question_id=? AND tag=?", (qid, tag),
+            "INSERT OR REPLACE INTO question_tags (question_id, tag, origin, created_at) VALUES (?,?,'suppressed',?)",
+            (qid, tag, utc_now()),
         )
     conn.commit()
     conn.close()

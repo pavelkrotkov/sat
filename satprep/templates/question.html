@@ -5,6 +5,11 @@
 <form method="post" action="/answer/{{ sid }}/{{ idx }}">
   <input type="hidden" name="question_id" value="{{ q.id }}">
   {% if q.passage %}<div class="passage">{% for p in q.passage.split('\n') %}<p>{{ p }}</p>{% endfor %}</div>{% endif %}
+  {% if q.images %}
+    <div class="figures">
+    {% for img in q.images %}<img src="/figures/{{ img|basename }}" alt="question figure {{ loop.index }}" loading="lazy">{% endfor %}
+    </div>
+  {% endif %}
   <p class="stem">{{ q.stem }}</p>
   {% set letters = q.choices|map(attribute='letter')|list %}
   <div class="choices">

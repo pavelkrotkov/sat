@@ -14,10 +14,10 @@
   <label>Count <input type="number" name="count" min="0" max="40" placeholder="(mode default)"></label>
   <label>Focus tag (optional)
     <select name="focus_tag">
-      <option value="">auto (weakest)</option>
-      {% for t in weak_tags %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+      <option value="" {% if not focus %}selected{% endif %}>auto (weakest)</option>
+      {% for t in weak_tags %}<option value="{{ t }}" {% if focus == t %}selected{% endif %}>{{ t }}</option>{% endfor %}
       <optgroup label="all tags">
-      {% for t in reasoning_tags %}{% if t not in weak_tags %}<option value="{{ t }}">{{ t }}</option>{% endif %}{% endfor %}
+      {% for t in reasoning_tags %}{% if t not in weak_tags %}<option value="{{ t }}" {% if focus == t %}selected{% endif %}>{{ t }}</option>{% endif %}{% endfor %}
       </optgroup>
     </select>
   </label>

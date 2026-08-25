@@ -99,3 +99,41 @@ def test_exposure_penalty_demotes_seen_questions(db):
     score_candidate(seen, weakness)
     assert fresh.score > seen.score
     c.close()
+
+
+def test_bucket_allocation_never_overshoots(db):
+    path = _seed(db)
+    for n in (11, 13, 14, 27):
+        plan = select_drill("targeted_drill", count=n, seed=f"cap{n}", db_path=path)
+        assert len(plan["items"]) == n, f"count={n} returned {len(plan['items'])}"
+
+
+def test_seed_reuse_creates_distinct_sessions(db):
+    from satprep.db import connect
+    from satprep.sampler import persist_session
+
+    path = _seed(db)
+    p1 = select_drill("hard_mixed", count=6, seed="same", db_path=path)
+    sid1 = persist_session(p1, db_path=path)
+    p2 = select_drill("hard_mixed", count=6, seed="same", db_path=path)
+    sid2 = persist_session(p2, db_path=path)
+    assert sid1 != sid2
+    conn = connect(path)
+    rows = conn.execute(
+        "SELECT id, status FROM sessions WHERE id IN (?,?)", (sid1, sid2)
+    ).fetchall()
+    conn.close()
+    assert len(rows) == 2  # first session not clobbered
+
+
+def test_transfer_fallback_excludes_memorized_errors(db):
+    conn, _ = db
+    path = _seed(db, n_hist_wrong=30, n_hist_right=2, n_fresh=2)
+    from satprep.db import connect as c2
+    c = c2(path)
+    wrong_ids = {r[0] for r in c.execute(
+        "SELECT question_id FROM attempts WHERE correct=0 AND mode='historical'")}
+    c.close()
+    plan = select_drill("transfer_drill", count=25, seed="over", db_path=path)
+    ids = {i["question_id"] for i in plan["items"]}
+    assert not ids & wrong_ids
