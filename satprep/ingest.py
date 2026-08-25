@@ -284,6 +284,8 @@ def ingest_qbank(path_or_dir=None, batch_name: str | None = None, db_path=None) 
     files = [p for p in sorted(base.rglob("*")) if p.is_file() and p.suffix.lower() in (".json", ".ndjson", ".csv")]
     stats = {"files": len(files), "rows_seen": 0, "added_fresh": 0, "duplicates": 0, "invalid": 0}
 
+    from .qbank_fetch import insert_qbank_row
+
     conn = connect(db_path)
     for path in files:
         batch = batch_name or path.stem
@@ -292,8 +294,6 @@ def ingest_qbank(path_or_dir=None, batch_name: str | None = None, db_path=None) 
         except Exception as exc:
             print(f"[warn] could not parse {path.name}: {exc}")
             continue
-        from .qbank_fetch import insert_qbank_row
-
         for row in rows:
             stats["rows_seen"] += 1
             choices = _normalize_qbank_choices(row["choices"])
@@ -305,6 +305,7 @@ def ingest_qbank(path_or_dir=None, batch_name: str | None = None, db_path=None) 
                 c["is_correct"] = c["letter"] == correct
             row["choices"] = choices
             row["correct"] = correct
+            row["_provenance"] = {"import_file": str(path), "external_id": row.get("ext_id", "")}
             outcome = insert_qbank_row(conn, row, batch)
             if outcome == "added":
                 stats["added_fresh"] += 1

@@ -112,6 +112,10 @@ def cmd_stats(args) -> None:
         print(f"  {t['risk_score']:5.1f}  {t['tag']:<36} {t['correct']}/{t['seen']}")
     print("\ntransfer:")
     print(json.dumps(d["transfer"], indent=2))
+    if d.get("recent_trend"):
+        print("\nrecent trend by tag:")
+        for t in d["recent_trend"]:
+            print(f"  {t['tag']:<36} {t['recent_accuracy']:>5}%  (n={t['recent_n']})")
 
 
 def cmd_serve(args) -> None:

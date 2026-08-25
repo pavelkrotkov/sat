@@ -2,7 +2,6 @@
 
 import json
 import statistics
-from datetime import datetime
 
 from . import config
 from .db import connect

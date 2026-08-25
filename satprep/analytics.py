@@ -1,6 +1,5 @@
 """Analytics for the dashboard: patterns, not anecdotes (spec section 14)."""
 
-import json
 from datetime import datetime, timedelta, timezone
 
 from .db import connect
@@ -183,16 +182,6 @@ def corpus_summary_conn(conn) -> dict:
 def corpus_summary(db_path=None) -> dict:
     conn = connect(db_path)
     summary = corpus_summary_conn(conn)
-    conn.close()
-    return summary  # noqa: E731
-    summary = {
-        "questions_total": q("SELECT COUNT(*) FROM questions WHERE active=1"),
-        "rw_historical": q("SELECT COUNT(*) FROM questions WHERE pool='historical'"),
-        "fresh_training": q("SELECT COUNT(*) FROM questions WHERE pool='fresh_training'"),
-        "protected_benchmark_unseen": q("SELECT COUNT(*) FROM questions WHERE pool='protected_benchmark' AND seen_benchmark=0"),
-        "attempts_total": q("SELECT COUNT(*) FROM attempts"),
-        "sessions_total": q("SELECT COUNT(*) FROM sessions WHERE status='completed'"),
-    }
     conn.close()
     return summary
 

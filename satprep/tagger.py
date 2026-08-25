@@ -273,8 +273,8 @@ def diagnose_error(correct_text: str, student_text: str) -> list[str]:
         return []
     c, s = correct_text.lower(), student_text.lower()
 
-    s_abs, s_hedge = bool(_ABSOLUTES.search(s)), bool(_HEDGES.search(s))
-    c_abs, c_hedge = bool(_ABSOLUTES.search(c)), bool(_HEDGES.search(c))
+    s_abs = bool(_ABSOLUTES.search(s))
+    c_abs = bool(_ABSOLUTES.search(c))
     s_intensifier = bool(re.search(r"\b(primary|main|sole(ly)?|direct(ly)?|chief|foremost)\b", s))
     c_hedged = bool(re.search(r"\b(may|might|could|contribute|suggests?|appears?)\b", c))
     if s_abs and not c_abs:
@@ -306,7 +306,6 @@ def diagnose_error(correct_text: str, student_text: str) -> list[str]:
 
 def tag_question_row(conn, qid: int, passage: str, stem: str, choices: list[str],
                      correct_letter: str = "") -> list[str]:
-    from . import config
     from .ingest import utc_now
 
     tags = reasoning_tags(passage, stem, choices)

@@ -18,7 +18,6 @@ import time
 import urllib.error
 import urllib.request
 
-from . import config
 from .db import connect
 
 BASE = "https://qbank-api.collegeboard.org/msreportingquestionbank-prod/questionbank"
@@ -149,7 +148,8 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
             row.get("domain", ""), row.get("skill", ""),
             "metadata" if row.get("skill") else "unknown",
             diff if diff in ("easy", "medium", "hard") else "",
-            pool, batch, utc_now(), json.dumps({"external_id": row.get("ext_id", "")}),
+            pool, batch, utc_now(),
+            json.dumps(row.get("_provenance") or {"external_id": row.get("ext_id", "")}),
         ),
     )
     qid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
