@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="progress"><div style="width: {{ (idx * 100 / total)|round(0) }}%"></div></div>
+<p class="muted">Question {{ idx + 1 }} of {{ total }} · session {{ sid[:8] }} · <span id="timer">0:00</span></p>
+<form method="post" action="/answer/{{ sid }}/{{ idx }}">
+  <input type="hidden" name="question_id" value="{{ q.id }}">
+  {% if q.passage %}<div class="passage">{% for p in q.passage.split('\n') %}<p>{{ p }}</p>{% endfor %}</div>{% endif %}
+  {% if q.images %}
+    <div class="figures">
+    {% for img in q.images %}<img src="/figures/{{ img|basename }}" alt="question figure {{ loop.index }}" loading="lazy">{% endfor %}
+    </div>
+  {% endif %}
+  <p class="stem">{{ q.stem }}</p>
+  {% set letters = q.choices|map(attribute='letter')|list %}
+  <div class="choices">
+  {% for c in q.choices %}
+    <label class="choice"><input type="radio" name="letter" value="{{ c.letter }}" required>
+      <b>{{ c.letter }}.</b> {{ c.text }}</label>
+  {% endfor %}
+  </div>
+  <fieldset class="confidence">
+    <legend>Confidence</legend>
+    <label><input type="radio" name="confidence" value="3" required>3 — confident, can prove it</label>
+    <label><input type="radio" name="confidence" value="2">2 — narrowed to two</label>
+    <label><input type="radio" name="confidence" value="1">1 — uncertain / guess</label>
+  </fieldset>
+  <button type="submit" onclick="sendTime()">Next →</button>
+</form>
+<script>
+const t0 = Date.now();
+setInterval(() => {
+  const s = Math.floor((Date.now() - t0) / 1000);
+  document.getElementById('timer').textContent = Math.floor(s/60) + ':' + String(s%60).padStart(2,'0');
+}, 1000);
+function sendTime(){
+  const f = document.querySelector('form');
+  const inp = document.createElement('input');
+  inp.type='hidden'; inp.name='elapsed_ms'; inp.value=Date.now()-t0;
+  f.appendChild(inp);
+}
+</script>
+{% endblock %}
