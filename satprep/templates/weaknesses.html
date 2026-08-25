@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Weakness Analysis</h1>
+<div class="cols">
+<section>
+<h2>Official skills</h2>
+<table>
+<tr><th>skill</th><th>score</th><th>wrong</th><th>n*</th></tr>
+{% for name, score, st in skills %}
+<tr><td>{{ name }}</td><td>{{ score }}</td><td>{{ st.get('wrong','—') }}</td><td>{{ st.get('n', st.get('wrong',0)) }}</td></tr>
+{% endfor %}
+</table>
+<p class="muted">*n = recency-decayed effective sample</p>
+</section>
+<section>
+<h2>Reasoning tags</h2>
+<table>
+<tr><th>tag</th><th>score</th><th>wrong/correct</th></tr>
+{% for name, score, st in tags %}
+<tr><td><a href="/start?focus={{ name }}">{{ name }}</a></td><td>{{ score }}</td><td>{{ st.get('wrong','—') }}/{{ st.get('correct','—') }}</td></tr>
+{% endfor %}
+</table>
+</section>
+</div>
+{% endblock %}

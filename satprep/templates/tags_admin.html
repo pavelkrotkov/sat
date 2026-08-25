@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Tag inspector — question {{ q.id }} <span class="muted">{{ q.source_test }} · pool {{ q.pool }}</span></h1>
+<p>{{ q.passage[:400] }}</p>
+<p><b>{{ q.stem }}</b></p>
+<ul>{% for c in q.choices %}<li>{{ c.letter }}. {{ c.text }} {{ '(KEY)' if c.is_correct }}</li>{% endfor %}</ul>
+<h2>Current tags</h2>
+<ul class="taglist">
+{% for t in tags %}
+  <li>{{ t.tag }} <em>({{ t.origin }})</em>
+    {% if t.origin == 'manual' %}<form method="post" action="/admin/tags/{{ q.id }}" class="inline">
+      <input type="hidden" name="tag" value="{{ t.tag }}"><input type="hidden" name="action" value="remove">
+      <button type="submit">×</button></form>{% endif %}
+  </li>
+{% endfor %}
+{% for t in err_tags %}<li class="err">error: {{ t.tag }} <em>({{ t.diagnosis_source }})</em></li>{% endfor %}
+</ul>
+<form method="post" action="/admin/tags/{{ q.id }}" class="inline">
+  <select name="tag">{% for t in all_tags %}<option>{{ t }}</option>{% endfor %}</select>
+  <input type="hidden" name="action" value="add"><input type="hidden" name="origin" value="manual">
+  <button type="submit">add manual tag</button>
+</form>
+{% endblock %}

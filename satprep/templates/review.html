@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Review Mistakes</h1>
+{% if not reviews %}<p>Clean session — nothing to review.</p>{% endif %}
+{% for r in reviews %}
+<article class="review">
+  <header>
+    <span class="pill {{ 'bad' if not r.correct else 'warn' }}">{{ 'WRONG' if not r.correct else 'shaky' }} · conf {{ r.confidence }}</span>
+    <b>your {{ r.chosen_letter or '—' }}</b> → key <b>{{ r.key_letter }}</b>
+    <span class="muted">{{ r.official_skill }}</span>
+  </header>
+  {% if r.reasoning_tags %}<p><label>reasoning tags:</label> {{ r.reasoning_tags|join(', ') }}</p>{% endif %}
+  {% if r.trap_tags %}<p><label>trap:</label> {{ r.trap_tags|join(' + ') }}</p>{% endif %}
+  {% if r.passage_skeleton %}
+    <p><label>logical skeleton (derived):</label></p>
+    <ul class="skeleton">{% for s in r.passage_skeleton %}<li>{{ s }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% if r.rationale_official %}
+    <details open><summary>official rationale</summary><p>{{ r.rationale_official[:1200] }}</p></details>
+  {% else %}
+    <p class="muted">no official rationale stored; lesson below is rule-derived.</p>
+  {% endif %}
+  <p><label>why your choice fails:</label> {{ r.key_text[:220] }} vs yours: {{ r.chosen_text[:220] }}</p>
+  {% if r.lesson %}<p class="lesson"><label>rule:</label> {{ r.lesson }}</p>{% endif %}
+</article>
+{% endfor %}
+<a href="/results/{{ sid }}">Back to results</a>
+{% endblock %}
