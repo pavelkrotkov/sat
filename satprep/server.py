@@ -225,6 +225,7 @@ def admin_tags(request: Request, qid: int):
 async def admin_tags_save(request: Request, qid: int, tag: str = Form(...),
                           action: str = Form("add"), origin: str = Form("manual")):
     from .tags import set_manual, suppress
+    from .weakness import compute_weakness
 
     conn = connect()
     if action == "add":
@@ -234,5 +235,9 @@ async def admin_tags_save(request: Request, qid: int, tag: str = Form(...),
         # and the sampler and weakness model must both stop seeing it
         suppress(conn, qid, tag)
     conn.commit()
+    # weakness_cache is keyed on tag associations that just changed, and both
+    # /weaknesses and select_drill read it in preference to recomputing. A
+    # correction that leaves the cache alone is only half applied.
+    compute_weakness(conn)
     conn.close()
     return RedirectResponse(f"/admin/tags/{qid}", status_code=303)

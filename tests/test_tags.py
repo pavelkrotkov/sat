@@ -163,3 +163,52 @@ def test_archive_round_trip_preserves_suppression(tagged, tmp_path):
     assert dict(tagmod.all_tags_with_origin(fresh, new_qid))["qualifier_strength"] == "suppressed"
     assert tagmod.effective_tags(fresh, new_qid) == ["chronology"]
     fresh.close()
+
+
+def test_set_rule_tags_refreshes_archive_origin_rows(tagged):
+    """A legacy archive line carries no origin of its own, so restore_tag
+    falls back to `archive`. That is a derived tag, not a decision - if
+    re-tagging skipped it, INSERT OR IGNORE could never replace the row and
+    an obsolete restored tag would stay effective forever."""
+    conn, _, qid = tagged
+    tagmod.restore_tag(conn, qid, "stale_restored_tag", "archive")
+    assert "stale_restored_tag" in tagmod.effective_tags(conn, qid)
+
+    tagmod.set_rule_tags(conn, qid, ["tone_or_stance"])
+
+    assert "stale_restored_tag" not in tagmod.effective_tags(conn, qid)
+    assert tagmod.effective_tags(conn, qid) == ["tone_or_stance"]
+
+
+def test_admin_tag_correction_refreshes_weakness_cache(tagged, monkeypatch):
+    """select_drill and /weaknesses both prefer weakness_cache over
+    recomputing, so a correction that leaves it stale is half applied."""
+    import asyncio
+
+    import satprep.server as server_mod
+
+    from satprep.db import connect
+
+    conn, path, qid = tagged
+    compute_weakness(conn)
+    conn.commit()
+    conn.close()
+
+    def cached(tag):
+        # the handler closes the connection it was given, so read afresh
+        c = connect(path)
+        n = c.execute(
+            "SELECT COUNT(*) FROM weakness_cache WHERE entity_type='tag' AND entity=?",
+            (tag,),
+        ).fetchone()[0]
+        c.close()
+        return n
+
+    assert cached("qualifier_strength") == 1
+
+    monkeypatch.setattr(server_mod, "connect", lambda db_path=None: connect(path))
+    asyncio.run(server_mod.admin_tags_save(None, qid, tag="qualifier_strength",
+                                           action="remove"))
+
+    assert cached("qualifier_strength") == 0
+    assert cached("chronology") == 1  # untouched associations survive

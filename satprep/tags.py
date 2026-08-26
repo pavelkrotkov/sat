@@ -125,16 +125,25 @@ def suppress(conn, question_id: int, tag: str) -> None:
     _upsert(conn, question_id, tag, ORIGIN_SUPPRESSED)
 
 
+#: Origins that a re-tagging run may recompute. `archive` is derived rather
+#: than decided - it is the fallback origin for legacy archive lines that
+#: carry no origin of their own - so it is refreshed alongside `rule`.
+#: Leaving it out would pin a restored tag in place forever, because
+#: INSERT OR IGNORE cannot overwrite the row it left behind.
+RECOMPUTABLE_ORIGINS = (ORIGIN_RULE, ORIGIN_ARCHIVE)
+
+
 def set_rule_tags(conn, question_id: int, tags: list[str]) -> None:
     """Replace this question's rule-derived tags.
 
-    Only `rule` rows are cleared: a manual correction or a suppression is a
+    Only derived rows are cleared: a manual correction or a suppression is a
     human decision about this question and outlives any number of re-tagging
     runs. INSERT OR IGNORE then leaves those rows alone.
     """
+    qmarks = ",".join("?" for _ in RECOMPUTABLE_ORIGINS)
     conn.execute(
-        "DELETE FROM question_tags WHERE question_id=? AND origin=?",
-        (question_id, ORIGIN_RULE),
+        f"DELETE FROM question_tags WHERE question_id=? AND origin IN ({qmarks})",
+        (question_id, *RECOMPUTABLE_ORIGINS),
     )
     now = utc_now()
     for tag in tags:
