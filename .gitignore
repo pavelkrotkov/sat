@@ -20,3 +20,4 @@ imports/
 # python packaging
 *.egg-info/
 dist/
+exports/
