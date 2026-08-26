@@ -106,9 +106,21 @@ session at `/admin/why/<session_id>`.
 
 ### Backup
 
-Everything lives in one file: copy `data/satprep.db` (plus `data/satprep.db-wal`
-if present). Raw sources remain untouched; a full rebuild is always possible via
-`rm data/satprep.db && uv run satprep ingest`.
+Two-layer model:
+
+- **Training state** (attempts, sessions, spacing) lives only in
+  `data/satprep.db` — copy that file (plus `-wal` if present) to back it up.
+- **Question content** is additionally snapshotted to `exports/corpus-v1.jsonl`,
+  rewritten automatically after every ingest/fetch. A fresh database can be
+  rebuilt from the archive alone:
+
+```bash
+uv run satprep restore            # rebuild questions from exports/corpus-v1.jsonl
+uv run satprep export --out path.jsonl   # manual snapshot anywhere you like
+```
+
+Raw sources (`outputs/`, `artifacts/`) remain untouched provenance; a full
+rebuild from them stays possible via `rm data/satprep.db && uv run satprep ingest`.
 
 ### Tests
 

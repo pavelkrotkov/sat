@@ -10,10 +10,18 @@
 
 import argparse
 import json
+import pathlib
 import sys
 from datetime import datetime
 
 from . import config
+
+
+def _auto_export() -> None:
+    from .archive import export_corpus
+
+    path = export_corpus()
+    print(f"archive: {path.name}")
 
 
 def cmd_ingest(args) -> None:
@@ -26,6 +34,21 @@ def cmd_ingest(args) -> None:
     print(f"question bank imports: {q}")
     t = run_full_tagging()
     print(f"tagging: {t}")
+    _auto_export()
+
+
+def cmd_export(args) -> None:
+    from .archive import export_corpus
+
+    path = export_corpus(out_path=pathlib.Path(args.out) if args.out else None)
+    print(f"exported corpus to {path}")
+
+
+def cmd_restore(args) -> None:
+    from .archive import restore_corpus
+
+    stats = restore_corpus(archive_path=pathlib.Path(args.file) if args.file else None)
+    print(f"restore: {stats}")
 
 
 def cmd_analyze(args) -> None:
@@ -102,6 +125,10 @@ def cmd_fetch_qbank(args) -> None:
     stats = fetch_qbank(hard_only=args.hard_only, domains=domains,
                         limit=args.limit, sleep_s=args.sleep)
     print("done:", json.dumps(stats))
+    # tag BEFORE snapshotting so the archive never stores tag-less rows
+    from .tagger import run_full_tagging
+    print(f"tagging: {run_full_tagging()}")
+    _auto_export()
 
 
 def cmd_stats(args) -> None:
@@ -166,6 +193,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--limit", type=int, default=0, help="cap number fetched (0 = all)")
     sp.add_argument("--sleep", type=float, default=0.25, help="politeness delay seconds")
     sp.set_defaults(func=cmd_fetch_qbank)
+
+    sp = sub.add_parser("export", help="write the JSONL corpus archive")
+    sp.add_argument("--out", default=None)
+    sp.set_defaults(func=cmd_export)
+
+    sp = sub.add_parser("restore", help="rebuild questions from a JSONL archive")
+    sp.add_argument("--file", default=None)
+    sp.set_defaults(func=cmd_restore)
 
     sp = sub.add_parser("stats", help="print dashboard statistics")
     sp.set_defaults(func=cmd_stats)
