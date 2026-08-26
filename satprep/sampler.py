@@ -12,7 +12,6 @@ import random
 from datetime import datetime
 
 from . import ALGO_VERSION, config
-from .db import connect
 from .ingest import utc_now
 from .spacing import is_due
 from .tags import tags_by_question
@@ -148,21 +147,20 @@ def score_candidate(cand: Candidate, weakness: dict, focus_tags: list[str] | Non
     return cand
 
 
-def select_drill(mode: str, count: int | None = None, seed: str | None = None,
-                 focus_tag: str | None = None, db_path=None) -> dict:
+def select_drill(conn, mode: str, count: int | None = None, seed: str | None = None,
+                 focus_tag: str | None = None) -> dict:
     """Build a drill plan. Returns {'session_id', 'items': [...], 'seed'}.
 
     items: [{'question_id', 'weight', 'why': [(component, delta)], 'bucket'}]
     Protected benchmark leakage is structurally impossible outside
     fresh_benchmark mode because candidates are filtered by pool.
     """
-    conn = connect(db_path)
     seed = seed or utc_now()
     rng = random.Random(seed)
     now = datetime.now().astimezone()
 
-    from .weakness import get_weakness, compute_weakness
-    weakness = get_weakness(db_path)
+    from .weakness import cached_profile, compute_weakness
+    weakness = cached_profile(conn)
     if not weakness.get("tag") and not weakness.get("skill"):
         weakness = compute_weakness(conn, now=now)
 
@@ -176,7 +174,6 @@ def select_drill(mode: str, count: int | None = None, seed: str | None = None,
         ).fetchall()
         rng.shuffle(rows)
         rows = rows[:n]
-        conn.close()
         return {
             "session_id": "", "mode": mode, "seed": seed, "algo_version": ALGO_VERSION,
             "items": [
@@ -192,7 +189,6 @@ def select_drill(mode: str, count: int | None = None, seed: str | None = None,
         "hard_mixed": ("historical", "fresh_training"),
     }
     if mode not in pools_by_mode:
-        conn.close()
         raise ValueError(
             f"Invalid mode: {mode}. Must be one of: {', '.join(sorted(pools_by_mode))}, fresh_benchmark"
         )
@@ -284,12 +280,10 @@ def select_drill(mode: str, count: int | None = None, seed: str | None = None,
         "algo_version": ALGO_VERSION,
         "items": plan_items,
     }
-    conn.close()
     return result
 
 
-def persist_session(plan: dict, db_path=None) -> str:
-    conn = connect(db_path)
+def persist_session(conn, plan: dict) -> str:
     conn.execute(
         """INSERT OR REPLACE INTO sessions (id, mode, created_at, seed, algo_version, plan_json, status)
            VALUES (?,?,?,?,?,?,'open')""",
@@ -298,7 +292,4 @@ def persist_session(plan: dict, db_path=None) -> str:
             plan["algo_version"], json.dumps(plan["items"]),
         ),
     )
-    sid = plan["session_id"] or utc_now()
-    conn.commit()
-    conn.close()
-    return sid
+    return plan["session_id"] or utc_now()

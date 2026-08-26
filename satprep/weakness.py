@@ -22,7 +22,6 @@ import math
 from datetime import datetime
 
 from . import config
-from .db import connect
 
 
 def _parse_ts(value: str | None) -> datetime | None:
@@ -59,14 +58,12 @@ def _recency(attempted_at: str | None, now: datetime) -> float:
 
 
 
-def compute_weakness(conn=None, now: datetime | None = None) -> dict:
+def compute_weakness(conn, now: datetime | None = None) -> dict:
     """Compute weakness scores for skills, reasoning tags, error tags.
 
     Returns {entity_type: {entity: {'score': float, 'stats': {...}}}}
     and persists to weakness_cache.
     """
-    own = conn is None
-    conn = conn or connect()
     now = now or datetime.now().astimezone()
 
     base_sql = """
@@ -198,9 +195,6 @@ def compute_weakness(conn=None, now: datetime | None = None) -> dict:
                    VALUES (?,?,?,?,?)""",
                 (etype, entity, payload.get("score", 0.0), json.dumps(payload), ts),
             )
-    conn.commit()
-    if own:
-        conn.close()
     return out
 
 
@@ -283,16 +277,11 @@ def cached_profile(conn, entity_type: str | None = None) -> dict:
     return result.get(entity_type, {}) if entity_type is not None else result
 
 
-def get_weakness(db_path=None) -> dict:
-    conn = connect(db_path)
-    try:
-        return cached_profile(conn)
-    finally:
-        conn.close()
-
-
 if __name__ == "__main__":
-    scores = compute_weakness()
+    from .db import db_context
+
+    with db_context() as _conn:
+        scores = compute_weakness(_conn)
     for etype in ("skill", "tag"):
         ranked = sorted(scores[etype].items(), key=lambda kv: -kv[1]["score"])
         print(f"--- top {etype} weaknesses ---")
