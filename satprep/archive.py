@@ -9,6 +9,8 @@ from the file alone, without artifacts/ or network access.
 import json
 from pathlib import Path
 
+from .ingest import utc_now
+
 from . import config
 from .db import connect
 
@@ -71,17 +73,30 @@ def restore_corpus(archive_path: Path | None = None, db_path=None) -> dict:
     archive_path = Path(archive_path) if archive_path else config.REPO_ROOT / "exports" / f"corpus-v{ARCHIVE_VERSION}.jsonl"
     if not archive_path.exists():
         raise FileNotFoundError(f"No archive at {archive_path}")
-    from .ingest import utc_now
-
     conn = connect(db_path)
     stats = {"lines": 0, "restored": 0, "duplicates": 0, "invalid": 0}
-    for line in archive_path.read_text().splitlines():
+    try:
+        _restore_lines(conn, archive_path, stats)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return stats
+
+
+def _restore_lines(conn, archive_path: Path, stats: dict) -> None:
+    for line_no, line in enumerate(archive_path.read_text(encoding="utf-8").splitlines(), 1):
         line = line.strip()
         if not line:
             continue
         stats["lines"] += 1
-        rec = json.loads(line)
-        if not rec.get("fingerprint") or not rec.get("correct_letter"):
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{archive_path.name}:{line_no}: malformed JSON ({exc})") from None
+        if not isinstance(rec, dict) or not rec.get("fingerprint") or not rec.get("correct_letter"):
             stats["invalid"] += 1
             continue
         # A restore must be FAITHFUL: keep the archived fingerprint verbatim
@@ -117,6 +132,3 @@ def restore_corpus(archive_path: Path | None = None, db_path=None) -> dict:
                 (qid, tag),
             )
         stats["restored"] += 1
-    conn.commit()
-    conn.close()
-    return stats
