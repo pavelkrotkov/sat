@@ -1,23 +1,26 @@
 """Session lifecycle: record attempts, score, build review payloads."""
 
 import json
+import re
 import statistics
 
-from . import config
-from .ingest import mark_benchmark_seen, utc_now
+from .. import config
+from ..clock import utc_now
+from ..ids import opaque_id
+from ..corpus.ingest import mark_benchmark_seen
 from .sampler import persist_session, select_drill
 from .spacing import update_after_attempt
-from .tagger import diagnose_attempt
-from .tags import tags_by_question
+from .weakness import compute_weakness
+from ..corpus.tagger import diagnose_attempt
+from ..corpus.tags import tags_by_question
 
 
 def create_session(conn, mode: str, count: int | None = None, seed: str | None = None,
                    focus_tag: str | None = None) -> dict:
     plan = select_drill(conn, mode, count=count, seed=seed, focus_tag=focus_tag)
     if not plan["session_id"]:
-        # benchmark plans get a generated id at persist time
-        import uuid
-        plan["session_id"] = uuid.uuid4().hex[:16]
+        # benchmark plans have no seed to derive an id from
+        plan["session_id"] = opaque_id()
     persist_session(conn, plan)
     questions = []
     for item in plan["items"]:
@@ -81,8 +84,6 @@ def submit_answer(conn, session_id: str, question_id: int, chosen_letter: str,
 
 
 def complete_session(conn, session_id: str) -> dict:
-    from .weakness import compute_weakness
-
     conn.execute("UPDATE sessions SET status='completed' WHERE id=?", (session_id,))
     rows = conn.execute(
         """SELECT a.*, q.correct_letter FROM attempts a
@@ -170,8 +171,6 @@ def _logical_skeleton(passage: str) -> list[str]:
     Picks the sentences carrying the argumentative spine: claims, contrasts,
     hypotheses and results.
     """
-    import re
-
     sentences = re.split(r"(?<=[.!?])\s+", passage.replace("\n", " "))
     picked = []
     patterns = [

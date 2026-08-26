@@ -20,29 +20,40 @@ artifacts/html/*.html        -->   questions (normalized, fingerprinted)
 imports/*.csv|json (CB bank) -->   tags, weaknesses, sessions, traces
 ```
 
-* `satprep/ingest.py` rebuilds the corpus from raw sources; **idempotent** — reruns
+The package mirrors that split:
+
+```
+satprep/corpus/    questions, tags, pools, fingerprints, archive  — rebuildable
+satprep/training/  attempts, sessions, spacing, weakness model    — irreplaceable
+satprep/           config · db · clock · ids · analytics · cli · server
+```
+
+`corpus` never imports `training`; the dependency runs one way, enforced by
+`tests/test_module_boundaries.py`.
+
+* `satprep/corpus/ingest.py` rebuilds the corpus from raw sources; **idempotent** — reruns
   never duplicate questions or attempt history.
 * Questions are fingerprinted by normalized `passage + stem + choices`
-  (`satprep/fingerprint.py`), so duplicates across exports/banks collapse.
+  (`satprep/corpus/fingerprint.py`), so duplicates across exports/banks collapse.
 * Fresh Question Bank items split deterministically ~75/25 into
   `fresh_training` / `protected_benchmark` (`pool_for_fingerprint`). Protected
   items are excluded at the query level from every mode except Fresh Benchmark,
   and enter the normal pool only after being answered there.
 * Two-level taxonomy: official CB skills (metadata or deterministic stem rules,
-  never guessed) plus a granular reasoning-tag layer (`satprep/tagger.py`,
+  never guessed) plus a granular reasoning-tag layer (`satprep/corpus/tagger.py`,
   `satprep/config.py`). Rule-based tagging is cached in SQLite; an
   `llm_tag_cache` table exists for optional out-of-band LLM classification;
   manual corrections via the admin UI always win. Tag precedence and
-  suppression live in `satprep/tags.py` — the only module that reads
+  suppression live in `satprep/corpus/tags.py` — the only module that reads
   `question_tags.origin`; everything else goes through `effective_tags` /
   `tags_by_question` or joins the `effective_question_tags` view, so a
   suppressed tag disappears from the sampler and the weakness model too.
-* Weakness model (`satprep/weakness.py`): recency-decayed, confidence-weighted
+* Weakness model (`satprep/training/weakness.py`): recency-decayed, confidence-weighted
   Bayesian error rate per skill/tag with evidence shrinkage, difficulty bonus,
   and a mastery discount. Uses ALL historical questions, not just errors.
-* Sampler (`satprep/sampler.py`): additive, fully explainable weights; every drill
+* Sampler (`satprep/training/sampler.py`): additive, fully explainable weights; every drill
   stores its seed, algorithm version, chosen IDs and per-question score breakdown.
-* Spacing (`satprep/spacing.py`): SM-2-lite intervals; confidently-wrong → soonest,
+* Spacing (`satprep/training/spacing.py`): SM-2-lite intervals; confidently-wrong → soonest,
   confidently-correct → longest; exact repeats yield to same-tag different-question.
 
 ### Install & run

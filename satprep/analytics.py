@@ -8,8 +8,8 @@ numbers for the dashboard and never computes a second opinion.
 from datetime import datetime, timedelta, timezone
 
 from . import config
-from .tags import tags_by_question
-from .weakness import ensure_current, risk_scores
+from .corpus.tags import tags_by_question
+from .training.weakness import ensure_current, risk_scores
 
 
 def skill_accuracy(conn) -> list[dict]:

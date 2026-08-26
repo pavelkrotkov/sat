@@ -16,6 +16,10 @@ from . import config
 #: detected by more than the presence of one table.
 SCHEMA_VERSION = 1
 
+#: Join target for tag reads. Defined in SCHEMA; the semantics live in
+#: satprep.corpus.tags, which re-exports this name.
+EFFECTIVE_TAGS = "effective_question_tags"
+
 #: Connection-scoped pragmas, re-applied to every connection. foreign_keys in
 #: particular resets to OFF on each new connection, so it cannot live in
 #: SCHEMA now that the DDL runs once per path rather than once per connect.
@@ -114,6 +118,13 @@ CREATE TABLE IF NOT EXISTS weakness_cache (
     PRIMARY KEY (entity_type, entity)
 );
 
+-- Tag reads go through this view rather than question_tags, so a suppressed
+-- tag disappears everywhere at once. The origin vocabulary it encodes belongs
+-- to satprep.corpus.tags; the literal here is pinned to tags.ORIGIN_SUPPRESSED
+-- by tests/test_tags.py so the two cannot drift.
+CREATE VIEW IF NOT EXISTS effective_question_tags AS
+    SELECT question_id, tag FROM question_tags WHERE origin != 'suppressed';
+
 CREATE TABLE IF NOT EXISTS llm_tag_cache (
     fingerprint TEXT PRIMARY KEY,
     tags_json TEXT NOT NULL,
@@ -182,11 +193,6 @@ def _schema_version(conn: sqlite3.Connection) -> int:
 
 def _apply_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
-    # The effective-tags view is owned by satprep.tags, which is the only
-    # module that knows what question_tags.origin means.
-    from .tags import EFFECTIVE_TAGS_DDL
-
-    conn.executescript(EFFECTIVE_TAGS_DDL)
     _migrate(conn)
 
 

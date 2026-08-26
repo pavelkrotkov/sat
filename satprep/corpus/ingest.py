@@ -13,15 +13,14 @@ or attempt history. Raw sources are only ever read.
 import csv
 import json
 import re
-from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config, fingerprint as fpmod
-from .parse_snapshot import parse_snapshot
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+from .. import config
+from ..clock import utc_now
+from . import fingerprint as fpmod
+from .parse_snapshot import parse_snapshot, ParsedQuestion
+from .qbank_fetch import insert_qbank_row
+from .tagger import diagnose_attempt
 
 
 def _letter(value: str | None) -> str:
@@ -157,16 +156,12 @@ def ingest_bluebook(conn) -> dict:
             # chosen wrong letter and the full choice set are known. Never
             # fabricated from bare right/wrong.
             if correctness == 0 and student_letter and parsed.choices:
-                from .tagger import diagnose_attempt
-
                 diagnose_attempt(conn, qid, parsed.choices, correct_letter, student_letter)
 
     return stats
 
 
 def _question_from_json_record(rec: dict) -> "object":
-    from .parse_snapshot import ParsedQuestion
-
     text = rec.get("question_text") or ""
     choices = []
     for i, raw in enumerate(rec.get("answer_choices") or []):
@@ -280,8 +275,6 @@ def ingest_qbank(conn, path_or_dir=None, batch_name: str | None = None) -> dict:
     files = [p for p in sorted(base.rglob("*")) if p.is_file() and p.suffix.lower() in (".json", ".ndjson", ".csv")]
     stats = {"files": len(files), "rows_seen": 0, "added_fresh": 0, "duplicates": 0, "invalid": 0}
 
-    from .qbank_fetch import insert_qbank_row
-
     for path in files:
         batch = batch_name or path.stem
         try:
@@ -320,7 +313,7 @@ def mark_benchmark_seen(conn, question_ids: list[int]) -> None:
 
 
 if __name__ == "__main__":
-    from .db import db_context
+    from ..db import db_context
 
     with db_context() as _conn:
         print(ingest_bluebook(_conn))

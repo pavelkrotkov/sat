@@ -9,9 +9,9 @@ from the file alone, without artifacts/ or network access.
 import json
 from pathlib import Path
 
-from .ingest import utc_now
+from ..clock import utc_now
 
-from . import config
+from .. import config
 from .tags import all_tags_with_origin, restore_tag
 
 ARCHIVE_VERSION = 1

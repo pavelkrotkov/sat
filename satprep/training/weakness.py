@@ -21,7 +21,7 @@ import json
 import math
 from datetime import datetime
 
-from . import config
+from .. import config
 
 
 def _parse_ts(value: str | None) -> datetime | None:
@@ -278,7 +278,7 @@ def cached_profile(conn, entity_type: str | None = None) -> dict:
 
 
 if __name__ == "__main__":
-    from .db import db_context
+    from ..db import db_context
 
     with db_context() as _conn:
         scores = compute_weakness(_conn)

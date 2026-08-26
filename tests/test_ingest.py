@@ -4,7 +4,7 @@ import pytest
 
 from satprep.db import connect
 from satprep.db import db_context
-from satprep.ingest import ingest_bluebook
+from satprep.corpus.ingest import ingest_bluebook
 
 
 def _ingest(db_file):
@@ -60,7 +60,7 @@ def test_math_records_are_skipped(tmp_path, monkeypatch):
 
 
 def test_duplicate_content_dedupes_by_fingerprint(tmp_path, monkeypatch):
-    from satprep.fingerprint import fingerprint
+    from satprep.corpus.fingerprint import fingerprint
 
     monkeypatch.setattr("satprep.config.BLUEBOOK_JSON", tmp_path / "outputs" / "wrong_questions.json")
     r1 = _rec("a1")

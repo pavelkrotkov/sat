@@ -1,4 +1,4 @@
-from satprep.tagger import derive_official_skill, diagnose_error, reasoning_tags
+from satprep.corpus.tagger import derive_official_skill, diagnose_error, reasoning_tags
 
 
 def test_wic_stem():
