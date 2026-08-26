@@ -106,7 +106,10 @@ def test_every_module_imports_cleanly_on_its_own():
         result = subprocess.run([sys.executable, "-c", f"import {module}"],
                                 capture_output=True, text=True, cwd=SATPREP.parent)
         if result.returncode != 0:
-            failures.append(f"{module}: {result.stderr.strip().splitlines()[-1]}")
+            # a non-zero exit with no stderr would otherwise IndexError here,
+            # hiding the import failure behind an unrelated one
+            lines = result.stderr.strip().splitlines()
+            failures.append(f"{module}: {lines[-1] if lines else '(no stderr)'}")
     assert failures == []
 
 
@@ -118,3 +121,27 @@ def test_effective_tags_view_matches_the_origin_vocabulary():
 
     assert tags.EFFECTIVE_TAGS == db.EFFECTIVE_TAGS
     assert f"origin != '{tags.ORIGIN_SUPPRESSED}'" in db.SCHEMA
+
+
+def test_session_id_gives_up_rather_than_spinning():
+    """A predicate that always reports a collision means the caller is
+    broken; looping forever would hide that behind a hang."""
+    from satprep.ids import MAX_ID_ATTEMPTS, session_id
+
+    calls = []
+
+    with pytest.raises(RuntimeError, match="collision check"):
+        session_id("hard_mixed", "seed", exists=lambda c: calls.append(c) or True)
+
+    assert len(calls) == MAX_ID_ATTEMPTS
+    assert len(set(calls)) == MAX_ID_ATTEMPTS   # each attempt is freshly salted
+
+
+def test_session_id_is_stable_and_collision_free():
+    from satprep.ids import session_id
+
+    assert session_id("hard_mixed", "s") == session_id("hard_mixed", "s")
+    assert session_id("hard_mixed", "s") != session_id("error_clinic", "s")
+
+    taken = {session_id("hard_mixed", "s")}
+    assert session_id("hard_mixed", "s", exists=taken.__contains__) not in taken
