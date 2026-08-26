@@ -91,3 +91,87 @@ def test_failed_request_leaves_nothing_behind(live):
     assert after.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
     assert after.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 0
     after.close()
+
+
+# ------------------------------------------------------ connection hygiene --
+
+def test_foreign_keys_enforced_on_every_connection(tmp_path):
+    """Regression: `PRAGMA foreign_keys=ON` lived in SCHEMA, which now runs
+    once per path instead of once per connect. Every connection after the
+    first therefore ran with enforcement off, and orphan rows went straight
+    in. The pragma is connection-scoped, so it must be re-applied each time."""
+    path = tmp_path / "fk.db"
+    first = connect(path)
+    first.close()
+
+    second = connect(path)
+    assert second.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    with pytest.raises(Exception, match="FOREIGN KEY"):
+        second.execute(
+            """INSERT INTO attempts (session_id, question_id, chosen_letter, correct,
+                                     confidence, time_ms, mode, attempted_at)
+               VALUES ('s', 99999, 'A', 1, 2, 0, 'x', 't')"""
+        )
+    second.close()
+
+
+def test_replaced_database_is_reinitialised(tmp_path):
+    """A cached path whose file is swapped for an older or partial one must
+    not skip the remaining DDL. The version stamp catches what the presence
+    of a single table does not."""
+    import sqlite3
+
+    path = tmp_path / "swap.db"
+    connect(path).close()          # caches the path, stamps user_version
+
+    # a partial database: has `questions`, but no view and no error_tags column
+    path.unlink()
+    raw = sqlite3.connect(str(path))
+    raw.execute("CREATE TABLE questions (id INTEGER PRIMARY KEY)")
+    raw.commit()
+    raw.close()
+
+    conn = connect(path)
+    assert conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='effective_question_tags'"
+    ).fetchone() is not None
+    assert "error_tags" in {r[1] for r in conn.execute("PRAGMA table_info(attempts)")}
+    conn.close()
+
+
+def test_concurrent_first_connect_is_serialised(tmp_path):
+    """Two requests against a brand-new database used to race into the DDL
+    together and one could lose on the write lock."""
+    import threading
+
+    path = tmp_path / "race.db"
+    errors = []
+
+    def open_once():
+        try:
+            connect(path).close()
+        except Exception as exc:  # pragma: no cover - the failure we prevent
+            errors.append(exc)
+
+    threads = [threading.Thread(target=open_once) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+
+
+def test_keyboard_interrupt_rolls_back_and_propagates(tmp_path):
+    """db_context catches BaseException so a Ctrl-C partway through a drill
+    still rolls back - and re-raises it, so termination stays clean."""
+    path = tmp_path / "sig.db"
+
+    with pytest.raises(KeyboardInterrupt):
+        with db_context(path) as conn:
+            add_question(conn, passage="p", stem="s?", choices=["a", "b", "c", "d"])
+            raise KeyboardInterrupt
+
+    after = connect(path)
+    assert after.execute("SELECT COUNT(*) FROM questions").fetchone()[0] == 0
+    after.close()

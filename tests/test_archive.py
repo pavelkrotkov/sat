@@ -142,3 +142,22 @@ def test_restore_rejects_unsupported_version(db, tmp_path):
     import pytest
     with pytest.raises(ValueError, match="unsupported"):
         _restore(Path(tmp_path) / "x.db", future)
+
+
+def test_export_with_custom_out_still_requires_a_database(tmp_path, monkeypatch):
+    """Regression: the guard was `not args.out and not DB_PATH.exists()`, so
+    the documented `satprep export --out path.jsonl` form skipped it entirely.
+    db_context then created an empty database and the command reported a
+    successful export of nothing."""
+    import pytest
+
+    from satprep import cli, config
+
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "missing.db")
+    out = Path(tmp_path) / "custom.jsonl"
+
+    with pytest.raises(SystemExit, match="satprep restore"):
+        cli.cmd_export(argparse.Namespace(out=str(out)))
+
+    assert not out.exists()
+    assert not (tmp_path / "missing.db").exists()   # no empty database created

@@ -41,7 +41,9 @@ def cmd_export(args) -> None:
 
     # Checked here rather than in export_corpus, which now receives an open
     # connection and so cannot tell a missing database from an empty one.
-    if not args.out and not config.DB_PATH.exists():
+    # Applies to --out too: db_context would otherwise create an empty
+    # database and report a successful export of nothing.
+    if not config.DB_PATH.exists():
         raise SystemExit(
             f"No database at {config.DB_PATH}; refusing to overwrite the archive. "
             f"Run `satprep restore` first if you intended a rebuild."
