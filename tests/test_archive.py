@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 from satprep.archive import export_corpus, restore_corpus
-from satprep.db import connect
+from satprep.db import connect, db_context
 from conftest import add_question
 
 
@@ -161,3 +161,45 @@ def test_export_with_custom_out_still_requires_a_database(tmp_path, monkeypatch)
 
     assert not out.exists()
     assert not (tmp_path / "missing.db").exists()   # no empty database created
+
+
+def test_restore_validates_the_archive_before_creating_a_database(tmp_path, monkeypatch):
+    """Regression: db_context created the database before restore_corpus
+    checked the archive, so a mistyped path left an empty database behind -
+    which then satisfied cmd_export's missing-database guard."""
+    import pytest
+
+    from satprep import cli, config
+
+    db_file = tmp_path / "new.db"
+    monkeypatch.setattr(config, "DB_PATH", db_file)
+
+    with pytest.raises(SystemExit, match="No archive at"):
+        cli.cmd_restore(argparse.Namespace(file=str(tmp_path / "typo.jsonl")))
+
+    assert not db_file.exists()
+
+
+def test_auto_export_publishes_only_committed_state(db, tmp_path, monkeypatch):
+    """The archive is the only copy of question content, so it must never
+    hold rows the database later rolls back."""
+    import pytest
+
+    from satprep import cli
+
+    conn, path = db
+    out = Path(tmp_path) / "corpus.jsonl"
+    monkeypatch.setattr(cli, "_auto_export",
+                        lambda c: (c.commit(), export_corpus(c, out))[1])
+
+    with pytest.raises(RuntimeError, match="later failure"):
+        with db_context(path) as tx:
+            add_question(tx, passage="committed", stem="s?",
+                         choices=["a", "b", "c", "d"])
+            cli._auto_export(tx)
+            add_question(tx, passage="rolled back", stem="r?",
+                         choices=["a", "b", "c", "d"])
+            raise RuntimeError("later failure")
+
+    archived = [json.loads(line) for line in out.read_text().splitlines()]
+    assert [r["passage"] for r in archived] == ["committed"]

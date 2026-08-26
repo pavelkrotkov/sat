@@ -175,3 +175,39 @@ def test_keyboard_interrupt_rolls_back_and_propagates(tmp_path):
     after = connect(path)
     assert after.execute("SELECT COUNT(*) FROM questions").fetchone()[0] == 0
     after.close()
+
+
+def test_write_handlers_commit_before_returning(live):
+    """Regression: a yield dependency's teardown runs after the response is
+    sent, so /begin returned its 303 before db_context committed. A client
+    following the redirect could open a new connection and not see the
+    session it had just been told about."""
+    from satprep import server as srv
+
+    with db_context(live) as conn:
+        response = srv.begin(None, mode="error_clinic", count=2, focus_tag="", conn=conn)
+        sid = response.headers["location"].split("/")[-2]
+
+        # a separate connection, as the redirected request would use
+        other = connect(live)
+        assert other.execute(
+            "SELECT COUNT(*) FROM sessions WHERE id=?", (sid,)
+        ).fetchone()[0] == 1
+        other.close()
+
+
+def test_rejects_a_database_from_a_newer_build(tmp_path):
+    """Running this build's DDL over a future schema and restamping the
+    marker would silently downgrade the file."""
+    from satprep import db as db_mod
+
+    path = tmp_path / "future.db"
+    connect(path).close()
+    ahead = connect(path)
+    ahead.execute(f"PRAGMA user_version={db_mod.SCHEMA_VERSION + 5}")
+    ahead.commit()
+    ahead.close()
+    db_mod._SCHEMA_APPLIED.discard(str(path.resolve()))
+
+    with pytest.raises(RuntimeError, match="newer satprep"):
+        connect(path)

@@ -19,8 +19,16 @@ from .db import db_context
 
 
 def _auto_export(conn) -> None:
+    """Snapshot the corpus, after making the ingest durable.
+
+    export_corpus replaces the archive in place. Publishing it while the
+    transaction is still open risks an archive holding rows the database
+    later rolls back - the archive is the only copy of question content, so
+    it must never run ahead of the corpus it claims to snapshot.
+    """
     from .archive import export_corpus
 
+    conn.commit()
     path = export_corpus(conn)
     print(f"archive: {path.name}")
 
@@ -54,10 +62,17 @@ def cmd_export(args) -> None:
 
 
 def cmd_restore(args) -> None:
-    from .archive import restore_corpus
+    from .archive import ARCHIVE_VERSION, restore_corpus
 
+    # Resolved and checked before db_context, which would otherwise create an
+    # empty database on the way to reporting a missing archive - and that
+    # empty database then satisfies cmd_export's guard.
+    archive = (pathlib.Path(args.file) if args.file
+               else config.REPO_ROOT / "exports" / f"corpus-v{ARCHIVE_VERSION}.jsonl")
+    if not archive.exists():
+        raise SystemExit(f"No archive at {archive}")
     with db_context() as conn:
-        stats = restore_corpus(conn, archive_path=pathlib.Path(args.file) if args.file else None)
+        stats = restore_corpus(conn, archive_path=archive)
     print(f"restore: {stats}")
 
 

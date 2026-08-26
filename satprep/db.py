@@ -150,7 +150,9 @@ def _ensure_schema(conn: sqlite3.Connection, path: Path) -> None:
 
     The version stamp, not the presence of a table, is what says a database is
     current: a file swapped in underneath a running process can carry an older
-    or partial schema and still have `questions`. The lock serialises
+    or partial schema and still have `questions`. A stamp from the future is
+    refused outright - running this build's DDL over it and restamping would
+    silently downgrade the marker. The lock serialises
     first-time creation, which is otherwise a race between two concurrent
     requests against a brand-new database - `IF NOT EXISTS` does not stop the
     two DDL scripts from deadlocking on the write lock.
@@ -159,8 +161,15 @@ def _ensure_schema(conn: sqlite3.Connection, path: Path) -> None:
     if key in _SCHEMA_APPLIED and _schema_version(conn) == SCHEMA_VERSION:
         return
     with _SCHEMA_LOCK:
-        if key in _SCHEMA_APPLIED and _schema_version(conn) == SCHEMA_VERSION:
+        version = _schema_version(conn)
+        if key in _SCHEMA_APPLIED and version == SCHEMA_VERSION:
             return
+        if version > SCHEMA_VERSION:
+            raise RuntimeError(
+                f"Database at {path} was written by a newer satprep "
+                f"(schema v{version}; this build understands v{SCHEMA_VERSION}). "
+                f"Upgrade satprep rather than letting it downgrade the file."
+            )
         _apply_schema(conn)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         conn.commit()

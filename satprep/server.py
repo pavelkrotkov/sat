@@ -26,13 +26,21 @@ templates.env.filters["basename"] = lambda p: str(p).rsplit("/", 1)[-1]
 
 
 def get_conn():
-    """One connection per request, committed on a clean response.
+    """One connection per request, rolled back if the handler raises.
 
-    Handlers take this as a dependency and never open or close a connection
-    of their own, so a request that raises partway rolls back as a unit.
+    A yield dependency's teardown runs *after* the response has been sent, so
+    the commit here is a backstop, not the durability guarantee: a handler
+    that writes calls `_commit(conn)` before returning, or the client could
+    be told the write succeeded and then follow a redirect to a request that
+    cannot see it.
     """
     with db_context() as conn:
         yield conn
+
+
+def _commit(conn) -> None:
+    """Make a handler's writes durable before its response leaves."""
+    conn.commit()
 
 
 Conn = Depends(get_conn)
@@ -77,6 +85,7 @@ def begin(request: Request, mode: str = Form(...), count: int = Form(0),
     sess = create_session(conn, mode=mode, count=count or None,
                           focus_tag=focus_tag or None)
     sid = sess["plan"]["session_id"]
+    _commit(conn)
     return RedirectResponse(f"/question/{sid}/0", status_code=303)
 
 
@@ -102,6 +111,7 @@ def answer(request: Request, sid: str, idx: int,
     from .sessions import submit_answer
 
     submit_answer(conn, sid, question_id, letter, confidence, elapsed_ms)
+    _commit(conn)
     return RedirectResponse(f"/question/{sid}/{idx + 1}", status_code=303)
 
 
@@ -110,6 +120,7 @@ def results(request: Request, sid: str, conn=Conn):
     from .sessions import complete_session
 
     summary = complete_session(conn, sid)  # idempotent-ish; refreshes weakness cache
+    _commit(conn)
     return templates.TemplateResponse(request, "results.html", {"summary": summary, "sid": sid,
     })
 
@@ -173,6 +184,7 @@ def benchmark_begin(request: Request, count: int = Form(8), conn=Conn):
     sid = sess["plan"]["session_id"]
     if not sess["questions"]:
         return RedirectResponse("/benchmark", status_code=303)
+    _commit(conn)
     return RedirectResponse(f"/question/{sid}/0", status_code=303)
 
 
@@ -233,4 +245,5 @@ def admin_tags_save(request: Request, qid: int, tag: str = Form(...),
     # /weaknesses and select_drill read it in preference to recomputing. A
     # correction that leaves the cache alone is only half applied.
     compute_weakness(conn)
+    _commit(conn)
     return RedirectResponse(f"/admin/tags/{qid}", status_code=303)
