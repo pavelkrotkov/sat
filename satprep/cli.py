@@ -125,6 +125,9 @@ def cmd_fetch_qbank(args) -> None:
     stats = fetch_qbank(hard_only=args.hard_only, domains=domains,
                         limit=args.limit, sleep_s=args.sleep)
     print("done:", json.dumps(stats))
+    # tag BEFORE snapshotting so the archive never stores tag-less rows
+    from .tagger import run_full_tagging
+    print(f"tagging: {run_full_tagging()}")
     _auto_export()
 
 
