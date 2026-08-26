@@ -16,6 +16,7 @@ from . import config
 from .analytics import full_dashboard
 from .db import connect
 from .tags import all_tags_with_origin
+from .weakness import cached_profile
 
 app = FastAPI(title="satprep", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=str(config.REPO_ROOT / "satprep" / "static")), name="static")
@@ -45,14 +46,12 @@ def start_drill(request: Request):
 
     focus = request.query_params.get("focus") or ""
     conn = connect()
-    weak = conn.execute(
-        "SELECT entity FROM weakness_cache WHERE entity_type='tag' ORDER BY score DESC LIMIT 12"
-    ).fetchall()
+    weak_tags = list(cached_profile(conn, "tag"))[:12]
     counts = dict(conn.execute(
         "SELECT pool, COUNT(*) FROM questions WHERE active=1 GROUP BY pool"
     ).fetchall())
     conn.close()
-    return templates.TemplateResponse(request, "start.html", {"weak_tags": [w["entity"] for w in weak],
+    return templates.TemplateResponse(request, "start.html", {"weak_tags": weak_tags,
         "reasoning_tags": sorted(REASONING_TAGS),
         "pool_counts": counts,
         "focus": focus,
@@ -119,15 +118,16 @@ def review(request: Request, sid: str):
 @app.get("/weaknesses", response_class=HTMLResponse)
 def weaknesses(request: Request):
     conn = connect()
-    skills = conn.execute(
-        "SELECT entity, score, stats_json FROM weakness_cache WHERE entity_type='skill' ORDER BY score DESC"
-    ).fetchall()
-    tags = conn.execute(
-        "SELECT entity, score, stats_json FROM weakness_cache WHERE entity_type='tag' ORDER BY score DESC"
-    ).fetchall()
+    skills = cached_profile(conn, "skill")
+    tags = cached_profile(conn, "tag")
     conn.close()
-    return templates.TemplateResponse(request, "weaknesses.html", {"skills": [(r["entity"], r["score"], json.loads(r["stats_json"] or "{}")) for r in skills],
-        "tags": [(r["entity"], r["score"], json.loads(r["stats_json"] or "{}")) for r in tags],
+
+    def rows(profile):
+        return [(entity, p["score"], {k: v for k, v in p.items() if k != "score"})
+                for entity, p in profile.items()]
+
+    return templates.TemplateResponse(request, "weaknesses.html", {"skills": rows(skills),
+        "tags": rows(tags),
     })
 
 

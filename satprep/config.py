@@ -171,6 +171,11 @@ CONFIDENT_WRONG_MULTIPLIER = 1.6   # wrong + confidence 3 counts extra
 LOW_CONF_CORRECT_WEIGHT = 0.55     # correct-but-guessing proves less
 MASTERY_RECENT_CORRECT_DISCOUNT = 0.25
 
+# A tag counts as "weak enough to train against" above this model score.
+# Used by the dashboard's transfer panel to decide which fresh questions
+# count as transfer material rather than incidental practice.
+WEAK_TAG_THRESHOLD = 55.0
+
 # ------------------------------------------------------------- sampler -----
 # Relative weights for the additive selection score (see sampler.py).
 W_WEAK_TAG_MATCH = 2.2

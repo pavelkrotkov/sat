@@ -204,17 +204,58 @@ def compute_weakness(conn=None, now: datetime | None = None) -> dict:
     return out
 
 
-def get_weakness(db_path=None) -> dict:
-    conn = connect(db_path)
-    cached = conn.execute("SELECT entity_type, entity, score, stats_json FROM weakness_cache").fetchall()
+def risk_scores(conn, entity_type: str, entities=None) -> dict[str, float]:
+    """Weakness score per entity of one type - the single source of "how risky".
+
+    `weakness_cache` is a cache, not a second model: when `entities` names
+    something the cache has never seen, this recomputes rather than handing
+    the caller a hole to paper over with its own smoothing. Callers used to
+    fall back to a locally-defined prior on a cache miss, which quietly put
+    two differently-computed numbers in the same column.
+
+    Recomputes at most once per call. An entity with no attempts at all is
+    legitimately absent from the result; ask only about entities you have
+    evidence for.
+    """
+    scores = {
+        r["entity"]: r["score"]
+        for r in conn.execute(
+            "SELECT entity, score FROM weakness_cache WHERE entity_type=?", (entity_type,)
+        )
+    }
+    if entities is not None and set(entities) - scores.keys():
+        computed = compute_weakness(conn).get(entity_type, {})
+        scores = {entity: payload["score"] for entity, payload in computed.items()}
+    return scores
+
+
+def cached_profile(conn, entity_type: str | None = None) -> dict:
+    """Last computed profile with full stats, ranked most-at-risk first.
+
+    Callers that want to render the profile - the weakness screen, the drill
+    picker's weak-tag list - read it here rather than querying weakness_cache,
+    so the cache stays an implementation detail of this module.
+    """
+    sql = "SELECT entity_type, entity, score, stats_json FROM weakness_cache"
+    params: tuple = ()
+    if entity_type is not None:
+        sql += " WHERE entity_type=?"
+        params = (entity_type,)
     result: dict[str, dict] = {}
-    for row in cached:
+    for row in conn.execute(sql + " ORDER BY score DESC", params):
         result.setdefault(row["entity_type"], {})[row["entity"]] = {
             "score": row["score"],
-            **json.loads(row["stats_json"]),
+            **json.loads(row["stats_json"] or "{}"),
         }
-    conn.close()
-    return result
+    return result.get(entity_type, {}) if entity_type is not None else result
+
+
+def get_weakness(db_path=None) -> dict:
+    conn = connect(db_path)
+    try:
+        return cached_profile(conn)
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
