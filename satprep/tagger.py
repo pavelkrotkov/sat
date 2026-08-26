@@ -334,11 +334,8 @@ def diagnose_attempt(conn, qid: int, choices: list[dict], correct_letter: str, s
     return tags
 
 
-def run_full_tagging(db_path=None) -> dict:
+def run_full_tagging(conn) -> dict:
     """Tag every active question lacking rule tags; derive missing skills."""
-    from .db import connect
-
-    conn = connect(db_path)
     rows = conn.execute(
         """SELECT id, passage, stem, choices_json, official_skill FROM questions WHERE active=1"""
     ).fetchall()
@@ -357,8 +354,6 @@ def run_full_tagging(db_path=None) -> dict:
                     (skill, domain, "derived" if skill else "derived-domain-only", row["id"]),
                 )
                 stats["skills_derived"] += 1
-    conn.commit()
-    conn.close()
     return stats
 
 

@@ -15,12 +15,13 @@ import sys
 from datetime import datetime
 
 from . import config
+from .db import db_context
 
 
-def _auto_export() -> None:
+def _auto_export(conn) -> None:
     from .archive import export_corpus
 
-    path = export_corpus()
+    path = export_corpus(conn)
     print(f"archive: {path.name}")
 
 
@@ -28,33 +29,41 @@ def cmd_ingest(args) -> None:
     from .ingest import ingest_bluebook, ingest_qbank
     from .tagger import run_full_tagging
 
-    b = ingest_bluebook()
-    print(f"bluebook history: {b}")
-    q = ingest_qbank()
-    print(f"question bank imports: {q}")
-    t = run_full_tagging()
-    print(f"tagging: {t}")
-    _auto_export()
+    with db_context() as conn:
+        print(f"bluebook history: {ingest_bluebook(conn)}")
+        print(f"question bank imports: {ingest_qbank(conn)}")
+        print(f"tagging: {run_full_tagging(conn)}")
+        _auto_export(conn)
 
 
 def cmd_export(args) -> None:
     from .archive import export_corpus
 
-    path = export_corpus(out_path=pathlib.Path(args.out) if args.out else None)
+    # Checked here rather than in export_corpus, which now receives an open
+    # connection and so cannot tell a missing database from an empty one.
+    if not args.out and not config.DB_PATH.exists():
+        raise SystemExit(
+            f"No database at {config.DB_PATH}; refusing to overwrite the archive. "
+            f"Run `satprep restore` first if you intended a rebuild."
+        )
+    with db_context() as conn:
+        path = export_corpus(conn, out_path=pathlib.Path(args.out) if args.out else None)
     print(f"exported corpus to {path}")
 
 
 def cmd_restore(args) -> None:
     from .archive import restore_corpus
 
-    stats = restore_corpus(archive_path=pathlib.Path(args.file) if args.file else None)
+    with db_context() as conn:
+        stats = restore_corpus(conn, archive_path=pathlib.Path(args.file) if args.file else None)
     print(f"restore: {stats}")
 
 
 def cmd_analyze(args) -> None:
     from .weakness import compute_weakness
 
-    scores = compute_weakness()
+    with db_context() as conn:
+        scores = compute_weakness(conn)
     for etype in ("skill", "tag"):
         ranked = sorted(scores[etype].items(), key=lambda kv: -kv[1]["score"])[:12]
         print(f"\n=== {etype} weaknesses ===")
@@ -71,10 +80,18 @@ def _interactive_answer() -> tuple[str, int]:
 
 
 def cmd_drill(args) -> None:
+    mode = args.mode or "targeted_drill"
+    # One connection for the whole drill: selection, every answer, scoring and
+    # the review pass are one unit of work, so an interrupted drill does not
+    # leave a session row behind with orphaned attempts.
+    with db_context() as conn:
+        _run_drill(conn, mode, args)
+
+
+def _run_drill(conn, mode: str, args) -> None:
     from .sessions import complete_session, create_session, review_payload, submit_answer
 
-    mode = args.mode or "targeted_drill"
-    sess = create_session(mode=mode, count=args.count, seed=args.seed,
+    sess = create_session(conn, mode=mode, count=args.count, seed=args.seed,
                           focus_tag=args.focus)
     plan, questions = sess["plan"], sess["questions"]
     if not questions:
@@ -95,14 +112,14 @@ def cmd_drill(args) -> None:
         q_start = datetime.now().astimezone()  # spec section 12: per-question time
         letter, conf = _interactive_answer()
         ms = int((datetime.now().astimezone() - q_start).total_seconds() * 1000)
-        res = submit_answer(sid, q["id"], letter, conf, ms)
+        res = submit_answer(conn, sid, q["id"], letter, conf, ms)
         if res.get("duplicate"):
             print("already answered - not recorded again\n")
             continue
         print(("correct" if res["correct"] else f"wrong (key: {res['key']})") + "\n")
-    summary = complete_session(sid)
+    summary = complete_session(conn, sid)
     print("summary:", json.dumps(summary))
-    reviews = [r for r in review_payload(sid) if not r["correct"]]
+    reviews = [r for r in review_payload(conn, sid) if not r["correct"]]
     for r in reviews:
         print(f"\nREVIEW Q{r['question_id']} [{r['official_skill']}] trap={','.join(r['trap_tags'])}")
         if r["passage_skeleton"]:
@@ -121,20 +138,23 @@ def cmd_benchmark(args) -> None:
 def cmd_fetch_qbank(args) -> None:
     from .qbank_fetch import fetch_qbank
 
-    domains = [d.strip().upper() for d in args.domains.split(",") if d.strip()] or None
-    stats = fetch_qbank(hard_only=args.hard_only, domains=domains,
-                        limit=args.limit, sleep_s=args.sleep)
-    print("done:", json.dumps(stats))
-    # tag BEFORE snapshotting so the archive never stores tag-less rows
     from .tagger import run_full_tagging
-    print(f"tagging: {run_full_tagging()}")
-    _auto_export()
+
+    domains = [d.strip().upper() for d in args.domains.split(",") if d.strip()] or None
+    with db_context() as conn:
+        stats = fetch_qbank(conn, hard_only=args.hard_only, domains=domains,
+                            limit=args.limit, sleep_s=args.sleep)
+        print("done:", json.dumps(stats))
+        # tag BEFORE snapshotting so the archive never stores tag-less rows
+        print(f"tagging: {run_full_tagging(conn)}")
+        _auto_export(conn)
 
 
 def cmd_stats(args) -> None:
     from .analytics import full_dashboard
 
-    d = full_dashboard()
+    with db_context() as conn:
+        d = full_dashboard(conn)
     print(json.dumps(d["corpus"], indent=2))
     print("\ntop skill risks:")
     for s in d["skills"][:8]:

@@ -19,7 +19,6 @@ import urllib.error
 import urllib.request
 
 from .config import SKILL_TO_DOMAIN
-from .db import connect
 
 BASE = "https://qbank-api.collegeboard.org/msreportingquestionbank-prod/questionbank"
 SAT_RW_ASMT = 99   # SAT
@@ -225,12 +224,11 @@ def known_external_ids(conn) -> set[str]:
     return ids
 
 
-def fetch_qbank(hard_only: bool = False, domains: list[str] | None = None,
-                limit: int = 0, sleep_s: float = 0.25, db_path=None) -> dict:
+def fetch_qbank(conn, hard_only: bool = False, domains: list[str] | None = None,
+                limit: int = 0, sleep_s: float = 0.25) -> dict:
     """Pull SAT R&W items from the public EQB into the corpus. Idempotent."""
     from datetime import datetime, timezone
 
-    conn = connect(db_path)
     have = known_external_ids(conn)
     batch = f"eqb-{datetime.now(timezone.utc).strftime('%Y%m%d')}"
     stats = {"listed": 0, "skipped_known": 0, "fetched": 0,
@@ -265,13 +263,19 @@ def fetch_qbank(hard_only: bool = False, domains: list[str] | None = None,
         outcome = insert_qbank_row(conn, row, batch)
         stats[outcome] = stats.get(outcome, 0) + 1
         if i % 50 == 0:
+            # Deliberate checkpoint inside the caller's transaction: this loop
+            # spans thousands of network round trips, and the batch is
+            # documented as resumable. Losing an hour of fetching to one
+            # timeout is a worse failure than a partial batch, which the
+            # external_id skip makes harmless on the next run.
             conn.commit()
             print(f"  {i}/{len(todo)} … {stats}")
         time.sleep(sleep_s)
-    conn.commit()
-    conn.close()
     return stats
 
 
 if __name__ == "__main__":
-    print(fetch_qbank())
+    from .db import db_context
+
+    with db_context() as _conn:
+        print(fetch_qbank(_conn))

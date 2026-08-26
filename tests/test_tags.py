@@ -102,7 +102,7 @@ def test_suppression_survives_full_tagging(tagged):
     tagmod.suppress(conn, qid, "qualifier_strength")
     conn.commit()
 
-    run_full_tagging(path)
+    run_full_tagging(conn)
 
     assert "qualifier_strength" not in tagmod.effective_tags(conn, qid)
 
@@ -112,7 +112,7 @@ def test_manual_tag_survives_full_tagging(tagged):
     tagmod.set_manual(conn, qid, "cause_vs_correlation")
     conn.commit()
 
-    run_full_tagging(path)
+    run_full_tagging(conn)
 
     assert "cause_vs_correlation" in tagmod.effective_tags(conn, qid)
 
@@ -154,11 +154,11 @@ def test_archive_round_trip_preserves_suppression(tagged, tmp_path):
     tagmod.suppress(conn, qid, "qualifier_strength")
     conn.commit()
 
-    archive = export_corpus(out_path=tmp_path / "corpus.jsonl", db_path=path)
+    archive = export_corpus(conn, out_path=tmp_path / "corpus.jsonl")
     restored_path = tmp_path / "restored.db"
-    restore_corpus(archive_path=archive, db_path=restored_path)
-
     fresh = connect(restored_path)
+    restore_corpus(fresh, archive_path=archive)
+    fresh.commit()
     new_qid = fresh.execute("SELECT id FROM questions").fetchone()["id"]
     assert dict(tagmod.all_tags_with_origin(fresh, new_qid))["qualifier_strength"] == "suppressed"
     assert tagmod.effective_tags(fresh, new_qid) == ["chronology"]
@@ -180,11 +180,9 @@ def test_set_rule_tags_refreshes_archive_origin_rows(tagged):
     assert tagmod.effective_tags(conn, qid) == ["tone_or_stance"]
 
 
-def test_admin_tag_correction_refreshes_weakness_cache(tagged, monkeypatch):
+def test_admin_tag_correction_refreshes_weakness_cache(tagged):
     """select_drill and /weaknesses both prefer weakness_cache over
     recomputing, so a correction that leaves it stale is half applied."""
-    import asyncio
-
     import satprep.server as server_mod
 
     from satprep.db import connect
@@ -195,7 +193,7 @@ def test_admin_tag_correction_refreshes_weakness_cache(tagged, monkeypatch):
     conn.close()
 
     def cached(tag):
-        # the handler closes the connection it was given, so read afresh
+        # read on a fresh connection so we see committed state
         c = connect(path)
         n = c.execute(
             "SELECT COUNT(*) FROM weakness_cache WHERE entity_type='tag' AND entity=?",
@@ -206,9 +204,11 @@ def test_admin_tag_correction_refreshes_weakness_cache(tagged, monkeypatch):
 
     assert cached("qualifier_strength") == 1
 
-    monkeypatch.setattr(server_mod, "connect", lambda db_path=None: connect(path))
-    asyncio.run(server_mod.admin_tags_save(None, qid, tag="qualifier_strength",
-                                           action="remove"))
+    handler_conn = connect(path)
+    server_mod.admin_tags_save(None, qid, tag="qualifier_strength",
+                               action="remove", conn=handler_conn)
+    handler_conn.commit()
+    handler_conn.close()
 
     assert cached("qualifier_strength") == 0
     assert cached("chronology") == 1  # untouched associations survive

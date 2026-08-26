@@ -4,7 +4,6 @@ import json
 import statistics
 
 from . import config
-from .db import connect
 from .ingest import mark_benchmark_seen, utc_now
 from .sampler import persist_session, select_drill
 from .spacing import update_after_attempt
@@ -12,15 +11,14 @@ from .tagger import diagnose_attempt
 from .tags import tags_by_question
 
 
-def create_session(mode: str, count: int | None = None, seed: str | None = None,
-                   focus_tag: str | None = None, db_path=None) -> dict:
-    plan = select_drill(mode, count=count, seed=seed, focus_tag=focus_tag, db_path=db_path)
+def create_session(conn, mode: str, count: int | None = None, seed: str | None = None,
+                   focus_tag: str | None = None) -> dict:
+    plan = select_drill(conn, mode, count=count, seed=seed, focus_tag=focus_tag)
     if not plan["session_id"]:
         # benchmark plans get a generated id at persist time
         import uuid
         plan["session_id"] = uuid.uuid4().hex[:16]
-    persist_session(plan, db_path=db_path)
-    conn = connect(db_path)
+    persist_session(conn, plan)
     questions = []
     for item in plan["items"]:
         row = conn.execute("SELECT * FROM questions WHERE id=?", (item["question_id"],)).fetchone()
@@ -32,24 +30,19 @@ def create_session(mode: str, count: int | None = None, seed: str | None = None,
                 "choices": json.loads(row["choices_json"]),
                 "images": json.loads(row["images_json"] or "[]"),
             })
-    conn.close()
     return {"plan": plan, "questions": questions}
 
 
-def submit_answer(session_id: str, question_id: int, chosen_letter: str,
-                  confidence: int, time_ms: int, db_path=None) -> dict:
+def submit_answer(conn, session_id: str, question_id: int, chosen_letter: str,
+                  confidence: int, time_ms: int) -> dict:
     """Record one attempt; returns {'correct', 'key'} without revealing more."""
-    conn = connect(db_path)
     sess = conn.execute("SELECT status, plan_json, mode FROM sessions WHERE id=?", (session_id,)).fetchone()
     if sess is None:
-        conn.close()
         raise ValueError(f"Unknown session {session_id}")
     if sess["status"] != "open":
-        conn.close()
         raise ValueError(f"Session {session_id} is not open")
     plan_ids = {item["question_id"] for item in json.loads(sess["plan_json"])}
     if question_id not in plan_ids:
-        conn.close()
         raise ValueError(f"Question {question_id} is not part of session {session_id}")
     prior = conn.execute(
         "SELECT id, correct, chosen_letter FROM attempts WHERE session_id=? AND question_id=?",
@@ -57,12 +50,10 @@ def submit_answer(session_id: str, question_id: int, chosen_letter: str,
     ).fetchone()
     if prior is not None:
         # retried submission: never double-count attempts or spacing updates
-        conn.close()
         return {"correct": bool(prior["correct"]), "key": "",
                 "error_tags": [], "duplicate": True}
     q = conn.execute("SELECT * FROM questions WHERE id=?", (question_id,)).fetchone()
     if q is None:
-        conn.close()
         raise ValueError(f"Question {question_id} not found")
     correct = 1 if q["correct_letter"].upper() == chosen_letter.strip().upper()[:1] else 0
     confidence = max(1, min(3, int(confidence)))
@@ -86,15 +77,12 @@ def submit_answer(session_id: str, question_id: int, chosen_letter: str,
         # reviews never inherit a later attempt's trap analysis
         conn.execute("UPDATE attempts SET error_tags=? WHERE id=?",
                      (json.dumps(error_tags), cur.lastrowid))
-    conn.commit()
-    conn.close()
     return {"correct": bool(correct), "key": q["correct_letter"], "error_tags": error_tags}
 
 
-def complete_session(session_id: str, db_path=None) -> dict:
+def complete_session(conn, session_id: str) -> dict:
     from .weakness import compute_weakness
 
-    conn = connect(db_path)
     conn.execute("UPDATE sessions SET status='completed' WHERE id=?", (session_id,))
     rows = conn.execute(
         """SELECT a.*, q.correct_letter FROM attempts a
@@ -109,15 +97,12 @@ def complete_session(session_id: str, db_path=None) -> dict:
         "confident_wrong": sum(1 for r in rows if not r["correct"] and r["confidence"] >= 3),
         "low_conf_right": sum(1 for r in rows if r["correct"] and r["confidence"] <= 2),
     }
-    conn.commit()
     compute_weakness(conn)  # refresh profile immediately after session
-    conn.close()
     return result
 
 
-def review_payload(session_id: str, db_path=None) -> list[dict]:
+def review_payload(conn, session_id: str) -> list[dict]:
     """Rich per-question review for incorrect or low-confidence answers."""
-    conn = connect(db_path)
     rows = conn.execute(
         """SELECT a.*, q.passage, q.stem, q.choices_json, q.correct_letter,
                   q.rationale, q.official_skill, q.official_domain
@@ -164,7 +149,6 @@ def review_payload(session_id: str, db_path=None) -> list[dict]:
             "lesson": lesson,
             "lesson_source": "derived rule" if lesson else "",
         })
-    conn.close()
     return out
 
 

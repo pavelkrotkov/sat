@@ -114,11 +114,36 @@ CREATE TABLE IF NOT EXISTS llm_tag_cache (
 """
 
 
+#: Paths whose schema this process has already applied. Schema creation is
+#: idempotent but not free, and it used to run on every single connect().
+_SCHEMA_APPLIED: set[str] = set()
+
+
 def connect(db_path: Path | None = None) -> sqlite3.Connection:
+    """Open a connection. Prefer `db_context`, which also commits and closes."""
     path = Path(db_path) if db_path else config.DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
+    # check_same_thread=False: the web UI hands each request its own
+    # connection, but FastAPI may create it on a threadpool thread and run the
+    # handler on the event loop. One connection is still only ever used by one
+    # request, so the guard protects nothing here and only breaks the handoff.
+    conn = sqlite3.connect(str(path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    key = str(path.resolve())
+    if key not in _SCHEMA_APPLIED or not _has_schema(conn):
+        _apply_schema(conn)
+        _SCHEMA_APPLIED.add(key)
+    return conn
+
+
+def _has_schema(conn: sqlite3.Connection) -> bool:
+    """Cheap guard for a path we have seen whose file was replaced since."""
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='questions'"
+    ).fetchone() is not None
+
+
+def _apply_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     # The effective-tags view is owned by satprep.tags, which is the only
     # module that knows what question_tags.origin means.
@@ -126,7 +151,6 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
 
     conn.executescript(EFFECTIVE_TAGS_DDL)
     _migrate(conn)
-    return conn
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -138,9 +162,19 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 @contextmanager
 def db_context(db_path: Path | None = None):
+    """One connection, one transaction, for the span of one command.
+
+    Every entry point - each CLI subcommand, each web request - opens exactly
+    one of these and passes the connection down. Nothing below the entry point
+    opens or closes a connection of its own, so a command that fails partway
+    rolls back as a unit instead of leaving half its writes behind.
+    """
     conn = connect(db_path)
     try:
         yield conn
         conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
     finally:
         conn.close()

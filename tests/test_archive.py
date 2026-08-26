@@ -1,9 +1,21 @@
+import argparse
 import json
 from pathlib import Path
 
 from satprep.archive import export_corpus, restore_corpus
 from satprep.db import connect
 from conftest import add_question
+
+
+def _restore(db_file, archive):
+    """Restore into a fresh database, committing as db_context would."""
+    conn = connect(str(db_file))
+    try:
+        stats = restore_corpus(conn, archive)
+        conn.commit()
+        return stats
+    finally:
+        conn.close()
 
 
 def test_round_trip_preserves_content_and_tags(db, tmp_path):
@@ -15,7 +27,7 @@ def test_round_trip_preserves_content_and_tags(db, tmp_path):
     conn.execute("UPDATE questions SET images_json='[\"artifacts/images/fig.svg\"]' WHERE id=?", (qid,))
     conn.commit()
     out = Path(tmp_path) / "corpus.jsonl"
-    export_corpus(out, db_path=path)
+    export_corpus(conn, out)
     lines = [json.loads(l) for l in out.read_text().splitlines()]
     assert len(lines) == 1
     rec = lines[0]
@@ -25,7 +37,7 @@ def test_round_trip_preserves_content_and_tags(db, tmp_path):
 
     # restore into a brand-new database
     fresh = Path(tmp_path) / "fresh.db"
-    stats = restore_corpus(out, db_path=str(fresh))
+    stats = _restore(fresh, out)
     assert stats["restored"] == 1 and stats["duplicates"] == 0
     c2 = connect(str(fresh))
     row = c2.execute("SELECT * FROM questions").fetchone()
@@ -42,10 +54,10 @@ def test_restore_is_idempotent(db, tmp_path):
     add_question(conn)
     conn.commit()
     out = Path(tmp_path) / "corpus.jsonl"
-    export_corpus(out, db_path=path)
+    export_corpus(conn, out)
     fresh = Path(tmp_path) / "fresh.db"
-    s1 = restore_corpus(out, db_path=str(fresh))
-    s2 = restore_corpus(out, db_path=str(fresh))
+    s1 = _restore(fresh, out)
+    s2 = _restore(fresh, out)
     assert s1["restored"] == 1
     assert s2["restored"] == 0 and s2["duplicates"] == 1
     c2 = connect(str(fresh))
@@ -60,7 +72,7 @@ def test_export_excludes_training_state(db, tmp_path):
     add_question(conn)
     conn.commit()
     out = Path(tmp_path) / "corpus.jsonl"
-    export_corpus(out, db_path=path)
+    export_corpus(conn, out)
     text = out.read_text()
     assert "attempts" not in text and "due_at" not in text
 
@@ -76,9 +88,9 @@ def test_suppressed_tag_survives_round_trip(db, tmp_path):
     )
     conn.commit()
     out = Path(tmp_path) / "c.jsonl"
-    export_corpus(out, db_path=path)
+    export_corpus(conn, out)
     fresh = Path(tmp_path) / "f.db"
-    restore_corpus(out, db_path=str(fresh))
+    _restore(fresh, out)
     # simulate a full tagging run: rule re-insert is ignored by tombstone
     c2 = connect(str(fresh))
     c2.execute("INSERT OR IGNORE INTO question_tags (question_id, tag, origin, created_at) VALUES (1,'qualifier_strength','rule','')")
@@ -88,13 +100,25 @@ def test_suppressed_tag_survives_round_trip(db, tmp_path):
     assert ("qualifier_strength", "rule") not in rows
 
 
-def test_export_refuses_to_clobber_archive_from_missing_db(db, tmp_path):
+def test_export_refuses_to_clobber_archive_from_missing_db(db, tmp_path, monkeypatch):
+    """export_corpus now receives an open connection, so it cannot tell a
+    missing database from an empty one - it raises RuntimeError either way.
+    The friendlier "run satprep restore" message lives in the CLI, which
+    still has the path."""
+    import pytest
+
+    from satprep import cli, config
+
     out = Path(tmp_path) / "keep.jsonl"
     out.write_text('{"_v": 1}\n')
-    import pytest
-    with pytest.raises(FileNotFoundError):
-        export_corpus(out, db_path=str(tmp_path / "nonexistent.db"))
+
+    with pytest.raises(RuntimeError):
+        export_corpus(connect(tmp_path / "nonexistent.db"), out)
     assert out.read_text() == '{"_v": 1}\n'   # archive untouched
+
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "also-missing.db")
+    with pytest.raises(SystemExit, match="satprep restore"):
+        cli.cmd_export(argparse.Namespace(out=None))
 
 
 def test_export_refuses_empty_live_corpus_over_nonempty_archive(db, tmp_path):
@@ -103,7 +127,7 @@ def test_export_refuses_empty_live_corpus_over_nonempty_archive(db, tmp_path):
     out.write_text('{"_v": 1}\n')
     import pytest
     with pytest.raises(RuntimeError):
-        export_corpus(out, db_path=path)      # live corpus empty here
+        export_corpus(conn, out)      # live corpus empty here
     assert out.read_text() == '{"_v": 1}\n'
 
 
@@ -111,10 +135,10 @@ def test_restore_rejects_unsupported_version(db, tmp_path):
     conn, path = db
     add_question(conn); conn.commit()
     out = Path(tmp_path) / "future.jsonl"
-    lines = export_corpus(out, db_path=path).read_text().splitlines()
+    lines = export_corpus(conn, out).read_text().splitlines()
     rec = json.loads(lines[0]); rec["_v"] = 99
     future = Path(tmp_path) / "future.jsonl"
     future.write_text(json.dumps(rec) + "\n")
     import pytest
     with pytest.raises(ValueError, match="unsupported"):
-        restore_corpus(future, db_path=str(Path(tmp_path) / "x.db"))
+        _restore(Path(tmp_path) / "x.db", future)

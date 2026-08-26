@@ -24,20 +24,20 @@ def _seed(db, n_hist_wrong=6, n_hist_right=10, n_fresh=14):
                      source="college_board_question_bank", pool="fresh_training",
                      difficulty="hard", tags=("qualifier_strength",))
     conn.commit()
-    return path
+    return conn
 
 
 def test_deterministic_for_same_seed(db):
     conn, _ = db
-    path = _seed(db)
-    a = select_drill("targeted_drill", count=12, seed="fixed", db_path=path)
-    b = select_drill("targeted_drill", count=12, seed="fixed", db_path=path)
+    conn = _seed(db)
+    a = select_drill(conn, "targeted_drill", count=12, seed="fixed")
+    b = select_drill(conn, "targeted_drill", count=12, seed="fixed")
     assert [i["question_id"] for i in a["items"]] == [i["question_id"] for i in b["items"]]
 
 
 def test_plan_has_explainable_components(db):
-    path = _seed(db)
-    plan = select_drill("targeted_drill", count=6, seed="x", db_path=path)
+    conn = _seed(db)
+    plan = select_drill(conn, "targeted_drill", count=6, seed="x")
     assert plan["items"]
     for item in plan["items"]:
         assert item["why"], "every selection must record its reasons"
@@ -46,8 +46,8 @@ def test_plan_has_explainable_components(db):
 
 
 def test_targeted_mix_includes_old_wrong_and_fresh(db):
-    path = _seed(db)
-    plan = select_drill("targeted_drill", count=12, seed="mix", db_path=path)
+    conn = _seed(db)
+    plan = select_drill(conn, "targeted_drill", count=12, seed="mix")
     buckets = {i["bucket"] for i in plan["items"]}
     assert "old_wrong_due" in buckets
     assert "fresh_weak" in buckets
@@ -57,20 +57,17 @@ def test_targeted_mix_includes_old_wrong_and_fresh(db):
 
 
 def test_transfer_mode_excludes_previously_wrong(db):
-    path = _seed(db)
-    from satprep.db import connect
-    c = connect(path)
-    wrong_ids = {r[0] for r in c.execute(
+    conn = _seed(db)
+    wrong_ids = {r[0] for r in conn.execute(
         """SELECT question_id FROM attempts WHERE correct=0 AND mode='historical'""")}
-    c.close()
-    plan = select_drill("transfer_drill", count=10, seed="t", db_path=path)
+    plan = select_drill(conn, "transfer_drill", count=10, seed="t")
     ids = {i["question_id"] for i in plan["items"]}
     assert not ids & wrong_ids, "transfer drill must not serve memorized errors"
 
 
 def test_error_clinic_prefers_due_errors(db):
-    path = _seed(db)
-    plan = select_drill("error_clinic", count=8, seed="e", db_path=path)
+    conn = _seed(db)
+    plan = select_drill(conn, "error_clinic", count=8, seed="e")
     buckets = {i["bucket"] for i in plan["items"]}
     assert "old_wrong_due" in buckets
 
@@ -78,10 +75,8 @@ def test_error_clinic_prefers_due_errors(db):
 def test_exposure_penalty_demotes_seen_questions(db):
     from satprep.sampler import Candidate, score_candidate
 
-    conn, _ = db
-    path = _seed(db)
-    from satprep.db import connect as c2
-    c = c2(path)
+    conn = _seed(db)
+    c = conn
     row = c.execute("""SELECT q.* FROM questions q WHERE q.pool='historical' LIMIT 1""").fetchone()
     tags = ["qualifier_strength"]
     weakness = {"tag": {"qualifier_strength": {"score": 60}},
@@ -102,38 +97,31 @@ def test_exposure_penalty_demotes_seen_questions(db):
 
 
 def test_bucket_allocation_never_overshoots(db):
-    path = _seed(db)
+    conn = _seed(db)
     for n in (11, 13, 14, 27):
-        plan = select_drill("targeted_drill", count=n, seed=f"cap{n}", db_path=path)
+        plan = select_drill(conn, "targeted_drill", count=n, seed=f"cap{n}")
         assert len(plan["items"]) == n, f"count={n} returned {len(plan['items'])}"
 
 
 def test_seed_reuse_creates_distinct_sessions(db):
-    from satprep.db import connect
     from satprep.sampler import persist_session
 
-    path = _seed(db)
-    p1 = select_drill("hard_mixed", count=6, seed="same", db_path=path)
-    sid1 = persist_session(p1, db_path=path)
-    p2 = select_drill("hard_mixed", count=6, seed="same", db_path=path)
-    sid2 = persist_session(p2, db_path=path)
+    conn = _seed(db)
+    p1 = select_drill(conn, "hard_mixed", count=6, seed="same")
+    sid1 = persist_session(conn, p1)
+    p2 = select_drill(conn, "hard_mixed", count=6, seed="same")
+    sid2 = persist_session(conn, p2)
     assert sid1 != sid2
-    conn = connect(path)
     rows = conn.execute(
         "SELECT id, status FROM sessions WHERE id IN (?,?)", (sid1, sid2)
     ).fetchall()
-    conn.close()
     assert len(rows) == 2  # first session not clobbered
 
 
 def test_transfer_fallback_excludes_memorized_errors(db):
-    conn, _ = db
-    path = _seed(db, n_hist_wrong=30, n_hist_right=2, n_fresh=2)
-    from satprep.db import connect as c2
-    c = c2(path)
-    wrong_ids = {r[0] for r in c.execute(
+    conn = _seed(db, n_hist_wrong=30, n_hist_right=2, n_fresh=2)
+    wrong_ids = {r[0] for r in conn.execute(
         "SELECT question_id FROM attempts WHERE correct=0 AND mode='historical'")}
-    c.close()
-    plan = select_drill("transfer_drill", count=25, seed="over", db_path=path)
+    plan = select_drill(conn, "transfer_drill", count=25, seed="over")
     ids = {i["question_id"] for i in plan["items"]}
     assert not ids & wrong_ids

@@ -138,13 +138,12 @@ def test_benchmark_bucket_survives_pool_flip(db):
     assert t["fresh_other"]["n"] == 0
 
 
-def test_full_dashboard_renders_with_in_app_attempts(four_buckets, monkeypatch):
+def test_full_dashboard_renders_with_in_app_attempts(four_buckets):
     """The crash was reachable from GET / and `satprep stats`, both of which
     go through full_dashboard."""
     conn, _ = four_buckets
-    monkeypatch.setattr("satprep.analytics.connect", lambda db_path=None: conn)
 
-    d = full_dashboard()
+    d = full_dashboard(conn)
     assert set(d) == {"corpus", "skills", "tags", "misconceptions", "transfer", "recent_trend"}
     # every in-app attempt is accounted for in exactly one bucket
     assert sum(b["n"] for b in d["transfer"].values()) == 4
@@ -278,15 +277,12 @@ def test_dashboard_sections_share_one_model_snapshot(db):
     _attempt(conn, "hist:b", fresh, correct=0, mode="historical")
     conn.commit()
 
-    conn.close()  # full_dashboard closes the connection it opens
-    d = full_dashboard(path)
+    d = full_dashboard(conn)
 
     dashboard_skill = next(s for s in d["skills"] if s["skill"] == "Inferences")
-    after = connect(path)
-    persisted = after.execute(
+    persisted = conn.execute(
         "SELECT score FROM weakness_cache WHERE entity_type='skill' AND entity='Inferences'"
     ).fetchone()["score"]
-    after.close()
     assert dashboard_skill["risk_score"] == persisted
     assert any(t["tag"] == "qualifier_strength" for t in d["tags"])
 
