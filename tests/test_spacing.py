@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from satprep.spacing import INTERVALS_BY_OUTCOME, next_due, update_after_attempt
+from satprep.training.spacing import INTERVALS_BY_OUTCOME, next_due, update_after_attempt
 
 NOW = datetime(2026, 8, 1, 12, 0)
 

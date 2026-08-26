@@ -123,7 +123,7 @@ def test_historical_attempts_are_excluded(db):
 def test_benchmark_bucket_survives_pool_flip(db):
     """mark_benchmark_seen moves an answered item into fresh_training; the
     attempt must stay in the benchmark bucket, keyed on the session mode."""
-    from satprep.ingest import mark_benchmark_seen
+    from satprep.corpus.ingest import mark_benchmark_seen
 
     conn, _ = db
     qid = add_question(conn, passage="p", stem="p?", choices=["a", "b", "c", "d"],
@@ -156,7 +156,7 @@ def test_risk_score_comes_from_the_weakness_model(db):
     cache miss silently produced a differently-computed number in the same
     column. The model is now the only source."""
     from satprep.analytics import skill_accuracy, tag_accuracy
-    from satprep.weakness import compute_weakness
+    from satprep.training.weakness import compute_weakness
 
     conn, _ = db
     qid = add_question(conn, passage="p", stem="s?", choices=["a", "b", "c", "d"],
@@ -196,7 +196,7 @@ def test_empty_cache_is_computed_not_papered_over(db):
 def test_risk_scores_recomputes_at_most_once(db, monkeypatch):
     """A skill with questions but no attempts is legitimately absent from the
     model; asking for it must not send risk_scores into a recompute loop."""
-    import satprep.weakness as weakness_mod
+    import satprep.training.weakness as weakness_mod
 
     conn, _ = db
     add_question(conn, passage="p", stem="s?", choices=["a", "b", "c", "d"],
@@ -235,7 +235,7 @@ def test_weak_tag_threshold_is_configurable(db, monkeypatch):
 def test_cached_profile_is_ranked_and_typed(db):
     """The weakness screen and the drill picker read the profile here rather
     than querying weakness_cache, so ordering is part of the interface."""
-    from satprep.weakness import cached_profile
+    from satprep.training.weakness import cached_profile
 
     conn, _ = db
     for tag, score in (("chronology", 20.0), ("qualifier_strength", 80.0),
@@ -257,7 +257,7 @@ def test_dashboard_sections_share_one_model_snapshot(db):
     skill scores the skills section had already read, and one response showed
     two model snapshots. full_dashboard settles the cache up front."""
     import satprep.analytics as analytics_mod
-    from satprep.weakness import compute_weakness
+    from satprep.training.weakness import compute_weakness
 
     from satprep.db import connect
 
@@ -289,7 +289,7 @@ def test_dashboard_sections_share_one_model_snapshot(db):
 
 def test_ensure_current_is_a_no_op_when_cache_covers_evidence(db, monkeypatch):
     """It runs on every dashboard load, so it must not recompute needlessly."""
-    import satprep.weakness as weakness_mod
+    import satprep.training.weakness as weakness_mod
 
     conn, _ = db
     qid = add_question(conn, passage="p", stem="s?", choices=["a", "b", "c", "d"],

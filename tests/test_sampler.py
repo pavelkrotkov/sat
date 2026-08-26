@@ -1,4 +1,4 @@
-from satprep.sampler import select_drill
+from satprep.training.sampler import select_drill
 from conftest import add_question
 
 
@@ -73,7 +73,7 @@ def test_error_clinic_prefers_due_errors(db):
 
 
 def test_exposure_penalty_demotes_seen_questions(db):
-    from satprep.sampler import Candidate, score_candidate
+    from satprep.training.sampler import Candidate, score_candidate
 
     conn = _seed(db)
     c = conn
@@ -104,7 +104,7 @@ def test_bucket_allocation_never_overshoots(db):
 
 
 def test_seed_reuse_creates_distinct_sessions(db):
-    from satprep.sampler import persist_session
+    from satprep.training.sampler import persist_session
 
     conn = _seed(db)
     p1 = select_drill(conn, "hard_mixed", count=6, seed="same")

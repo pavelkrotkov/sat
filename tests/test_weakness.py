@@ -2,7 +2,7 @@ from datetime import datetime
 
 import pytest
 
-from satprep.weakness import cached_profile, compute_weakness
+from satprep.training.weakness import cached_profile, compute_weakness
 from conftest import add_attempt, add_question
 
 

@@ -3,7 +3,7 @@
 import pytest
 
 from satprep.db import connect
-from satprep.sampler import select_drill
+from satprep.training.sampler import select_drill
 from conftest import add_question
 
 
@@ -21,7 +21,7 @@ def _seed_db(conn, n_fresh=40, n_protected=15, n_hist=30):
                      difficulty="hard", tags=("hypothesis_vs_result",))
     for i in range(n_protected):
         # force protected pool regardless of hash
-        from satprep.fingerprint import fingerprint
+        from satprep.corpus.fingerprint import fingerprint
         fp = fingerprint(f"ppp{i}", f"ps{i}?", [f"p{i}-{l}" for l in "abcd"])
         add_question(conn, passage=f"ppp{i}", stem=f"ps{i}?",
                      choices=[f"p{i}-{l}" for l in "abcd"],
@@ -62,7 +62,7 @@ def test_benchmark_mode_uses_only_unseen_protected(db):
 
 
 def test_answered_benchmark_enters_training_and_never_returns(db):
-    from satprep.ingest import mark_benchmark_seen
+    from satprep.corpus.ingest import mark_benchmark_seen
 
     conn, path = db
     _seed_db(conn, n_protected=12)
@@ -76,7 +76,7 @@ def test_answered_benchmark_enters_training_and_never_returns(db):
 
 
 def test_pool_split_stable_across_rebuilds():
-    from satprep.fingerprint import fingerprint, pool_for_fingerprint
+    from satprep.corpus.fingerprint import fingerprint, pool_for_fingerprint
 
     fp = fingerprint("passage x", "stem y", ["a", "b"])
     # same content must map to the same pool on every evaluation/rebuild

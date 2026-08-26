@@ -18,7 +18,8 @@ legitimately need the raw ledger: the admin screen (so a suppression can be
 lifted) and the archive (so a restore is faithful).
 """
 
-from .ingest import utc_now
+from ..clock import utc_now
+from ..db import EFFECTIVE_TAGS as _EFFECTIVE_TAGS
 
 ORIGIN_RULE = "rule"
 ORIGIN_LLM = "llm"
@@ -41,13 +42,12 @@ ORIGIN_PRECEDENCE = {
 }
 
 #: Join target for aggregate SQL that cannot reasonably move into Python.
-#: Drop-in replacement for `question_tags`, minus suppressed rows.
-EFFECTIVE_TAGS = "effective_question_tags"
-
-EFFECTIVE_TAGS_DDL = f"""
-CREATE VIEW IF NOT EXISTS {EFFECTIVE_TAGS} AS
-    SELECT question_id, tag FROM question_tags WHERE origin != '{ORIGIN_SUPPRESSED}';
-"""
+#: Drop-in replacement for `question_tags`, minus suppressed rows. The view
+#: itself is created with the rest of the schema - it is storage, and putting
+#: its DDL here would make satprep.db import this package, which is the wrong
+#: direction. What lives here is the meaning of `origin`; the view's exclusion
+#: is pinned to ORIGIN_SUPPRESSED by a test.
+EFFECTIVE_TAGS = _EFFECTIVE_TAGS
 
 
 # ------------------------------------------------------------------ reads --

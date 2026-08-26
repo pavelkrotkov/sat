@@ -1,4 +1,4 @@
-from satprep.fingerprint import fingerprint, normalize_text, pool_for_fingerprint
+from satprep.corpus.fingerprint import fingerprint, normalize_text, pool_for_fingerprint
 
 
 def test_stable_across_unicode_and_whitespace():

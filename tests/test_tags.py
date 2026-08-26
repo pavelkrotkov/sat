@@ -7,10 +7,10 @@ sampler and the weakness model, not just the admin screen.
 
 import pytest
 
-from satprep import tags as tagmod
-from satprep.sampler import _load_candidates
-from satprep.tagger import run_full_tagging
-from satprep.weakness import compute_weakness
+from satprep.corpus import tags as tagmod
+from satprep.training.sampler import _load_candidates
+from satprep.corpus.tagger import run_full_tagging
+from satprep.training.weakness import compute_weakness
 from conftest import add_question, add_attempt
 
 
@@ -147,7 +147,7 @@ def test_set_rule_tags_replaces_only_rule_rows(tagged):
 def test_archive_round_trip_preserves_suppression(tagged, tmp_path):
     """A restore must be faithful: a suppressed tag stays suppressed, or the
     correction is silently lost on rebuild."""
-    from satprep.archive import export_corpus, restore_corpus
+    from satprep.corpus.archive import export_corpus, restore_corpus
     from satprep.db import connect
 
     conn, path, qid = tagged

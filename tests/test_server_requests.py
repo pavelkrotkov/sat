@@ -50,7 +50,7 @@ def test_handlers_get_a_usable_connection(live):
 
 def test_answer_handler_persists_an_attempt(live):
     """The write path end to end: session, attempt, spacing."""
-    from satprep.sessions import create_session
+    from satprep.training.sessions import create_session
 
     with db_context(live) as conn:
         sess = create_session(conn, "error_clinic", count=2, seed="req")
@@ -78,7 +78,7 @@ def test_answer_handler_persists_an_attempt(live):
 
 def test_failed_request_leaves_nothing_behind(live):
     """get_conn wraps db_context, so a handler that raises rolls back."""
-    from satprep.sessions import create_session, submit_answer
+    from satprep.training.sessions import create_session, submit_answer
 
     with pytest.raises(RuntimeError, match="boom"):
         with db_context(live) as conn:

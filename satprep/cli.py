@@ -16,6 +16,14 @@ from datetime import datetime
 
 from . import config
 from .db import db_context
+from .analytics import full_dashboard
+from .corpus.archive import ARCHIVE_VERSION, export_corpus, restore_corpus
+from .corpus.ingest import ingest_bluebook, ingest_qbank
+from .corpus.qbank_fetch import fetch_qbank
+from .corpus.tagger import run_full_tagging
+from .training.sessions import (complete_session, create_session, review_payload,
+                                submit_answer)
+from .training.weakness import compute_weakness
 
 
 def _auto_export(conn) -> None:
@@ -26,17 +34,12 @@ def _auto_export(conn) -> None:
     later rolls back - the archive is the only copy of question content, so
     it must never run ahead of the corpus it claims to snapshot.
     """
-    from .archive import export_corpus
-
     conn.commit()
     path = export_corpus(conn)
     print(f"archive: {path.name}")
 
 
 def cmd_ingest(args) -> None:
-    from .ingest import ingest_bluebook, ingest_qbank
-    from .tagger import run_full_tagging
-
     with db_context() as conn:
         print(f"bluebook history: {ingest_bluebook(conn)}")
         print(f"question bank imports: {ingest_qbank(conn)}")
@@ -45,8 +48,6 @@ def cmd_ingest(args) -> None:
 
 
 def cmd_export(args) -> None:
-    from .archive import export_corpus
-
     # Checked here rather than in export_corpus, which now receives an open
     # connection and so cannot tell a missing database from an empty one.
     # Applies to --out too: db_context would otherwise create an empty
@@ -62,8 +63,6 @@ def cmd_export(args) -> None:
 
 
 def cmd_restore(args) -> None:
-    from .archive import ARCHIVE_VERSION, restore_corpus
-
     # Resolved and checked before db_context, which would otherwise create an
     # empty database on the way to reporting a missing archive - and that
     # empty database then satisfies cmd_export's guard.
@@ -77,8 +76,6 @@ def cmd_restore(args) -> None:
 
 
 def cmd_analyze(args) -> None:
-    from .weakness import compute_weakness
-
     with db_context() as conn:
         scores = compute_weakness(conn)
     for etype in ("skill", "tag"):
@@ -106,8 +103,6 @@ def cmd_drill(args) -> None:
 
 
 def _run_drill(conn, mode: str, args) -> None:
-    from .sessions import complete_session, create_session, review_payload, submit_answer
-
     sess = create_session(conn, mode=mode, count=args.count, seed=args.seed,
                           focus_tag=args.focus)
     plan, questions = sess["plan"], sess["questions"]
@@ -153,10 +148,6 @@ def cmd_benchmark(args) -> None:
 
 
 def cmd_fetch_qbank(args) -> None:
-    from .qbank_fetch import fetch_qbank
-
-    from .tagger import run_full_tagging
-
     domains = [d.strip().upper() for d in args.domains.split(",") if d.strip()] or None
     with db_context() as conn:
         stats = fetch_qbank(conn, hard_only=args.hard_only, domains=domains,
@@ -168,8 +159,6 @@ def cmd_fetch_qbank(args) -> None:
 
 
 def cmd_stats(args) -> None:
-    from .analytics import full_dashboard
-
     with db_context() as conn:
         d = full_dashboard(conn)
     print(json.dumps(d["corpus"], indent=2))

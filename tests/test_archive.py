@@ -2,7 +2,7 @@ import argparse
 import json
 from pathlib import Path
 
-from satprep.archive import export_corpus, restore_corpus
+from satprep.corpus.archive import export_corpus, restore_corpus
 from satprep.db import connect, db_context
 from conftest import add_question
 
@@ -81,7 +81,7 @@ def test_suppressed_tag_survives_round_trip(db, tmp_path):
     """Codex P2: removing a rule tag must stay removed after restore + retag."""
     conn, path = db
     add_question(conn, tags=("qualifier_strength",))
-    from satprep.ingest import utc_now
+    from satprep.corpus.ingest import utc_now
     conn.execute(
         "INSERT OR REPLACE INTO question_tags (question_id, tag, origin, created_at) VALUES (?,?,'suppressed',?)",
         (1, "qualifier_strength", utc_now()),
@@ -203,3 +203,42 @@ def test_auto_export_publishes_only_committed_state(db, tmp_path, monkeypatch):
 
     archived = [json.loads(line) for line in out.read_text().splitlines()]
     assert [r["passage"] for r in archived] == ["committed"]
+
+
+def test_restore_rebuilds_without_raw_sources_or_network(tmp_path, monkeypatch):
+    """The invariant the corpus/training split makes structural: question
+    content is rebuildable from the archive alone. No outputs/, no
+    artifacts/, no imports/, no network."""
+    from satprep import config
+    from satprep.corpus import tags as tagmod
+
+    source = tmp_path / "source.db"
+    with db_context(source) as conn:
+        for i in range(3):
+            add_question(conn, passage=f"passage {i}", stem=f"stem {i}?",
+                         choices=[f"q{i}{c}" for c in "abcd"], correct="C",
+                         source="bluebook_test", pool="historical",
+                         difficulty="hard", skill="Inferences",
+                         tags=("qualifier_strength",))
+        archive = export_corpus(conn, tmp_path / "corpus.jsonl")
+
+    # every raw source now points somewhere empty
+    monkeypatch.setattr(config, "BLUEBOOK_JSON", tmp_path / "gone.json")
+    monkeypatch.setattr(config, "SNAPSHOT_DIR", tmp_path / "gone-html")
+    monkeypatch.setattr(config, "IMPORT_DIR", tmp_path / "gone-imports")
+
+    rebuilt = tmp_path / "rebuilt.db"
+    with db_context(rebuilt) as conn:
+        stats = restore_corpus(conn, archive)
+
+    assert stats["restored"] == 3
+    with db_context(rebuilt) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM questions").fetchone()[0] == 3
+        row = conn.execute("SELECT difficulty, official_skill, pool FROM questions LIMIT 1").fetchone()
+        assert (row["difficulty"], row["official_skill"], row["pool"]) == ("hard", "Inferences", "historical")
+        qid = conn.execute("SELECT id FROM questions LIMIT 1").fetchone()["id"]
+        assert tagmod.effective_tags(conn, qid) == ["qualifier_strength"]
+
+        # training state is deliberately NOT in the archive
+        assert conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
