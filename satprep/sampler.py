@@ -15,6 +15,7 @@ from . import ALGO_VERSION, config
 from .db import connect
 from .ingest import utc_now
 from .spacing import is_due
+from .tags import tags_by_question
 
 
 def row_field(state, key: str, default=None):
@@ -61,9 +62,7 @@ def _load_candidates(conn, include_pools: tuple[str, ...]) -> list[Candidate]:
             WHERE active=1 AND pool IN ({qmarks}) AND choices_json != '[]'""",
         include_pools,
     ).fetchall()
-    tag_map: dict[int, list[str]] = {}
-    for r in conn.execute("SELECT question_id, tag FROM question_tags"):
-        tag_map.setdefault(r["question_id"], []).append(r["tag"])
+    tag_map = tags_by_question(conn)
     state_map = {r["question_id"]: r for r in conn.execute("SELECT * FROM question_state")}
     hist_map: dict[int, int] = {}
     for r in conn.execute("SELECT question_id, MAX(correct) AS c FROM attempts WHERE mode='historical' GROUP BY question_id"):
