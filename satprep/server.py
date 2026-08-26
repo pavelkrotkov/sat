@@ -15,6 +15,7 @@ from fastapi.templating import Jinja2Templates
 from . import config
 from .analytics import full_dashboard
 from .db import connect
+from .tags import all_tags_with_origin
 
 app = FastAPI(title="satprep", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=str(config.REPO_ROOT / "satprep" / "static")), name="static")
@@ -209,9 +210,7 @@ def admin_why(request: Request, sid: str):
 def admin_tags(request: Request, qid: int):
     conn = connect()
     q = _q(conn, qid)
-    tags = conn.execute(
-        "SELECT tag, origin FROM question_tags WHERE question_id=?", (qid,)
-    ).fetchall()
+    tags = all_tags_with_origin(conn, qid)
     err_tags = conn.execute(
         "SELECT tag, diagnosis_source FROM student_error_tags WHERE question_id=?", (qid,)
     ).fetchall()
@@ -225,23 +224,20 @@ def admin_tags(request: Request, qid: int):
 @app.post("/admin/tags/{qid}")
 async def admin_tags_save(request: Request, qid: int, tag: str = Form(...),
                           action: str = Form("add"), origin: str = Form("manual")):
-    from .ingest import utc_now
+    from .tags import set_manual, suppress
+    from .weakness import compute_weakness
 
     conn = connect()
     if action == "add":
-        # manual add wins over rule/llm origin (spec section 7, step 4)
-        conn.execute(
-            """INSERT INTO question_tags (question_id, tag, origin, created_at)
-               VALUES (?,?,'manual',?)
-               ON CONFLICT(question_id, tag) DO UPDATE SET origin='manual'""",
-            (qid, tag, utc_now()),
-        )
+        set_manual(conn, qid, tag)
     else:
-        # removing a rule tag suppresses it: full tagging runs respect this
-        conn.execute(
-            "INSERT OR REPLACE INTO question_tags (question_id, tag, origin, created_at) VALUES (?,?,'suppressed',?)",
-            (qid, tag, utc_now()),
-        )
+        # suppression, not deletion: re-tagging must not resurrect the tag,
+        # and the sampler and weakness model must both stop seeing it
+        suppress(conn, qid, tag)
     conn.commit()
+    # weakness_cache is keyed on tag associations that just changed, and both
+    # /weaknesses and select_drill read it in preference to recomputing. A
+    # correction that leaves the cache alone is only half applied.
+    compute_weakness(conn)
     conn.close()
     return RedirectResponse(f"/admin/tags/{qid}", status_code=303)

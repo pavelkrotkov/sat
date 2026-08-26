@@ -32,7 +32,11 @@ imports/*.csv|json (CB bank) -->   tags, weaknesses, sessions, traces
   never guessed) plus a granular reasoning-tag layer (`satprep/tagger.py`,
   `satprep/config.py`). Rule-based tagging is cached in SQLite; an
   `llm_tag_cache` table exists for optional out-of-band LLM classification;
-  manual corrections via the admin UI always win.
+  manual corrections via the admin UI always win. Tag precedence and
+  suppression live in `satprep/tags.py` — the only module that reads
+  `question_tags.origin`; everything else goes through `effective_tags` /
+  `tags_by_question` or joins the `effective_question_tags` view, so a
+  suppressed tag disappears from the sampler and the weakness model too.
 * Weakness model (`satprep/weakness.py`): recency-decayed, confidence-weighted
   Bayesian error rate per skill/tag with evidence shrinkage, difficulty bonus,
   and a mastery discount. Uses ALL historical questions, not just errors.

@@ -142,7 +142,7 @@ def compute_weakness(conn=None, now: datetime | None = None) -> dict:
         """SELECT qt.tag AS tag, a.correct AS correct, a.confidence AS confidence,
                   a.attempted_at AS attempted_at, a.time_ms AS time_ms,
                   q.difficulty AS difficulty
-           FROM question_tags qt
+           FROM effective_question_tags qt
            JOIN questions q ON q.id=qt.question_id AND q.active=1
            LEFT JOIN attempts a ON a.question_id=q.id"""
     ).fetchall()

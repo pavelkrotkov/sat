@@ -9,6 +9,7 @@ from .ingest import mark_benchmark_seen, utc_now
 from .sampler import persist_session, select_drill
 from .spacing import update_after_attempt
 from .tagger import diagnose_attempt
+from .tags import tags_by_question
 
 
 def create_session(mode: str, count: int | None = None, seed: str | None = None,
@@ -124,19 +125,12 @@ def review_payload(session_id: str, db_path=None) -> list[dict]:
            WHERE a.session_id=? ORDER BY a.id""",
         (session_id,),
     ).fetchall()
-    tag_rows = conn.execute(
-        """SELECT qt.question_id, qt.tag FROM question_tags qt
-           JOIN attempts a ON a.question_id=qt.question_id WHERE a.session_id=?""",
-        (session_id,),
-    ).fetchall()
+    tags_by_q = tags_by_question(conn, {r["question_id"] for r in rows})
     err_rows = conn.execute(
         """SELECT et.question_id, et.tag FROM student_error_tags et
            JOIN attempts a ON a.question_id=et.question_id WHERE a.session_id=?""",
         (session_id,),
     ).fetchall()
-    tags_by_q: dict[int, list[str]] = {}
-    for r in tag_rows:
-        tags_by_q.setdefault(r["question_id"], []).append(r["tag"])
     errs_by_q: dict[int, list[str]] = {}
     for r in err_rows:
         errs_by_q.setdefault(r["question_id"], []).append(r["tag"])
