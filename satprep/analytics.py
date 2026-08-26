@@ -113,7 +113,7 @@ def transfer_performance(conn) -> dict:
         tag_map.setdefault(r["question_id"], []).append(r["tag"])
 
     rows = conn.execute(
-        """SELECT a.correct AS c,
+        """SELECT a.correct AS c, a.question_id AS question_id,
                   CASE WHEN s.mode='fresh_benchmark' THEN 'benchmark_session'
                        ELSE '' END AS bench,
                   q.pool AS pool
