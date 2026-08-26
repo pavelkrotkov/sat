@@ -146,7 +146,8 @@ def test_full_dashboard_renders_with_in_app_attempts(four_buckets, monkeypatch):
 
     d = full_dashboard()
     assert set(d) == {"corpus", "skills", "tags", "misconceptions", "transfer", "recent_trend"}
-    assert d["transfer"]["new_questions_sharing_weak_tags"]["n"] == 1
+    # every in-app attempt is accounted for in exactly one bucket
+    assert sum(b["n"] for b in d["transfer"].values()) == 4
 
 
 # ------------------------------------------------- one owner of the score --
@@ -249,3 +250,63 @@ def test_cached_profile_is_ranked_and_typed(db):
 
     both = cached_profile(conn)
     assert set(both) == {"tag"}
+
+
+def test_dashboard_sections_share_one_model_snapshot(db):
+    """Regression: risk_scores refreshes lazily on a cache miss. If the miss
+    happened while assembling the tags section, compute_weakness rewrote the
+    skill scores the skills section had already read, and one response showed
+    two model snapshots. full_dashboard settles the cache up front."""
+    import satprep.analytics as analytics_mod
+    from satprep.weakness import compute_weakness
+
+    from satprep.db import connect
+
+    conn, path = db
+    old = add_question(conn, passage="o", stem="o?", choices=["oa", "ob", "oc", "od"],
+                       source="bluebook_test", pool="historical", skill="Inferences")
+    _session(conn, "hist:a", "historical")
+    _attempt(conn, "hist:a", old, correct=0, mode="historical")
+    conn.commit()
+    compute_weakness(conn)  # cache now covers Inferences, no tags
+
+    # ingest arrives: more evidence for the same skill, plus a brand-new tag
+    fresh = add_question(conn, passage="n", stem="n?", choices=["na", "nb", "nc", "nd"],
+                         source="bluebook_test", pool="historical",
+                         skill="Inferences", tags=("qualifier_strength",))
+    _session(conn, "hist:b", "historical")
+    _attempt(conn, "hist:b", fresh, correct=0, mode="historical")
+    conn.commit()
+
+    conn.close()  # full_dashboard closes the connection it opens
+    d = full_dashboard(path)
+
+    dashboard_skill = next(s for s in d["skills"] if s["skill"] == "Inferences")
+    after = connect(path)
+    persisted = after.execute(
+        "SELECT score FROM weakness_cache WHERE entity_type='skill' AND entity='Inferences'"
+    ).fetchone()["score"]
+    after.close()
+    assert dashboard_skill["risk_score"] == persisted
+    assert any(t["tag"] == "qualifier_strength" for t in d["tags"])
+
+
+def test_ensure_current_is_a_no_op_when_cache_covers_evidence(db, monkeypatch):
+    """It runs on every dashboard load, so it must not recompute needlessly."""
+    import satprep.weakness as weakness_mod
+
+    conn, _ = db
+    qid = add_question(conn, passage="p", stem="s?", choices=["a", "b", "c", "d"],
+                       source="bluebook_test", pool="historical",
+                       skill="Inferences", tags=("qualifier_strength",))
+    _session(conn, "hist:x", "historical")
+    _attempt(conn, "hist:x", qid, correct=0, mode="historical")
+    conn.commit()
+    weakness_mod.compute_weakness(conn)
+
+    calls = []
+    monkeypatch.setattr(weakness_mod, "compute_weakness",
+                        lambda *a, **k: calls.append(1))
+    weakness_mod.ensure_current(conn)
+
+    assert calls == []

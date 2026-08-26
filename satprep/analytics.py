@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from . import config
 from .db import connect
 from .tags import tags_by_question
-from .weakness import risk_scores
+from .weakness import ensure_current, risk_scores
 
 
 def skill_accuracy(conn) -> list[dict]:
@@ -184,6 +184,10 @@ def corpus_summary(db_path=None) -> dict:
 
 def full_dashboard(db_path=None) -> dict:
     conn = connect(db_path)
+    # One model snapshot for the whole response: settle the cache before any
+    # section reads it, or a lazy refresh partway through leaves the sections
+    # above it on the previous model.
+    ensure_current(conn)
     data = {
         "corpus": corpus_summary_conn(conn),
         "skills": skill_accuracy(conn),

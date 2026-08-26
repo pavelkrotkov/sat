@@ -204,6 +204,39 @@ def compute_weakness(conn=None, now: datetime | None = None) -> dict:
     return out
 
 
+_ENTITIES_WITH_EVIDENCE = {
+    "skill": """SELECT DISTINCT q.official_skill AS entity
+                FROM attempts a JOIN questions q ON q.id=a.question_id
+                WHERE q.active=1 AND q.official_skill != ''""",
+    "tag": """SELECT DISTINCT qt.tag AS entity
+              FROM attempts a
+              JOIN questions q ON q.id=a.question_id AND q.active=1
+              JOIN effective_question_tags qt ON qt.question_id=q.id""",
+}
+
+
+def ensure_current(conn) -> None:
+    """Refresh the cache up front if it does not cover everything with evidence.
+
+    Callers that assemble several sections from one profile call this before
+    reading any of them. Without it, a lazy refresh triggered partway through
+    - say a newly ingested tag missing from the cache - rewrites scores the
+    earlier sections have already read, and one response ends up showing two
+    different model snapshots.
+    """
+    for entity_type, sql in _ENTITIES_WITH_EVIDENCE.items():
+        expected = {r["entity"] for r in conn.execute(sql)}
+        cached = {
+            r["entity"]
+            for r in conn.execute(
+                "SELECT entity FROM weakness_cache WHERE entity_type=?", (entity_type,)
+            )
+        }
+        if expected - cached:
+            compute_weakness(conn)
+            return
+
+
 def risk_scores(conn, entity_type: str, entities=None) -> dict[str, float]:
     """Weakness score per entity of one type - the single source of "how risky".
 
