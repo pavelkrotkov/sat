@@ -1,28 +1,19 @@
-"""Analytics for the dashboard: patterns, not anecdotes (spec section 14)."""
+"""Analytics for the dashboard: patterns, not anecdotes (spec section 14).
+
+Presentation only. "How risky is this skill/tag?" is answered by
+satprep.weakness and read through `risk_scores`; this module shapes those
+numbers for the dashboard and never computes a second opinion.
+"""
 
 from datetime import datetime, timedelta, timezone
 
+from . import config
 from .db import connect
 from .tags import tags_by_question
-
-
-def _smoothed_rate(wrong: float, n: float, k: float = 6.0, prior: float = 0.25) -> float:
-    if n <= 0:
-        return 0.0
-    return round(100.0 * (wrong + k * prior) / (n + k))
-
-
-def _model_scores(conn, entity_type: str) -> dict[str, float]:
-    return {
-        r["entity"]: r["score"]
-        for r in conn.execute(
-            "SELECT entity, score FROM weakness_cache WHERE entity_type=?", (entity_type,)
-        ).fetchall()
-    }
+from .weakness import ensure_current, risk_scores
 
 
 def skill_accuracy(conn) -> list[dict]:
-    model = _model_scores(conn, "skill")
     rows = conn.execute(
         """SELECT q.official_skill AS skill,
                   COUNT(*) AS n, SUM(a.correct) AS c
@@ -30,20 +21,19 @@ def skill_accuracy(conn) -> list[dict]:
            WHERE a.mode='historical' AND q.active=1 AND q.official_skill != ''
            GROUP BY 1"""
     ).fetchall()
+    model = risk_scores(conn, "skill", (r["skill"] for r in rows))
     out = []
     for r in rows:
         n, c = r["n"], r["c"] or 0
         out.append({
             "skill": r["skill"], "seen": n, "correct": c,
             "raw_accuracy": round(100 * c / n, 1),
-            # prefer the full weakness-model score; fall back to raw smoothing
-            "risk_score": model.get(r["skill"]) or _smoothed_rate(n - c, n),
+            "risk_score": model.get(r["skill"], 0.0),
         })
     return sorted(out, key=lambda x: -x["risk_score"])
 
 
 def tag_accuracy(conn) -> list[dict]:
-    model = _model_scores(conn, "tag")
     rows = conn.execute(
         """SELECT qt.tag AS tag,
                   COUNT(DISTINCT a.id) AS n,
@@ -55,6 +45,7 @@ def tag_accuracy(conn) -> list[dict]:
            JOIN attempts a ON a.question_id=q.id AND a.mode='historical'
            GROUP BY 1"""
     ).fetchall()
+    model = risk_scores(conn, "tag", (r["tag"] for r in rows if r["n"]))
     out = []
     for r in rows:
         n = r["n"]
@@ -64,7 +55,7 @@ def tag_accuracy(conn) -> list[dict]:
             "tag": r["tag"], "seen": n, "correct": r["c"], "wrong": r["w"],
             "shaky_correct": r["shaky_correct"],
             "raw_accuracy": round(100 * r["c"] / n, 1),
-            "risk_score": model.get(r["tag"]) or _smoothed_rate(r["w"], n),
+            "risk_score": model.get(r["tag"], 0.0),
         })
     return sorted(out, key=lambda x: -x["risk_score"])
 
@@ -105,10 +96,10 @@ def high_value_misconceptions(conn) -> list[dict]:
 
 def transfer_performance(conn) -> dict:
     """Separate accuracy: exact old items vs new items sharing weak tags vs benchmark."""
-    weak_tags_rows = conn.execute(
-        "SELECT entity FROM weakness_cache WHERE entity_type='tag' AND score>=55"
-    ).fetchall()
-    weak_tag_names = {r["entity"] for r in weak_tags_rows}
+    weak_tag_names = {
+        tag for tag, score in risk_scores(conn, "tag").items()
+        if score >= config.WEAK_TAG_THRESHOLD
+    }
     tag_map = tags_by_question(conn)
 
     rows = conn.execute(
@@ -193,6 +184,10 @@ def corpus_summary(db_path=None) -> dict:
 
 def full_dashboard(db_path=None) -> dict:
     conn = connect(db_path)
+    # One model snapshot for the whole response: settle the cache before any
+    # section reads it, or a lazy refresh partway through leaves the sections
+    # above it on the previous model.
+    ensure_current(conn)
     data = {
         "corpus": corpus_summary_conn(conn),
         "skills": skill_accuracy(conn),
