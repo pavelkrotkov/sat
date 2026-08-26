@@ -12,13 +12,17 @@ Endpoints used:
   POST .../digital/get-question           -> full content {external_id}
 """
 
+import html as html_mod
 import json
 import re
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 
-from .config import SKILL_TO_DOMAIN
+from ..config import SKILL_TO_DOMAIN
+from ..clock import utc_now
+from . import fingerprint as fpmod
 
 BASE = "https://qbank-api.collegeboard.org/msreportingquestionbank-prod/questionbank"
 SAT_RW_ASMT = 99   # SAT
@@ -50,8 +54,6 @@ def _post(url: str, payload: dict, retries: int = 3) -> object:
 def _clean_html(html: str | None) -> str:
     if not html:
         return ""
-    import html as html_mod
-
     text = _STRIPTAGS.sub(" ", html)
     text = html_mod.unescape(text)
     return re.sub(r"\s+", " ", text).strip()
@@ -121,9 +123,6 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
 
     Returns one of: 'added', 'duplicate', 'invalid'.
     """
-    from . import fingerprint as fpmod
-    from .ingest import utc_now
-
     choices = row["choices"]
     correct = row["correct"]
     if len(choices) < 2 or not correct:
@@ -227,8 +226,6 @@ def known_external_ids(conn) -> set[str]:
 def fetch_qbank(conn, hard_only: bool = False, domains: list[str] | None = None,
                 limit: int = 0, sleep_s: float = 0.25) -> dict:
     """Pull SAT R&W items from the public EQB into the corpus. Idempotent."""
-    from datetime import datetime, timezone
-
     have = known_external_ids(conn)
     batch = f"eqb-{datetime.now(timezone.utc).strftime('%Y%m%d')}"
     stats = {"listed": 0, "skipped_known": 0, "fetched": 0,
@@ -275,7 +272,7 @@ def fetch_qbank(conn, hard_only: bool = False, domains: list[str] | None = None,
 
 
 if __name__ == "__main__":
-    from .db import db_context
+    from ..db import db_context
 
     with db_context() as _conn:
         print(fetch_qbank(_conn))

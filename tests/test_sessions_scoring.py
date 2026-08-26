@@ -1,6 +1,6 @@
 import pytest
 
-from satprep.sessions import complete_session, create_session, review_payload, submit_answer
+from satprep.training.sessions import complete_session, create_session, review_payload, submit_answer
 from conftest import add_question
 
 
@@ -106,7 +106,7 @@ def test_benchmark_release_requires_plan_membership(db):
     """Greptile P1: protected items can only be released via their own session plan."""
     from conftest import add_question
     conn, path = db
-    fp = __import__("satprep.fingerprint", fromlist=["fingerprint"]).fingerprint(
+    fp = __import__("satprep.corpus.fingerprint", fromlist=["fingerprint"]).fingerprint(
         "prot-p", "prot-s?", ["pa", "pb", "pc", "pd"])
     pid = add_question(conn, passage="prot-p", stem="prot-s?",
                        choices=["pa", "pb", "pc", "pd"],

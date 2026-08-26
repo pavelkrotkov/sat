@@ -11,10 +11,13 @@ import json
 import random
 from datetime import datetime
 
-from . import ALGO_VERSION, config
-from .ingest import utc_now
+from .. import ALGO_VERSION
+from .. import config
+from ..clock import utc_now
+from ..ids import session_id
 from .spacing import is_due
-from .tags import tags_by_question
+from ..corpus.tags import tags_by_question
+from .weakness import cached_profile, compute_weakness
 
 
 def row_field(state, key: str, default=None):
@@ -159,7 +162,6 @@ def select_drill(conn, mode: str, count: int | None = None, seed: str | None = N
     rng = random.Random(seed)
     now = datetime.now().astimezone()
 
-    from .weakness import cached_profile, compute_weakness
     weakness = cached_profile(conn)
     if not weakness.get("tag") and not weakness.get("skill"):
         weakness = compute_weakness(conn, now=now)
@@ -268,13 +270,11 @@ def select_drill(conn, mode: str, count: int | None = None, seed: str | None = N
         })
     rng.shuffle(plan_items)  # spec section 10: randomize presentation order
 
-    import uuid
-    session_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{mode}:{seed}").hex[:16]
-    while conn.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,)).fetchone():
-        # seed reuse or same-second default seeds must never resurrect a session
-        session_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{mode}:{seed}:{uuid.uuid4()}").hex[:16]
+    # seed reuse or same-second default seeds must never resurrect a session
+    sid = session_id(mode, seed, exists=lambda c: conn.execute(
+        "SELECT 1 FROM sessions WHERE id=?", (c,)).fetchone() is not None)
     result = {
-        "session_id": session_id,
+        "session_id": sid,
         "mode": mode,
         "seed": seed,
         "algo_version": ALGO_VERSION,

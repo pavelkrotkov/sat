@@ -15,7 +15,9 @@ and writes to student_error_tags.
 import json
 import re
 
-from .config import SKILL_TO_DOMAIN
+from ..config import SKILL_TO_DOMAIN
+from ..clock import utc_now
+from .tags import set_rule_tags
 
 # ------------------------------------------------------- official skills ---
 
@@ -307,16 +309,12 @@ def diagnose_error(correct_text: str, student_text: str) -> list[str]:
 def tag_question_row(conn, qid: int, passage: str, stem: str, choices: list[str],
                      correct_letter: str = "") -> list[str]:
     """Recompute this question's rule tags. Manual corrections survive."""
-    from .tags import set_rule_tags
-
     tags = reasoning_tags(passage, stem, choices)
     set_rule_tags(conn, qid, tags)
     return tags
 
 
 def diagnose_attempt(conn, qid: int, choices: list[dict], correct_letter: str, student_letter: str) -> list[str]:
-    from .ingest import utc_now
-
     if not student_letter or student_letter == correct_letter:
         return []
     cmap = {c["letter"]: c["text"] for c in choices}

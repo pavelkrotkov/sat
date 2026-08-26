@@ -1,4 +1,4 @@
-from satprep.qbank_fetch import _normalize, insert_qbank_row
+from satprep.corpus.qbank_fetch import _normalize, insert_qbank_row
 from conftest import add_question
 
 
@@ -50,7 +50,7 @@ def test_insert_rejects_incomplete(db):
 
 
 def test_known_external_ids_roundtrip(db):
-    from satprep.qbank_fetch import known_external_ids
+    from satprep.corpus.qbank_fetch import known_external_ids
 
     conn, path = db
     insert_qbank_row(conn, _normalize(DETAIL, META), batch="b1")
@@ -59,8 +59,8 @@ def test_known_external_ids_roundtrip(db):
 
 def test_cross_source_duplicate_enriches_choiceless_row(db):
     """Greptile P1: bank item matching a choice-less Bluebook row backfills choices."""
-    from satprep.fingerprint import fingerprint
-    from satprep.qbank_fetch import insert_qbank_row
+    from satprep.corpus.fingerprint import fingerprint
+    from satprep.corpus.qbank_fetch import insert_qbank_row
 
     # historical stats-only row: no choices, unknown difficulty
     add_question(db[0], passage="shared passage", stem="shared stem?",

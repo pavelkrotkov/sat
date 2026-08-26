@@ -11,7 +11,7 @@ import hashlib
 import re
 import unicodedata
 
-from . import config
+from .. import config
 
 _WS = re.compile(r"\s+")
 _PUNCT_SPACE = re.compile(r"\s([,.!?;:])")

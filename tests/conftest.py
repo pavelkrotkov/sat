@@ -18,7 +18,7 @@ def add_question(conn, *, passage="P", stem="Q?", choices=("a", "b", "c", "d"),
                  correct="A", source="college_board_question_bank", pool=None,
                  difficulty="", skill="", tags=(), fingerprint=None,
                  import_batch="batch1"):
-    from satprep import fingerprint as fpmod
+    from satprep.corpus import fingerprint as fpmod
 
     fp = fingerprint or fpmod.fingerprint(passage, stem, list(choices))
     if pool is None:

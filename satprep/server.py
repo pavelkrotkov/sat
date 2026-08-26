@@ -15,8 +15,12 @@ from fastapi.templating import Jinja2Templates
 from . import config
 from .analytics import full_dashboard
 from .db import db_context
-from .tags import all_tags_with_origin
-from .weakness import cached_profile
+from .corpus.tags import all_tags_with_origin, set_manual, suppress
+from .config import REASONING_TAGS
+from .training.sessions import (complete_session, create_session, review_payload,
+                                submit_answer)
+from .training.weakness import compute_weakness
+from .training.weakness import cached_profile
 
 app = FastAPI(title="satprep", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=str(config.REPO_ROOT / "satprep" / "static")), name="static")
@@ -63,8 +67,6 @@ def dashboard(request: Request, conn=Conn):
 
 @app.get("/start", response_class=HTMLResponse)
 def start_drill(request: Request, conn=Conn):
-    from .config import REASONING_TAGS
-
     focus = request.query_params.get("focus") or ""
     weak_tags = list(cached_profile(conn, "tag"))[:12]
     counts = dict(conn.execute(
@@ -80,8 +82,6 @@ def start_drill(request: Request, conn=Conn):
 @app.post("/begin")
 def begin(request: Request, mode: str = Form(...), count: int = Form(0),
           focus_tag: str = Form(""), conn=Conn):
-    from .sessions import create_session
-
     sess = create_session(conn, mode=mode, count=count or None,
                           focus_tag=focus_tag or None)
     sid = sess["plan"]["session_id"]
@@ -108,8 +108,6 @@ def answer(request: Request, sid: str, idx: int,
                  question_id: int = Form(...), letter: str = Form(...),
                  confidence: int = Form(...), elapsed_ms: int = Form(0),
                  conn=Conn):
-    from .sessions import submit_answer
-
     submit_answer(conn, sid, question_id, letter, confidence, elapsed_ms)
     _commit(conn)
     return RedirectResponse(f"/question/{sid}/{idx + 1}", status_code=303)
@@ -117,8 +115,6 @@ def answer(request: Request, sid: str, idx: int,
 
 @app.get("/results/{sid}", response_class=HTMLResponse)
 def results(request: Request, sid: str, conn=Conn):
-    from .sessions import complete_session
-
     summary = complete_session(conn, sid)  # idempotent-ish; refreshes weakness cache
     _commit(conn)
     return templates.TemplateResponse(request, "results.html", {"summary": summary, "sid": sid,
@@ -127,8 +123,6 @@ def results(request: Request, sid: str, conn=Conn):
 
 @app.get("/review/{sid}", response_class=HTMLResponse)
 def review(request: Request, sid: str, conn=Conn):
-    from .sessions import review_payload
-
     rows = review_payload(conn, sid)
     return templates.TemplateResponse(request, "review.html", {"reviews": rows, "sid": sid,
     })
@@ -178,8 +172,6 @@ def benchmark_start(request: Request, conn=Conn):
 
 @app.post("/benchmark/begin")
 def benchmark_begin(request: Request, count: int = Form(8), conn=Conn):
-    from .sessions import create_session
-
     sess = create_session(conn, mode="fresh_benchmark", count=min(count, 25))
     sid = sess["plan"]["session_id"]
     if not sess["questions"]:
@@ -232,9 +224,6 @@ def admin_tags(request: Request, qid: int, conn=Conn):
 def admin_tags_save(request: Request, qid: int, tag: str = Form(...),
                           action: str = Form("add"), origin: str = Form("manual"),
                           conn=Conn):
-    from .tags import set_manual, suppress
-    from .weakness import compute_weakness
-
     if action == "add":
         set_manual(conn, qid, tag)
     else:

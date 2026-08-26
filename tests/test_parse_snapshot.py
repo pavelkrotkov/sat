@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from satprep.parse_snapshot import parse_snapshot
+from satprep.corpus.parse_snapshot import parse_snapshot
 
 SNAP_DIR = Path(__file__).resolve().parent.parent / "artifacts" / "html"
 
