@@ -6,11 +6,18 @@
 <ul>{% for c in q.choices %}<li>{{ c.letter }}. {{ c.text }} {{ '(KEY)' if c.is_correct }}</li>{% endfor %}</ul>
 <h2>Current tags</h2>
 <ul class="taglist">
-{% for t in tags %}
-  <li>{{ t.tag }} <em>({{ t.origin }})</em>
-    {% if t.origin != 'suppressed' %}<form method="post" action="/admin/tags/{{ q.id }}" class="inline">
-      <input type="hidden" name="tag" value="{{ t.tag }}"><input type="hidden" name="action" value="remove">
-      <button type="submit">×</button></form>{% endif %}
+{% for tag, origin in tags %}
+  <li{{ ' class="suppressed"' | safe if origin == 'suppressed' }}>{{ tag }} <em>({{ origin }})</em>
+    <form method="post" action="/admin/tags/{{ q.id }}" class="inline">
+      <input type="hidden" name="tag" value="{{ tag }}">
+      {% if origin == 'suppressed' %}
+        <input type="hidden" name="action" value="add">
+        <button type="submit" title="restore this tag">↺</button>
+      {% else %}
+        <input type="hidden" name="action" value="remove">
+        <button type="submit" title="suppress this tag">×</button>
+      {% endif %}
+    </form>
   </li>
 {% endfor %}
 {% for t in err_tags %}<li class="err">error: {{ t.tag }} <em>({{ t.diagnosis_source }})</em></li>{% endfor %}

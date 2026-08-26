@@ -120,6 +120,11 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    # The effective-tags view is owned by satprep.tags, which is the only
+    # module that knows what question_tags.origin means.
+    from .tags import EFFECTIVE_TAGS_DDL
+
+    conn.executescript(EFFECTIVE_TAGS_DDL)
     _migrate(conn)
     return conn
 

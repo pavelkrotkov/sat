@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 
 from .db import connect
+from .tags import tags_by_question
 
 
 def _smoothed_rate(wrong: float, n: float, k: float = 6.0, prior: float = 0.25) -> float:
@@ -49,7 +50,7 @@ def tag_accuracy(conn) -> list[dict]:
                   COALESCE(SUM(a.correct),0) AS c,
                   SUM(CASE WHEN a.correct=0 THEN 1 ELSE 0 END) AS w,
                   SUM(CASE WHEN a.correct=1 AND a.confidence<=2 THEN 1 ELSE 0 END) AS shaky_correct
-           FROM question_tags qt
+           FROM effective_question_tags qt
            JOIN questions q ON q.id=qt.question_id AND q.active=1
            JOIN attempts a ON a.question_id=q.id AND a.mode='historical'
            GROUP BY 1"""
@@ -108,9 +109,7 @@ def transfer_performance(conn) -> dict:
         "SELECT entity FROM weakness_cache WHERE entity_type='tag' AND score>=55"
     ).fetchall()
     weak_tag_names = {r["entity"] for r in weak_tags_rows}
-    tag_map: dict[int, list[str]] = {}
-    for r in conn.execute("SELECT question_id, tag FROM question_tags"):
-        tag_map.setdefault(r["question_id"], []).append(r["tag"])
+    tag_map = tags_by_question(conn)
 
     rows = conn.execute(
         """SELECT a.correct AS c, a.question_id AS question_id,
@@ -162,7 +161,7 @@ def trend_by_tag(conn, window: int = 30) -> list[dict]:
                   SUM(a.correct) AS c, COUNT(*) AS n
            FROM attempts a
            JOIN questions q ON q.id=a.question_id
-           JOIN question_tags qt ON qt.question_id=q.id
+           JOIN effective_question_tags qt ON qt.question_id=q.id
            WHERE a.attempted_at >= ? AND a.mode != 'historical'
            GROUP BY 1 HAVING n >= 2""",
         (cutoff,),

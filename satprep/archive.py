@@ -13,14 +13,14 @@ from .ingest import utc_now
 
 from . import config
 from .db import connect
+from .tags import all_tags_with_origin, restore_tag
 
 ARCHIVE_VERSION = 1
 
 
 def _question_line(conn, row) -> dict:
-    tags = [{"tag": r["tag"], "origin": r["origin"]} for r in conn.execute(
-        "SELECT tag, origin FROM question_tags WHERE question_id=? ORDER BY tag",
-        (row["id"],))]
+    # The archive is faithful: suppressions are decisions worth preserving.
+    tags = [{"tag": t, "origin": o} for t, o in all_tags_with_origin(conn, row["id"])]
     return {
         "_v": ARCHIVE_VERSION,
         "fingerprint": row["fingerprint"],
@@ -155,8 +155,5 @@ def _restore_lines(conn, archive_path: Path, stats: dict) -> None:
                 tag, origin = t["tag"], t.get("origin", "archive")
             else:
                 tag, origin = t, "archive"
-            conn.execute(
-                "INSERT OR IGNORE INTO question_tags (question_id, tag, origin, created_at) VALUES (?,?,?, '')",
-                (qid, tag, origin),
-            )
+            restore_tag(conn, qid, tag, origin)
         stats["restored"] += 1

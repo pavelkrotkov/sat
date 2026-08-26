@@ -306,15 +306,11 @@ def diagnose_error(correct_text: str, student_text: str) -> list[str]:
 
 def tag_question_row(conn, qid: int, passage: str, stem: str, choices: list[str],
                      correct_letter: str = "") -> list[str]:
-    from .ingest import utc_now
+    """Recompute this question's rule tags. Manual corrections survive."""
+    from .tags import set_rule_tags
 
     tags = reasoning_tags(passage, stem, choices)
-    conn.execute("DELETE FROM question_tags WHERE question_id=? AND origin='rule'", (qid,))
-    for t in tags:
-        conn.execute(
-            "INSERT OR IGNORE INTO question_tags (question_id, tag, origin, created_at) VALUES (?,?,'rule',?)",
-            (qid, t, utc_now()),
-        )
+    set_rule_tags(conn, qid, tags)
     return tags
 
 
