@@ -17,7 +17,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config, fingerprint as fpmod
-from .db import connect
 from .parse_snapshot import parse_snapshot
 
 
@@ -53,13 +52,11 @@ def _historical_correctness(rec: dict) -> int | None:
     return None  # unknown - do not fabricate
 
 
-def ingest_bluebook(db_path=None) -> dict:
+def ingest_bluebook(conn) -> dict:
     """Ingest the scraped 8-test history. Idempotent."""
-    conn = connect(db_path)
     stats = {"records_seen": 0, "rw_records": 0, "questions_added": 0,
              "attempts_added": 0, "parse_fallbacks": 0, "skipped_existing": 0}
     if not config.BLUEBOOK_JSON.exists():
-        conn.close()
         return stats
 
     records = json.loads(config.BLUEBOOK_JSON.read_text())
@@ -164,8 +161,6 @@ def ingest_bluebook(db_path=None) -> dict:
 
                 diagnose_attempt(conn, qid, parsed.choices, correct_letter, student_letter)
 
-    conn.commit()
-    conn.close()
     return stats
 
 
@@ -273,7 +268,7 @@ def _normalize_qbank_choices(raw) -> list[dict]:
     return choices
 
 
-def ingest_qbank(path_or_dir=None, batch_name: str | None = None, db_path=None) -> dict:
+def ingest_qbank(conn, path_or_dir=None, batch_name: str | None = None) -> dict:
     """Ingest official College Board Question Bank exports from imports/.
 
     Every file is treated as its own batch (batch defaults to the file name).
@@ -287,7 +282,6 @@ def ingest_qbank(path_or_dir=None, batch_name: str | None = None, db_path=None) 
 
     from .qbank_fetch import insert_qbank_row
 
-    conn = connect(db_path)
     for path in files:
         batch = batch_name or path.stem
         try:
@@ -312,8 +306,6 @@ def ingest_qbank(path_or_dir=None, batch_name: str | None = None, db_path=None) 
                 stats["added_fresh"] += 1
             elif outcome == "duplicate":
                 stats["duplicates"] += 1
-    conn.commit()
-    conn.close()
     return stats
 
 
@@ -328,4 +320,7 @@ def mark_benchmark_seen(conn, question_ids: list[int]) -> None:
 
 
 if __name__ == "__main__":
-    print(ingest_bluebook())
+    from .db import db_context
+
+    with db_context() as _conn:
+        print(ingest_bluebook(_conn))

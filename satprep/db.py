@@ -5,14 +5,24 @@ rebuildable from raw sources (outputs/ + artifacts/) plus imports/.
 """
 
 import sqlite3
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 
 from . import config
 
+#: Bumped whenever SCHEMA or _migrate changes. Stamped into PRAGMA
+#: user_version so a database swapped in underneath a running process is
+#: detected by more than the presence of one table.
+SCHEMA_VERSION = 1
+
+#: Connection-scoped pragmas, re-applied to every connection. foreign_keys in
+#: particular resets to OFF on each new connection, so it cannot live in
+#: SCHEMA now that the DDL runs once per path rather than once per connect.
+CONNECTION_PRAGMAS = "PRAGMA foreign_keys=ON;"
+
 SCHEMA = """
 PRAGMA journal_mode=WAL;
-PRAGMA foreign_keys=ON;
 
 CREATE TABLE IF NOT EXISTS questions (
     id INTEGER PRIMARY KEY,
@@ -114,11 +124,63 @@ CREATE TABLE IF NOT EXISTS llm_tag_cache (
 """
 
 
+#: Paths whose schema this process has already applied. Schema creation is
+#: idempotent but not free, and it used to run on every single connect().
+_SCHEMA_APPLIED: set[str] = set()
+_SCHEMA_LOCK = threading.Lock()
+
+
 def connect(db_path: Path | None = None) -> sqlite3.Connection:
+    """Open a connection. Prefer `db_context`, which also commits and closes."""
     path = Path(db_path) if db_path else config.DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
+    # check_same_thread=False: the web UI hands each request its own
+    # connection, but FastAPI may create it on a threadpool thread and run the
+    # handler on the event loop. One connection is still only ever used by one
+    # request, so the guard protects nothing here and only breaks the handoff.
+    conn = sqlite3.connect(str(path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    _ensure_schema(conn, path)
+    conn.executescript(CONNECTION_PRAGMAS)
+    return conn
+
+
+def _ensure_schema(conn: sqlite3.Connection, path: Path) -> None:
+    """Apply the schema once per path per process.
+
+    The version stamp, not the presence of a table, is what says a database is
+    current: a file swapped in underneath a running process can carry an older
+    or partial schema and still have `questions`. A stamp from the future is
+    refused outright - running this build's DDL over it and restamping would
+    silently downgrade the marker. The lock serialises
+    first-time creation, which is otherwise a race between two concurrent
+    requests against a brand-new database - `IF NOT EXISTS` does not stop the
+    two DDL scripts from deadlocking on the write lock.
+    """
+    key = str(path.resolve())
+    if key in _SCHEMA_APPLIED and _schema_version(conn) == SCHEMA_VERSION:
+        return
+    with _SCHEMA_LOCK:
+        version = _schema_version(conn)
+        if key in _SCHEMA_APPLIED and version == SCHEMA_VERSION:
+            return
+        if version > SCHEMA_VERSION:
+            raise RuntimeError(
+                f"Database at {path} was written by a newer satprep "
+                f"(schema v{version}; this build understands v{SCHEMA_VERSION}). "
+                f"Upgrade satprep rather than letting it downgrade the file."
+            )
+        _apply_schema(conn)
+        conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        conn.commit()
+        _SCHEMA_APPLIED.add(key)
+
+
+def _schema_version(conn: sqlite3.Connection) -> int:
+    return conn.execute("PRAGMA user_version").fetchone()[0]
+
+
+def _apply_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     # The effective-tags view is owned by satprep.tags, which is the only
     # module that knows what question_tags.origin means.
@@ -126,7 +188,6 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
 
     conn.executescript(EFFECTIVE_TAGS_DDL)
     _migrate(conn)
-    return conn
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -138,9 +199,23 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 @contextmanager
 def db_context(db_path: Path | None = None):
+    """One connection, one transaction, for the span of one command.
+
+    Every entry point - each CLI subcommand, each web request - opens exactly
+    one of these and passes the connection down. Nothing below the entry point
+    opens or closes a connection of its own, so a command that fails partway
+    rolls back as a unit instead of leaving half its writes behind.
+    """
     conn = connect(db_path)
     try:
         yield conn
         conn.commit()
+    except BaseException:
+        # BaseException, not Exception: a Ctrl-C partway through a drill should
+        # still roll back rather than leave the transaction dangling. Nothing
+        # is swallowed - the bare `raise` re-raises KeyboardInterrupt and
+        # SystemExit unchanged, so termination stays clean.
+        conn.rollback()
+        raise
     finally:
         conn.close()

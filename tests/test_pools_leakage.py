@@ -42,7 +42,7 @@ def test_no_protected_leakage_in_any_mode(db):
     leaked = set()
     for mode in MODES:
         for seed in range(25):
-            plan = select_drill(mode, count=12, seed=str(seed), db_path=path)
+            plan = select_drill(conn, mode, count=12, seed=str(seed))
             ids = {i["question_id"] for i in plan["items"]}
             leaked |= ids & protected
     assert not leaked, f"protected benchmark leaked: {leaked}"
@@ -51,7 +51,7 @@ def test_no_protected_leakage_in_any_mode(db):
 def test_benchmark_mode_uses_only_unseen_protected(db):
     conn, path = db
     _seed_db(conn)
-    plan = select_drill("fresh_benchmark", count=8, seed="s", db_path=path)
+    plan = select_drill(conn, "fresh_benchmark", count=8, seed="s")
     conn2 = connect(path)
     for item in plan["items"]:
         row = conn2.execute("SELECT pool, seen_benchmark FROM questions WHERE id=?",
@@ -66,11 +66,11 @@ def test_answered_benchmark_enters_training_and_never_returns(db):
 
     conn, path = db
     _seed_db(conn, n_protected=12)
-    plan1 = select_drill("fresh_benchmark", count=5, seed="one", db_path=path)
+    plan1 = select_drill(conn, "fresh_benchmark", count=5, seed="one")
     taken = [i["question_id"] for i in plan1["items"]]
     mark_benchmark_seen(conn, taken)
     conn.commit()
-    plan2 = select_drill("fresh_benchmark", count=25, seed="two", db_path=path)
+    plan2 = select_drill(conn, "fresh_benchmark", count=25, seed="two")
     remaining_ids = {i["question_id"] for i in plan2["items"]}
     assert set(taken).isdisjoint(remaining_ids)
 

@@ -3,7 +3,13 @@ import json
 import pytest
 
 from satprep.db import connect
+from satprep.db import db_context
 from satprep.ingest import ingest_bluebook
+
+
+def _ingest(db_file):
+    with db_context(db_file) as conn:
+        return ingest_bluebook(conn)
 
 
 def _write_corpus(tmp_path, records):
@@ -34,8 +40,8 @@ def test_ingest_is_idempotent(tmp_path, monkeypatch):
     monkeypatch.setattr("satprep.config.BLUEBOOK_JSON", tmp_path / "outputs" / "wrong_questions.json")
     dbp = str(tmp_path / "t.db")
     _write_corpus(tmp_path, [_rec("u1"), _rec("u2", num=2)])
-    s1 = ingest_bluebook(db_path=dbp)
-    s2 = ingest_bluebook(db_path=dbp)
+    s1 = _ingest(dbp)
+    s2 = _ingest(dbp)
     assert s1["questions_added"] == 2
     assert s2["questions_added"] == 0 and s2["attempts_added"] == 0
     conn = connect(dbp)
@@ -49,7 +55,7 @@ def test_math_records_are_skipped(tmp_path, monkeypatch):
     rec = _rec("m1")
     rec["subject_bucket"] = "Math"
     _write_corpus(tmp_path, [rec])
-    stats = ingest_bluebook(db_path=str(tmp_path / "t.db"))
+    stats = _ingest(str(tmp_path / "t.db"))
     assert stats["rw_records"] == 0 and stats["questions_added"] == 0
 
 
@@ -61,7 +67,7 @@ def test_duplicate_content_dedupes_by_fingerprint(tmp_path, monkeypatch):
     r2 = _rec("a2", num=2)
     r2["question_text"] = r1["question_text"]
     _write_corpus(tmp_path, [r1, r2])
-    ingest_bluebook(db_path=str(tmp_path / "t.db"))
+    _ingest(str(tmp_path / "t.db"))
     conn = connect(str(tmp_path / "t.db"))
     n = conn.execute("SELECT COUNT(*) FROM questions").fetchone()[0]
     conn.close()
@@ -75,5 +81,5 @@ def test_unknown_correctness_never_recorded(tmp_path, monkeypatch):
     rec["answer_status"] = ""
     rec["my_answer"] = ""
     _write_corpus(tmp_path, [rec])
-    stats = ingest_bluebook(db_path=str(tmp_path / "t2.db"))
+    stats = _ingest(str(tmp_path / "t2.db"))
     assert stats["attempts_added"] == 0

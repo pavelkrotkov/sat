@@ -8,7 +8,6 @@ numbers for the dashboard and never computes a second opinion.
 from datetime import datetime, timedelta, timezone
 
 from . import config
-from .db import connect
 from .tags import tags_by_question
 from .weakness import ensure_current, risk_scores
 
@@ -163,7 +162,7 @@ def trend_by_tag(conn, window: int = 30) -> list[dict]:
     ]
 
 
-def corpus_summary_conn(conn) -> dict:
+def corpus_summary(conn) -> dict:
     q = lambda s: conn.execute(s).fetchone()[0]  # noqa: E731
     return {
         "questions_total": q("SELECT COUNT(*) FROM questions WHERE active=1"),
@@ -175,26 +174,16 @@ def corpus_summary_conn(conn) -> dict:
     }
 
 
-def corpus_summary(db_path=None) -> dict:
-    conn = connect(db_path)
-    summary = corpus_summary_conn(conn)
-    conn.close()
-    return summary
-
-
-def full_dashboard(db_path=None) -> dict:
-    conn = connect(db_path)
+def full_dashboard(conn) -> dict:
     # One model snapshot for the whole response: settle the cache before any
     # section reads it, or a lazy refresh partway through leaves the sections
     # above it on the previous model.
     ensure_current(conn)
-    data = {
-        "corpus": corpus_summary_conn(conn),
+    return {
+        "corpus": corpus_summary(conn),
         "skills": skill_accuracy(conn),
         "tags": tag_accuracy(conn),
         "misconceptions": high_value_misconceptions(conn),
         "transfer": transfer_performance(conn),
         "recent_trend": trend_by_tag(conn),
     }
-    conn.close()
-    return data

@@ -12,7 +12,6 @@ from pathlib import Path
 from .ingest import utc_now
 
 from . import config
-from .db import connect
 from .tags import all_tags_with_origin, restore_tag
 
 ARCHIVE_VERSION = 1
@@ -46,59 +45,43 @@ def _question_line(conn, row) -> dict:
     }
 
 
-def export_corpus(out_path: Path | None = None, db_path=None) -> Path:
+def export_corpus(conn, out_path: Path | None = None) -> Path:
     """Atomically rewrite the JSONL archive from the live corpus.
 
-    Guard: an empty or missing database must never overwrite an existing
-    non-empty archive - that archive may be the only surviving copy.
+    Guard: an empty corpus must never overwrite an existing non-empty
+    archive - that archive may be the only surviving copy. A missing
+    database now reaches this as an empty corpus, since the caller opened
+    the connection; `cli.cmd_export` still checks the file up front so it
+    can point at `satprep restore` instead.
     """
     out_path = Path(out_path) if out_path else config.REPO_ROOT / "exports" / f"corpus-v{ARCHIVE_VERSION}.jsonl"
-    db_file = Path(db_path) if db_path else config.DB_PATH
-    if not db_file.exists():
-        raise FileNotFoundError(
-            f"No database at {db_file}; refusing to overwrite {out_path.name}. "
-            f"Run `satprep restore` first if you intended a rebuild."
-        )
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = connect(db_path)
     if conn.execute("SELECT COUNT(*) FROM questions WHERE active=1").fetchone()[0] == 0 \
             and out_path.exists() and out_path.stat().st_size > 0:
-        conn.close()
         raise RuntimeError(
             f"Live corpus is empty; refusing to replace non-empty archive {out_path}."
         )
     tmp = out_path.with_suffix(".jsonl.tmp")
-    n = 0
-    try:
-        with tmp.open("w", encoding="utf-8") as fh:
-            for row in conn.execute("SELECT * FROM questions WHERE active=1 ORDER BY id"):
-                fh.write(json.dumps(_question_line(conn, row), ensure_ascii=False) + "\n")
-                n += 1
-        tmp.replace(out_path)
-    finally:
-        conn.close()
+    with tmp.open("w", encoding="utf-8") as fh:
+        for row in conn.execute("SELECT * FROM questions WHERE active=1 ORDER BY id"):
+            fh.write(json.dumps(_question_line(conn, row), ensure_ascii=False) + "\n")
+    tmp.replace(out_path)
     return out_path
 
 
-def restore_corpus(archive_path: Path | None = None, db_path=None) -> dict:
+def restore_corpus(conn, archive_path: Path | None = None) -> dict:
     """Rebuild question content + tags from a JSONL archive. Idempotent.
 
     Training state (attempts, sessions, weakness cache) is intentionally NOT
-    restored - it lives only in data/satprep.db backups.
+    restored - it lives only in data/satprep.db backups. A malformed line
+    aborts the whole restore; `db_context` rolls the caller's transaction
+    back, so a half-applied archive is never left behind.
     """
     archive_path = Path(archive_path) if archive_path else config.REPO_ROOT / "exports" / f"corpus-v{ARCHIVE_VERSION}.jsonl"
     if not archive_path.exists():
         raise FileNotFoundError(f"No archive at {archive_path}")
-    conn = connect(db_path)
     stats = {"lines": 0, "restored": 0, "duplicates": 0, "invalid": 0}
-    try:
-        _restore_lines(conn, archive_path, stats)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    _restore_lines(conn, archive_path, stats)
     return stats
 
 
