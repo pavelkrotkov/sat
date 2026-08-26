@@ -18,8 +18,8 @@ ARCHIVE_VERSION = 1
 
 
 def _question_line(conn, row) -> dict:
-    tags = [r["tag"] for r in conn.execute(
-        "SELECT tag FROM question_tags WHERE question_id=? AND origin != 'suppressed'",
+    tags = [{"tag": r["tag"], "origin": r["origin"]} for r in conn.execute(
+        "SELECT tag, origin FROM question_tags WHERE question_id=? ORDER BY tag",
         (row["id"],))]
     return {
         "_v": ARCHIVE_VERSION,
@@ -47,10 +47,26 @@ def _question_line(conn, row) -> dict:
 
 
 def export_corpus(out_path: Path | None = None, db_path=None) -> Path:
-    """Atomically rewrite the JSONL archive from the live corpus."""
+    """Atomically rewrite the JSONL archive from the live corpus.
+
+    Guard: an empty or missing database must never overwrite an existing
+    non-empty archive - that archive may be the only surviving copy.
+    """
     out_path = Path(out_path) if out_path else config.REPO_ROOT / "exports" / f"corpus-v{ARCHIVE_VERSION}.jsonl"
+    db_file = Path(db_path) if db_path else config.DB_PATH
+    if not db_file.exists():
+        raise FileNotFoundError(
+            f"No database at {db_file}; refusing to overwrite {out_path.name}. "
+            f"Run `satprep restore` first if you intended a rebuild."
+        )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     conn = connect(db_path)
+    if conn.execute("SELECT COUNT(*) FROM questions WHERE active=1").fetchone()[0] == 0 \
+            and out_path.exists() and out_path.stat().st_size > 0:
+        conn.close()
+        raise RuntimeError(
+            f"Live corpus is empty; refusing to replace non-empty archive {out_path}."
+        )
     tmp = out_path.with_suffix(".jsonl.tmp")
     n = 0
     try:
@@ -87,6 +103,14 @@ def restore_corpus(archive_path: Path | None = None, db_path=None) -> dict:
 
 
 def _restore_lines(conn, archive_path: Path, stats: dict) -> None:
+    head = next((l for l in archive_path.read_text(encoding="utf-8").splitlines() if l.strip()), "")
+    if head:
+        v = json.loads(head).get("_v")
+        if v != ARCHIVE_VERSION:
+            raise ValueError(
+                f"Archive schema v{v} unsupported by this build (expects v{ARCHIVE_VERSION}); "
+                f"upgrade satprep or use the matching release."
+            )
     for line_no, line in enumerate(archive_path.read_text(encoding="utf-8").splitlines(), 1):
         line = line.strip()
         if not line:
@@ -126,9 +150,13 @@ def _restore_lines(conn, archive_path: Path, stats: dict) -> None:
             continue
         qid = cur.lastrowid
         conn.execute("INSERT INTO question_state (question_id) VALUES (?)", (qid,))
-        for tag in rec.get("tags", []):
+        for t in rec.get("tags", []):
+            if isinstance(t, dict):
+                tag, origin = t["tag"], t.get("origin", "archive")
+            else:
+                tag, origin = t, "archive"
             conn.execute(
-                "INSERT OR IGNORE INTO question_tags (question_id, tag, origin, created_at) VALUES (?,?,'archive','')",
-                (qid, tag),
+                "INSERT OR IGNORE INTO question_tags (question_id, tag, origin, created_at) VALUES (?,?,?, '')",
+                (qid, tag, origin),
             )
         stats["restored"] += 1
