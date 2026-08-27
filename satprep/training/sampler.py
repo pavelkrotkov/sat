@@ -18,27 +18,25 @@ from ..ids import session_id
 from .candidates import Candidate, row_field
 from .composition import MODE_COMPOSITIONS, compose, pools_for
 from .spacing import is_due
+from ..corpus.questions import iter_active
 from ..corpus.tags import tags_by_question
 from .weakness import cached_profile, compute_weakness
 
 
 def _load_candidates(conn, include_pools: tuple[str, ...]) -> list[Candidate]:
-    qmarks = ",".join("?" for _ in include_pools)
-    rows = conn.execute(
-        f"""SELECT * FROM questions
-            WHERE active=1 AND pool IN ({qmarks}) AND choices_json != '[]'""",
-        include_pools,
-    ).fetchall()
+    # The pool filter stays in SQL: a protected benchmark item is never even
+    # loaded outside benchmark mode, so no amount of scoring can surface one.
+    questions = list(iter_active(conn, pools=include_pools, displayable_only=True))
     tag_map = tags_by_question(conn)
     state_map = {r["question_id"]: r for r in conn.execute("SELECT * FROM question_state")}
     hist_map: dict[int, int] = {}
     for r in conn.execute("SELECT question_id, MAX(correct) AS c FROM attempts WHERE mode='historical' GROUP BY question_id"):
         hist_map[r["question_id"]] = r["c"]
     out = []
-    for row in rows:
-        c = Candidate(row, tag_map.get(row["id"], []))
-        c.state = state_map.get(row["id"])
-        c.hist_correct = hist_map.get(row["id"])
+    for question in questions:
+        c = Candidate(question, tag_map.get(question.id, []))
+        c.state = state_map.get(question.id)
+        c.hist_correct = hist_map.get(question.id)
         out.append(c)
     return out
 
@@ -47,7 +45,7 @@ def score_candidate(cand: Candidate, weakness: dict, focus_tags: list[str] | Non
                     now: datetime | None = None) -> Candidate:
     """Additive explainable score (mirrors config weights)."""
     now = now or datetime.now().astimezone()
-    q = cand.row
+    q = cand.question
     tags = cand.tags
     weak_tags = weakness.get("tag", {})
     weak_skills = weakness.get("skill", {})
@@ -69,32 +67,32 @@ def score_candidate(cand: Candidate, weakness: dict, focus_tags: list[str] | Non
                 f"weak-tag-2nd:{second}",
                 config.W_WEAK_SECONDARY_TAG * (weak_tags[second]["score"] / 100.0),
             )
-    skill = q["official_skill"]
+    skill = q.official_skill
     if skill and skill in weak_skills:
         cand.add(f"skill-weakness:{skill}", config.W_SKILL_WEAKNESS * weak_skills[skill]["score"] / 100.0)
     if skill in config.SEMANTIC_SKILLS:
         # spec section 16: default bias toward hard semantic/reasoning content
         cand.add("semantic-content-bias", config.W_SEMANTIC_BIAS)
 
-    diff_bonus = {"hard": config.W_HARD_DIFFICULTY, "medium": 0.5}.get(q["difficulty"], 0.7)
-    cand.add("difficulty" + (f":{q['difficulty']}" if q["difficulty"] else ":unknown"), diff_bonus)
+    diff_bonus = {"hard": config.W_HARD_DIFFICULTY, "medium": 0.5}.get(q.difficulty, 0.7)
+    cand.add("difficulty" + (f":{q.difficulty}" if q.difficulty else ":unknown"), diff_bonus)
 
     state = cand.state
     def _sget(key, default=0):
         return row_field(state, key, default)
 
     seen_times = _sget("times_seen")
-    hist_correct = cand.hist_correct if q["pool"] == "historical" else False
+    hist_correct = cand.hist_correct if q.pool == "historical" else False
     # an item scraped as incorrect counts as due even before any in-app review
-    due_now = is_due(state, now) or (q["pool"] == "historical" and hist_correct == 0)
-    if q["pool"] == "fresh_training":
+    due_now = is_due(state, now) or (q.pool == "historical" and hist_correct == 0)
+    if q.pool == "fresh_training":
         if matched:
             cand.add("fresh-matching-weak-tags", config.W_FRESH_MATCHING_WEAK)
         elif skill and skill in weak_skills:
             cand.add("fresh-neighbor-skill", config.W_FRESH_NEIGHBOR)
-    if q["pool"] == "historical" and due_now and hist_correct == 0:
+    if q.pool == "historical" and due_now and hist_correct == 0:
         cand.add("due-for-review-previously-wrong", config.W_DUE_INCORRECT)
-    if q["pool"] == "historical" and hist_correct == 1 and matched:
+    if q.pool == "historical" and hist_correct == 1 and matched:
         cand.add("transfer-correct-shares-weak-tag", config.W_TRANSFER_CORRECT)
 
     exposure_penalty = min(config.PENALTY_EXPOSURE_CAP, config.PENALTY_EXPOSURE_PER_SEEN * seen_times)
@@ -159,7 +157,7 @@ def select_drill(conn, mode: str, count: int | None = None, seed: str | None = N
     plan_items = []
 
     for qid, bucket in chosen_ids.items():
-        cand = next((c for c in scored if c.row["id"] == qid), None)
+        cand = next((c for c in scored if c.question.id == qid), None)
         if cand is None:
             continue
         plan_items.append({

@@ -15,6 +15,7 @@ from fastapi.templating import Jinja2Templates
 from . import config
 from .analytics import full_dashboard
 from .db import db_context
+from .corpus.questions import load as load_question
 from .corpus.tags import all_tags_with_origin, set_manual, suppress
 from .config import REASONING_TAGS
 from .training.sessions import (complete_session, create_session, review_payload,
@@ -50,12 +51,7 @@ def _commit(conn) -> None:
 Conn = Depends(get_conn)
 
 
-def _q(conn, qid: int):
-    row = conn.execute("SELECT * FROM questions WHERE id=?", (qid,)).fetchone()
-    if row:
-        row = dict(row)
-        row["choices"] = json.loads(row.pop("choices_json"))
-    return row
+
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -97,7 +93,7 @@ def question(request: Request, sid: str, idx: int, conn=Conn):
     items = json.loads(plan_row["plan_json"])
     if idx >= len(items):
         return RedirectResponse(f"/results/{sid}", status_code=303)
-    q = _q(conn, items[idx]["question_id"])
+    q = load_question(conn, items[idx]["question_id"])
     return templates.TemplateResponse(request, "question.html", {"q": q, "sid": sid, "idx": idx,
         "total": len(items),
     })
@@ -209,7 +205,7 @@ def admin_why(request: Request, sid: str, conn=Conn):
 
 @app.get("/admin/tags/{qid}", response_class=HTMLResponse)
 def admin_tags(request: Request, qid: int, conn=Conn):
-    q = _q(conn, qid)
+    q = load_question(conn, qid)
     tags = all_tags_with_origin(conn, qid)
     err_tags = conn.execute(
         "SELECT tag, diagnosis_source FROM student_error_tags WHERE question_id=?", (qid,)

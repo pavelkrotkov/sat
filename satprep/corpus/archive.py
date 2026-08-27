@@ -12,35 +12,36 @@ from pathlib import Path
 from ..clock import utc_now
 
 from .. import config
+from .questions import Question
 from .tags import all_tags_with_origin, restore_tag
 
 ARCHIVE_VERSION = 1
 
 
-def _question_line(conn, row) -> dict:
+def _question_line(conn, question: Question) -> dict:
     # The archive is faithful: suppressions are decisions worth preserving.
-    tags = [{"tag": t, "origin": o} for t, o in all_tags_with_origin(conn, row["id"])]
+    tags = [{"tag": t, "origin": o} for t, o in all_tags_with_origin(conn, question.id)]
     return {
         "_v": ARCHIVE_VERSION,
-        "fingerprint": row["fingerprint"],
-        "source": row["source"],
-        "source_test": row["source_test"],
-        "source_question_number": row["source_question_number"],
-        "module": row["module"],
-        "passage": row["passage"],
-        "stem": row["stem"],
-        "choices": json.loads(row["choices_json"]),
-        "correct_letter": row["correct_letter"],
-        "rationale": row["rationale"],
-        "images": json.loads(row["images_json"] or "[]"),
-        "official_domain": row["official_domain"],
-        "official_skill": row["official_skill"],
-        "skill_source": row["skill_source"],
-        "difficulty": row["difficulty"],
-        "pool": row["pool"],
-        "is_new_bank": row["is_new_bank"],
-        "import_batch": row["import_batch"],
-        "provenance": json.loads(row["provenance_json"] or "{}"),
+        "fingerprint": question.fingerprint,
+        "source": question.source,
+        "source_test": question.source_test,
+        "source_question_number": question.source_question_number,
+        "module": question.module,
+        "passage": question.passage,
+        "stem": question.stem,
+        "choices": [c.as_dict() for c in question.choices],
+        "correct_letter": question.correct_letter,
+        "rationale": question.rationale,
+        "images": list(question.images),
+        "official_domain": question.official_domain,
+        "official_skill": question.official_skill,
+        "skill_source": question.skill_source,
+        "difficulty": question.difficulty,
+        "pool": question.pool,
+        "is_new_bank": question.is_new_bank,
+        "import_batch": question.import_batch,
+        "provenance": question.provenance,
         "tags": tags,
     }
 
@@ -64,7 +65,8 @@ def export_corpus(conn, out_path: Path | None = None) -> Path:
     tmp = out_path.with_suffix(".jsonl.tmp")
     with tmp.open("w", encoding="utf-8") as fh:
         for row in conn.execute("SELECT * FROM questions WHERE active=1 ORDER BY id"):
-            fh.write(json.dumps(_question_line(conn, row), ensure_ascii=False) + "\n")
+            fh.write(json.dumps(_question_line(conn, Question.from_row(row)),
+                                ensure_ascii=False) + "\n")
     tmp.replace(out_path)
     return out_path
 
