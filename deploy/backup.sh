@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+#
+# Nightly backup of the one file that cannot be rebuilt.
+#
+# Question content is recoverable from raw sources or from the JSONL archive.
+# Attempt history, spacing state and the weakness cache exist only in
+# data/satprep.db, and `satprep restore` deliberately does not carry them.
+# Once drills run here, this box holds the only copy.
+#
+# Run from the repo root, or via deploy/satprep-backup.service.
+
+set -euo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DB="${SATPREP_DB:-$REPO/data/satprep.db}"
+DEST="${SATPREP_BACKUP_DIR:-$REPO/backups}"
+KEEP="${SATPREP_BACKUP_KEEP:-30}"
+
+die() { printf 'backup: %s\n' "$1" >&2; exit 1; }
+
+[ -f "$DB" ] || die "no database at $DB"
+command -v sqlite3 >/dev/null || die "sqlite3 not installed (apt install sqlite3)"
+
+# Refuse to spend a retention slot on a database with no attempts in it: that
+# is the shape a fresh or half-restored copy has, and 30 nights of it would
+# roll every real backup off the end.
+attempts=$(sqlite3 "$DB" "SELECT COUNT(*) FROM attempts;" 2>/dev/null || echo 0)
+[ "$attempts" -gt 0 ] || die "database has no attempts; refusing to rotate backups"
+
+mkdir -p "$DEST"
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+out="$DEST/satprep-$stamp.db"
+
+# .backup, not cp: the server is running and the WAL is live, so copying the
+# file alone can capture a torn page. This takes a consistent snapshot.
+sqlite3 "$DB" ".backup '$out.tmp'"
+sqlite3 "$out.tmp" "PRAGMA integrity_check;" | grep -qx ok \
+    || { rm -f "$out.tmp"; die "integrity check failed; backup discarded"; }
+mv "$out.tmp" "$out"
+gzip -f "$out"
+
+# The corpus archive rides along so a restore has content and state together.
+# SATPREP_UV comes from the unit, which was rendered with the absolute path
+# install.sh discovered: under systemd there is no login shell to put uv on
+# PATH, and a bare `command -v uv` would skip this block every night.
+UV="${SATPREP_UV:-$(command -v uv || true)}"
+if [ -n "$UV" ] && [ -x "$UV" ]; then
+    "$UV" run --frozen satprep export >/dev/null 2>&1 \
+        && cp "$REPO/exports/corpus-v1.jsonl" "$DEST/corpus-$stamp.jsonl" \
+        && gzip -f "$DEST/corpus-$stamp.jsonl"
+else
+    echo "backup: uv not found; corpus snapshot skipped" >&2
+fi
+
+# Prune oldest first, counting only what this script writes. `ls` on a glob
+# that matches nothing exits non-zero, which under pipefail would fail the
+# whole run *after* a good snapshot had already been written - and the corpus
+# export above is explicitly optional, so that case is reachable.
+prune() {
+    find "$DEST" -maxdepth 1 -name "$1" -print0 2>/dev/null \
+        | xargs -0r ls -1t 2>/dev/null \
+        | tail -n "+$((KEEP + 1))" \
+        | tr '\n' '\0' | xargs -0r rm -f
+}
+prune 'satprep-*.db.gz'
+prune 'corpus-*.jsonl.gz'
+
+printf 'backup: %s.gz (%s attempts)\n' "$out" "$attempts"

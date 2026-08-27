@@ -74,10 +74,18 @@ uv sync                      # create venv from pyproject.toml
 uv run satprep ingest        # build/rebuild corpus from outputs/ + imports/
 uv run satprep analyze       # compute weakness profile
 uv run satprep serve         # web UI on http://127.0.0.1:8765
+uv run satprep serve --host 0.0.0.0   # reachable on the local network
 ```
 
 CLI: `ingest | analyze | drill [--count N] [--mode M] [--focus TAG] | benchmark |
 stats | serve`. Web UI and CLI share the same DB and selection logic.
+
+The UI has no authentication, so `serve` binds loopback by default and prints a
+notice when told to bind anything else. To run it on an always-on box that other
+devices on the network can reach, see [deploy/README.md](deploy/README.md) —
+systemd units, mDNS, one-directional corpus sync and nightly backups. The rule
+there is that the serving box owns `data/satprep.db`: attempt history lives only
+in that file, and the archive deliberately does not carry it.
 
 ### Ingesting new official material
 

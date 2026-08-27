@@ -1,0 +1,11 @@
+[Unit]
+Description=satprep nightly backup
+
+[Timer]
+OnCalendar=daily
+# A machine that was asleep at 03:00 still gets its backup.
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

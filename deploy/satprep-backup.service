@@ -1,0 +1,13 @@
+[Unit]
+Description=satprep nightly backup
+Documentation=https://github.com/pavelkrotkov/sat/blob/main/deploy/README.md
+
+[Service]
+Type=oneshot
+User=__USER__
+WorkingDirectory=__DIR__
+# No login shell here, so ~/.local/bin is not on PATH and `command -v uv`
+# would be false on every scheduled run - silently skipping the corpus
+# snapshot the runbook promises alongside the database backup.
+Environment=SATPREP_UV=__UV__
+ExecStart=__DIR__/deploy/backup.sh
