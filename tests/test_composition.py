@@ -9,6 +9,7 @@ end-to-end safety net; this one pins the behaviour directly.
 """
 
 import random
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -34,6 +35,9 @@ def cand(qid, *, pool="fresh_training", hist_correct=None, tags=("qualifier_stre
 
 def rng():
     return random.Random("fixed")
+
+
+NOW = datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc)
 
 
 # ------------------------------------------------------------ allocation --
@@ -67,9 +71,9 @@ def test_old_wrong_due_needs_a_previous_miss():
     got_right = cand(2, pool="historical", hist_correct=1)
     fresh = cand(3, pool="fresh_training")
 
-    assert eligible_for("old_wrong_due", missed, WEAKNESS)
-    assert not eligible_for("old_wrong_due", got_right, WEAKNESS)
-    assert not eligible_for("old_wrong_due", fresh, WEAKNESS)
+    assert eligible_for("old_wrong_due", missed, WEAKNESS, NOW)
+    assert not eligible_for("old_wrong_due", got_right, WEAKNESS, NOW)
+    assert not eligible_for("old_wrong_due", fresh, WEAKNESS, NOW)
 
 
 def test_old_correct_transfer_needs_a_still_weak_tag():
@@ -79,17 +83,17 @@ def test_old_correct_transfer_needs_a_still_weak_tag():
     strong = cand(2, pool="historical", hist_correct=1, tags=("chronology",))
     never_seen = cand(3, pool="historical", hist_correct=0, tags=("qualifier_strength",))
 
-    assert eligible_for("old_correct_transfer", weak, WEAKNESS)
-    assert not eligible_for("old_correct_transfer", strong, WEAKNESS)
-    assert not eligible_for("old_correct_transfer", never_seen, WEAKNESS)
+    assert eligible_for("old_correct_transfer", weak, WEAKNESS, NOW)
+    assert not eligible_for("old_correct_transfer", strong, WEAKNESS, NOW)
+    assert not eligible_for("old_correct_transfer", never_seen, WEAKNESS, NOW)
 
 
 def test_transfer_threshold_is_configurable(monkeypatch):
     borderline = cand(1, pool="historical", hist_correct=1, tags=("chronology",))
-    assert not eligible_for("old_correct_transfer", borderline, WEAKNESS)
+    assert not eligible_for("old_correct_transfer", borderline, WEAKNESS, NOW)
 
     monkeypatch.setattr(config, "TRANSFER_TAG_THRESHOLD", 5.0)
-    assert eligible_for("old_correct_transfer", borderline, WEAKNESS)
+    assert eligible_for("old_correct_transfer", borderline, WEAKNESS, NOW)
 
 
 def test_fresh_weak_needs_some_classification():
@@ -98,9 +102,9 @@ def test_fresh_weak_needs_some_classification():
     skilled = cand(2, tags=(), skill="Inferences")
     blank = cand(3, tags=(), skill="")
 
-    assert eligible_for("fresh_weak", tagged, WEAKNESS)
-    assert eligible_for("fresh_weak", skilled, WEAKNESS)
-    assert not eligible_for("fresh_weak", blank, WEAKNESS)
+    assert eligible_for("fresh_weak", tagged, WEAKNESS, NOW)
+    assert eligible_for("fresh_weak", skilled, WEAKNESS, NOW)
+    assert not eligible_for("fresh_weak", blank, WEAKNESS, NOW)
 
 
 # ------------------------------------------------------------- compose ----
@@ -113,7 +117,7 @@ def test_compose_fills_buckets_by_score():
     fallback - which shuffles, so only the bucketed picks are deterministic.
     """
     scored = [cand(i, pool="historical", hist_correct=0, score=float(i)) for i in range(1, 11)]
-    chosen = compose("error_clinic", scored, 4, WEAKNESS, rng())
+    chosen = compose("error_clinic", scored, 4, WEAKNESS, rng(), NOW)
 
     bucketed = {qid for qid, bucket in chosen.items() if bucket == "old_wrong_due"}
     assert bucketed == {10, 9, 8}
@@ -129,7 +133,7 @@ def test_underfilled_buckets_cascade_without_overshooting():
               cand(2, pool="historical", hist_correct=0)]
     scored += [cand(i, pool="fresh_training") for i in range(3, 15)]
 
-    chosen = compose("error_clinic", scored, 10, WEAKNESS, rng())
+    chosen = compose("error_clinic", scored, 10, WEAKNESS, rng(), NOW)
 
     assert len(chosen) == 10
     assert chosen[1] == "old_wrong_due" and chosen[2] == "old_wrong_due"
@@ -139,14 +143,14 @@ def test_underfilled_buckets_cascade_without_overshooting():
 def test_compose_never_exceeds_target_or_repeats():
     scored = [cand(i, pool="historical", hist_correct=0) for i in range(1, 40)]
     for target in (1, 5, 12, 27):
-        chosen = compose("targeted_drill", scored, target, WEAKNESS, rng())
+        chosen = compose("targeted_drill", scored, target, WEAKNESS, rng(), NOW)
         assert len(chosen) == target
         assert len(set(chosen)) == target
 
 
 def test_compose_returns_everything_available_when_short():
     scored = [cand(1, pool="historical", hist_correct=0), cand(2, pool="fresh_training")]
-    chosen = compose("targeted_drill", scored, 12, WEAKNESS, rng())
+    chosen = compose("targeted_drill", scored, 12, WEAKNESS, rng(), NOW)
     assert set(chosen) == {1, 2}
 
 
@@ -158,7 +162,7 @@ def test_transfer_drill_never_serves_a_memorized_error():
     memorized = [cand(i, pool="historical", hist_correct=0) for i in range(1, 20)]
     transferable = [cand(100, pool="historical", hist_correct=1)]
 
-    chosen = compose("transfer_drill", memorized + transferable, 12, WEAKNESS, rng())
+    chosen = compose("transfer_drill", memorized + transferable, 12, WEAKNESS, rng(), NOW)
 
     assert set(chosen).isdisjoint({c.row["id"] for c in memorized})
     assert set(chosen) == {100}   # only the transferable item survives
@@ -175,7 +179,7 @@ def test_error_clinic_honours_its_share_when_the_pool_is_deep():
     scored = [cand(i, pool="historical", hist_correct=0) for i in range(1, 30)]
     scored += [cand(i, pool="fresh_training") for i in range(100, 130)]
 
-    chosen = compose("error_clinic", scored, 10, WEAKNESS, rng())
+    chosen = compose("error_clinic", scored, 10, WEAKNESS, rng(), NOW)
 
     buckets = [chosen[q] for q in chosen]
     assert buckets.count("old_wrong_due") == 8
@@ -196,3 +200,40 @@ def test_protected_benchmark_is_not_composition_s_job():
         if mode == "fresh_benchmark":
             continue
         assert "protected_benchmark" not in pools_for(mode)
+
+
+# --------------------------------------------------------------- clock ---
+
+def _due_at(moment):
+    class State(dict):
+        def __getitem__(self, key):
+            if key == "due_at":
+                return moment.isoformat()
+            raise KeyError(key)
+    return State()
+
+
+def test_due_eligibility_is_evaluated_against_the_passed_clock():
+    """Regression: _is_old_wrong_due called is_due(), which read
+    datetime.now() internally - so composition was not actually reproducible
+    from its arguments, and a test sitting near a due boundary could flip
+    depending on when it ran."""
+    due_soon = cand(1, pool="historical", hist_correct=0,
+                    state=_due_at(NOW + timedelta(hours=1)))
+
+    assert not eligible_for("old_wrong_due", due_soon, WEAKNESS, NOW)
+    assert eligible_for("old_wrong_due", due_soon, WEAKNESS, NOW + timedelta(hours=2))
+
+
+def test_compose_is_reproducible_from_its_arguments():
+    """Same inputs, same clock, same seed -> byte-identical plan."""
+    scored = [cand(i, pool="historical", hist_correct=0,
+                   state=_due_at(NOW + timedelta(days=i - 5)), score=float(i))
+              for i in range(1, 15)]
+
+    first = compose("error_clinic", scored, 6, WEAKNESS, rng(), NOW)
+    second = compose("error_clinic", scored, 6, WEAKNESS, rng(), NOW)
+    assert first == second
+
+    later = compose("error_clinic", scored, 6, WEAKNESS, rng(), NOW + timedelta(days=30))
+    assert later != first or all(c.state is None for c in scored)

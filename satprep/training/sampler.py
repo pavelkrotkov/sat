@@ -86,7 +86,7 @@ def score_candidate(cand: Candidate, weakness: dict, focus_tags: list[str] | Non
     seen_times = _sget("times_seen")
     hist_correct = cand.hist_correct if q["pool"] == "historical" else False
     # an item scraped as incorrect counts as due even before any in-app review
-    due_now = is_due(state) or (q["pool"] == "historical" and hist_correct == 0)
+    due_now = is_due(state, now) or (q["pool"] == "historical" and hist_correct == 0)
     if q["pool"] == "fresh_training":
         if matched:
             cand.add("fresh-matching-weak-tags", config.W_FRESH_MATCHING_WEAK)
@@ -155,7 +155,7 @@ def select_drill(conn, mode: str, count: int | None = None, seed: str | None = N
 
     shares = MODE_COMPOSITIONS[mode]
     target = count or sum(v for v in shares.values() if v) or config.DEFAULT_DRILL_SIZE
-    chosen_ids = compose(mode, scored, target, weakness, rng)
+    chosen_ids = compose(mode, scored, target, weakness, rng, now)
     plan_items = []
 
     for qid, bucket in chosen_ids.items():

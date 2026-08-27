@@ -67,7 +67,14 @@ def update_after_attempt(conn, question_id: int, correct: int, confidence: int,
     return interval
 
 
-def is_due(state_row) -> bool:
+def is_due(state_row, now: datetime | None = None) -> bool:
+    """Whether this question is due for review at `now`.
+
+    Callers that evaluate many candidates against one moment - drill
+    composition especially - pass their captured `now`, so the answer cannot
+    shift mid-pass and a test can sit either side of a due boundary
+    deterministically.
+    """
     if state_row is None:
         return True
     try:
@@ -77,6 +84,6 @@ def is_due(state_row) -> bool:
     if not due:
         return False
     try:
-        return datetime.fromisoformat(due) <= datetime.now().astimezone()
+        return datetime.fromisoformat(due) <= (now or datetime.now().astimezone())
     except ValueError:
         return False

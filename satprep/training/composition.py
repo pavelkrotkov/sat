@@ -1,8 +1,10 @@
 """How a drill's questions are apportioned between buckets.
 
 Pure: no connection, no clock, no module-level randomness. Everything this
-module needs arrives as an argument, which is what makes the interesting
-part of drill building testable at all. It used to be three closures inside
+module needs arrives as an argument - including `now`, so that due-date
+eligibility is evaluated against one captured moment rather than whatever
+the wall clock says mid-pass. That is what makes the interesting part of
+drill building testable at all. It used to be three closures inside
 a 138-line `select_drill`, reachable only by seeding a database and running
 every mode across 25 seeds.
 
@@ -12,6 +14,7 @@ composition never sees one and cannot reintroduce one however it allocates.
 """
 
 import random
+from datetime import datetime
 
 from .. import config
 from .candidates import Candidate, row_field
@@ -50,18 +53,18 @@ def pools_for(mode: str) -> tuple[str, ...]:
 
 # ---------------------------------------------------------- bucket rules --
 
-def _is_old_wrong_due(cand: Candidate, weakness: dict) -> bool:
-    """Previously missed, and either never drilled in-app or now due."""
+def _is_old_wrong_due(cand: Candidate, weakness: dict, now: datetime) -> bool:
+    """Previously missed, and either never drilled in-app or due at `now`."""
     return (
         cand.row["pool"] == "historical"
         and cand.hist_correct == 0
         and (cand.state is None
              or row_field(cand.state, "due_at") is None
-             or is_due(cand.state))
+             or is_due(cand.state, now))
     )
 
 
-def _is_old_correct_transfer(cand: Candidate, weakness: dict) -> bool:
+def _is_old_correct_transfer(cand: Candidate, weakness: dict, now: datetime) -> bool:
     """Answered correctly before, but on a reasoning tag that is still weak."""
     weak_tags = weakness.get("tag", {})
     return (
@@ -72,12 +75,12 @@ def _is_old_correct_transfer(cand: Candidate, weakness: dict) -> bool:
     )
 
 
-def _is_fresh_weak(cand: Candidate, weakness: dict) -> bool:
+def _is_fresh_weak(cand: Candidate, weakness: dict, now: datetime) -> bool:
     """Unseen, and classified well enough to be aimed at something."""
     return cand.row["pool"] == "fresh_training" and bool(cand.tags or cand.row["official_skill"])
 
 
-def _is_any(cand: Candidate, weakness: dict) -> bool:
+def _is_any(cand: Candidate, weakness: dict, now: datetime) -> bool:
     return True  # weighting already biases hard + weak
 
 
@@ -89,8 +92,8 @@ BUCKET_RULES = {
 }
 
 
-def eligible_for(bucket: str, cand: Candidate, weakness: dict) -> bool:
-    return BUCKET_RULES.get(bucket, _is_any)(cand, weakness)
+def eligible_for(bucket: str, cand: Candidate, weakness: dict, now: datetime) -> bool:
+    return BUCKET_RULES.get(bucket, _is_any)(cand, weakness, now)
 
 
 # ------------------------------------------------------------ allocation --
@@ -130,13 +133,18 @@ def fallback_allowed(mode: str, cand: Candidate) -> bool:
 # -------------------------------------------------------------- compose ---
 
 def compose(mode: str, scored: list[Candidate], target: int, weakness: dict,
-            rng: random.Random) -> dict[int, str]:
-    """Assign question ids to buckets. Returns {question_id: bucket}."""
+            rng: random.Random, now: datetime) -> dict[int, str]:
+    """Assign question ids to buckets. Returns {question_id: bucket}.
+
+    `now` is the moment the whole drill is composed against; it is required
+    rather than defaulted so a caller cannot accidentally compose half a
+    drill against one clock reading and half against another.
+    """
     chosen: dict[int, str] = {}
 
     for bucket, want in allocate(MODE_COMPOSITIONS[mode], target).items():
         pool = [c for c in scored
-                if c.row["id"] not in chosen and eligible_for(bucket, c, weakness)]
+                if c.row["id"] not in chosen and eligible_for(bucket, c, weakness, now)]
         pool.sort(key=lambda c: -c.score)
         for cand in pool[:want]:
             chosen[cand.row["id"]] = bucket
