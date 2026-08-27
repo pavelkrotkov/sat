@@ -5,10 +5,11 @@
     satprep drill [--count N] [--focus TAG] [--mode MODE]
     satprep benchmark           # protected fresh benchmark
     satprep stats               # dashboard numbers in terminal
-    satprep serve [--port P]    # local web UI
+    satprep serve [--host H] [--port P]   # web UI (loopback unless told otherwise)
 """
 
 import argparse
+import ipaddress
 import json
 import pathlib
 import sys
@@ -176,12 +177,58 @@ def cmd_stats(args) -> None:
             print(f"  {t['tag']:<36} {t['recent_accuracy']:>5}%  (n={t['recent_n']})")
 
 
+#: Hostnames that resolve to this machine only. Anything else is reachable by
+#: other hosts, and the UI has no authentication of any kind.
+LOOPBACK_NAMES = {"localhost", "localhost.localdomain"}
+
+
+def normalize_host(host: str) -> str:
+    """The form to hand a socket.
+
+    `[::1]` is URI syntax: brackets disambiguate the address from the port in
+    a URL, and `getaddrinfo` rejects them. Accepting the bracketed form while
+    passing it through unchanged would mean the server refuses to start on
+    exactly the spelling most likely to be copied out of a browser.
+    """
+    return (host or "").strip().strip("[]")
+
+
+def is_loopback(host: str) -> bool:
+    """True when binding to `host` keeps the UI on this machine.
+
+    Addresses are decided by `ipaddress`, so 127.0.0.1, 127.0.0.53 and ::1 are
+    all recognised while 0.0.0.0 (every interface) and :: are not. A name that
+    is not a known loopback alias is assumed to be routable: guessing wrong in
+    that direction only prints a warning, guessing wrong the other way stays
+    silent about an exposed server.
+    """
+    host = normalize_host(host).lower()
+    if not host:
+        return False       # uvicorn's own default is every interface
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host in LOOPBACK_NAMES
+
+
+def exposure_notice(host: str, port: int) -> str:
+    """What the operator needs to know before this listens off-machine."""
+    return (
+        f"satprep is listening on {host}:{port}, reachable from other machines.\n"
+        "There is no login: anyone who can reach this address can drill, and can\n"
+        "read /admin and /review. Intended for a trusted home network only."
+    )
+
+
 def cmd_serve(args) -> None:
     import uvicorn
 
+    host = normalize_host(args.host)
+    if not is_loopback(host):
+        print(exposure_notice(host, args.port), file=sys.stderr)
     uvicorn.run(
         "satprep.server:app",
-        host="127.0.0.1",
+        host=host,
         port=args.port,
         reload=False,
     )
@@ -231,7 +278,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("stats", help="print dashboard statistics")
     sp.set_defaults(func=cmd_stats)
 
-    sp = sub.add_parser("serve", help="start the local web UI")
+    sp = sub.add_parser("serve", help="start the web UI")
+    sp.add_argument("--host", default="127.0.0.1",
+                    help="interface to bind (default 127.0.0.1, this machine only; "
+                         "use 0.0.0.0 to serve the local network)")
     sp.add_argument("--port", type=int, default=8765)
     sp.set_defaults(func=cmd_serve)
     return p

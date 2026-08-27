@@ -1,0 +1,34 @@
+[Unit]
+Description=satprep web UI
+Documentation=https://github.com/pavelkrotkov/sat/blob/main/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=__USER__
+WorkingDirectory=__DIR__
+# --no-sync: the environment is built by install.sh, before the sandbox
+# applies. --frozen alone only pins the lockfile; uv would still try to update
+# the project environment here, and both it and $HOME/.cache/uv are read-only
+# under the settings below.
+Environment=UV_CACHE_DIR=%C/satprep
+CacheDirectory=satprep
+ExecStart=__UV__ run --frozen --no-sync satprep serve --host __HOST__ --port __PORT__
+Restart=on-failure
+RestartSec=5s
+
+# The corpus is rebuildable; data/satprep.db is not. Nothing else on the box
+# needs write access to either.
+# ProtectSystem=strict already mounts the whole hierarchy read-only, /home
+# included, so ReadWritePaths is what grants the two exceptions. ProtectHome is
+# deliberately not set: with the repo under ~/dev it would fight ReadWritePaths
+# over the same paths, and the protection it adds is already covered above.
+ProtectSystem=strict
+ProtectHome=no
+ReadWritePaths=__DIR__/data __DIR__/exports
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
