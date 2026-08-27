@@ -7,7 +7,8 @@ say something when it doesn't. These tests pin both halves.
 
 import pytest
 
-from satprep.cli import build_parser, cmd_serve, exposure_notice, is_loopback
+from satprep.cli import (build_parser, cmd_serve, exposure_notice, is_loopback,
+                         normalize_host)
 
 
 def parse(*argv):
@@ -87,3 +88,30 @@ def test_notice_names_the_address_and_what_is_exposed():
     notice = exposure_notice("192.168.1.42", 8765)
     assert "192.168.1.42:8765" in notice
     assert "/admin" in notice
+
+
+# ---------------------------------------------------- bracketed IPv6 form --
+
+def test_bracketed_ipv6_is_normalized_before_it_reaches_the_socket(uvicorn):
+    """`[::1]` is URI syntax - brackets separate address from port in a URL,
+    and getaddrinfo rejects them. Accepting the form in is_loopback while
+    passing it through unchanged meant refusing to start on exactly the
+    spelling most likely to be copied out of a browser."""
+    cmd_serve(parse("serve", "--host", "[::1]"))
+
+    assert uvicorn.calls[0][1]["host"] == "::1"
+
+
+def test_normalize_host_leaves_ordinary_forms_alone():
+    for host in ("127.0.0.1", "::1", "0.0.0.0", "hermes.local"):
+        assert normalize_host(host) == host
+    assert normalize_host("  127.0.0.1  ") == "127.0.0.1"
+
+
+def test_the_notice_names_the_address_actually_bound(uvicorn, capsys):
+    """A warning that quotes the un-normalized spelling sends the operator
+    looking for a socket that was never opened."""
+    cmd_serve(parse("serve", "--host", "[2001:db8::1]"))
+
+    assert "2001:db8::1:8765" in capsys.readouterr().err
+    assert uvicorn.calls[0][1]["host"] == "2001:db8::1"

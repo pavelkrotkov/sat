@@ -162,3 +162,40 @@ def test_seed_transfer_keeps_each_path_in_its_own_directory():
     runbook = (DEPLOY / "README.md").read_text()
     assert "hermes.local:/opt/satprep/data/" in runbook
     assert "hermes.local:/opt/satprep/outputs/" in runbook
+
+
+# ------------------------------------------- invariants review turned up --
+
+def test_backup_unit_carries_an_absolute_uv_path():
+    """systemd gives no login shell, so ~/.local/bin is off PATH and a bare
+    `command -v uv` is false on every scheduled run - skipping the corpus
+    snapshot silently, which is the worst way for a backup to fail."""
+    assert "Environment=SATPREP_UV=__UV__" in (DEPLOY / "satprep-backup.service").read_text()
+    body = _code(DEPLOY / "backup.sh")
+    assert "SATPREP_UV" in body
+    assert "corpus snapshot skipped" in body, "a skipped snapshot must say so"
+
+
+def test_avahi_is_enabled_unconditionally():
+    """Enablement and activity are independent: guarding on is-enabled skips a
+    stopped daemon, guarding on is-active skips a running-but-disabled one that
+    disappears at the next reboot. `enable --now` is idempotent."""
+    body = _code(DEPLOY / "install.sh")
+    assert "systemctl enable --now avahi-daemon" in body
+    assert "is-active --quiet avahi" not in body
+    assert "is-enabled --quiet avahi" not in body
+
+
+def test_installer_chowns_seeded_state():
+    """install -d touches directories only. A database seeded by the login
+    user stays theirs, and the service account opens it read-only - which
+    surfaces mid-drill as a SQLite write error, not at startup."""
+    body = _code(DEPLOY / "install.sh")
+    assert 'chown -R "$RUN_AS:$GROUP"' in body
+
+
+def test_offbox_recovery_set_includes_the_figures():
+    """The archive stores images as path references, so a restore from
+    backups/ alone leaves every figure question pointing at nothing."""
+    runbook = (DEPLOY / "README.md").read_text()
+    assert "artifacts/images/" in runbook.split("## Backups", 1)[1]

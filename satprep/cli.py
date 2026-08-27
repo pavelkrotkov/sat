@@ -182,6 +182,17 @@ def cmd_stats(args) -> None:
 LOOPBACK_NAMES = {"localhost", "localhost.localdomain"}
 
 
+def normalize_host(host: str) -> str:
+    """The form to hand a socket.
+
+    `[::1]` is URI syntax: brackets disambiguate the address from the port in
+    a URL, and `getaddrinfo` rejects them. Accepting the bracketed form while
+    passing it through unchanged would mean the server refuses to start on
+    exactly the spelling most likely to be copied out of a browser.
+    """
+    return (host or "").strip().strip("[]")
+
+
 def is_loopback(host: str) -> bool:
     """True when binding to `host` keeps the UI on this machine.
 
@@ -191,7 +202,7 @@ def is_loopback(host: str) -> bool:
     that direction only prints a warning, guessing wrong the other way stays
     silent about an exposed server.
     """
-    host = (host or "").strip().strip("[]").lower()
+    host = normalize_host(host).lower()
     if not host:
         return False       # uvicorn's own default is every interface
     try:
@@ -212,11 +223,12 @@ def exposure_notice(host: str, port: int) -> str:
 def cmd_serve(args) -> None:
     import uvicorn
 
-    if not is_loopback(args.host):
-        print(exposure_notice(args.host, args.port), file=sys.stderr)
+    host = normalize_host(args.host)
+    if not is_loopback(host):
+        print(exposure_notice(host, args.port), file=sys.stderr)
     uvicorn.run(
         "satprep.server:app",
-        host=args.host,
+        host=host,
         port=args.port,
         reload=False,
     )

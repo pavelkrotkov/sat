@@ -40,10 +40,16 @@ mv "$out.tmp" "$out"
 gzip -f "$out"
 
 # The corpus archive rides along so a restore has content and state together.
-if command -v uv >/dev/null; then
-    uv run --frozen satprep export >/dev/null 2>&1 \
+# SATPREP_UV comes from the unit, which was rendered with the absolute path
+# install.sh discovered: under systemd there is no login shell to put uv on
+# PATH, and a bare `command -v uv` would skip this block every night.
+UV="${SATPREP_UV:-$(command -v uv || true)}"
+if [ -n "$UV" ] && [ -x "$UV" ]; then
+    "$UV" run --frozen satprep export >/dev/null 2>&1 \
         && cp "$REPO/exports/corpus-v1.jsonl" "$DEST/corpus-$stamp.jsonl" \
         && gzip -f "$DEST/corpus-$stamp.jsonl"
+else
+    echo "backup: uv not found; corpus snapshot skipped" >&2
 fi
 
 # Prune oldest first, counting only what this script writes. `ls` on a glob

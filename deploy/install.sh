@@ -45,6 +45,11 @@ done
 GROUP="$(id -gn "$RUN_AS")"
 install -d -o "$RUN_AS" -g "$GROUP" "$REPO/data" "$REPO/exports" "$REPO/backups"
 
+# install -d touches directories only. A database seeded by the login user
+# before this runs stays owned by them, and the service account then opens it
+# read-only - which surfaces as a SQLite write error mid-drill, not at start.
+chown -R "$RUN_AS:$GROUP" "$REPO/data" "$REPO/exports" "$REPO/backups"
+
 # The unit runs uv with --no-sync, because neither the project environment nor
 # uv's cache is writable once the sandbox applies. Build it here instead.
 sudo -u "$RUN_AS" sh -lc "cd '$REPO' && uv sync --frozen"
@@ -52,17 +57,18 @@ sudo -u "$RUN_AS" sh -lc "cd '$REPO' && uv sync --frozen"
 systemctl daemon-reload
 systemctl enable --now satprep.service satprep-backup.timer
 
-# hermes.local, so nobody has to remember a DHCP lease. Enabled-but-stopped is
-# the state a rerun most needs to repair, so check is-active too and let
-# `enable --now` be the idempotent step. set -euo pipefail already aborts on a
-# failed install; there is nothing to add after it.
-if ! systemctl is-active --quiet avahi-daemon 2>/dev/null; then
-    command -v avahi-daemon >/dev/null || {
-        echo "  installing avahi-daemon for mDNS"
-        apt-get install -y avahi-daemon >/dev/null
-    }
-    systemctl enable --now avahi-daemon
+# hermes.local, so nobody has to remember a DHCP lease.
+#
+# `enable --now` runs unconditionally, because enablement and activity are
+# independent states: guarding on either one alone leaves the other broken.
+# is-enabled skips a stopped daemon, is-active skips a running-but-disabled
+# one that then vanishes at the next reboot. The command is idempotent, so
+# there is nothing to guard.
+if ! command -v avahi-daemon >/dev/null; then
+    echo "  installing avahi-daemon for mDNS"
+    apt-get install -y avahi-daemon >/dev/null
 fi
+systemctl enable --now avahi-daemon
 
 echo
 systemctl --no-pager --lines=0 status satprep.service || true

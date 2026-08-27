@@ -106,8 +106,15 @@ Pull them somewhere else periodically — a backup that lives only on the box
 it protects is not one:
 
 ```sh
-rsync -avz hermes.local:/opt/satprep/backups/ ~/satprep-backups/
+rsync -avz hermes.local:/opt/satprep/backups/        ~/satprep-backups/
+rsync -avz hermes.local:/opt/satprep/artifacts/images/ ~/satprep-backups/images/
 ```
+
+The figures are a separate line because the archive stores `images` as *path
+references*, not content — `question.html` serves them from `artifacts/images`.
+A recovery from `backups/` alone would restore every question with figures
+pointing at files that are not there. They change only when new material is
+ingested, so a periodic pull is enough.
 
 Restoring — the sidecar files matter:
 
