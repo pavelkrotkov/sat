@@ -14,7 +14,9 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST="${SATPREP_HOST:-hermes.local}"
 USER="${SATPREP_USER:-$USER}"
-REMOTE="${SATPREP_REMOTE_DIR:-/opt/satprep}"
+# Relative to the remote home: a login shell starts there, and $HOME would
+# expand on this machine and point at the wrong filesystem.
+REMOTE="${SATPREP_REMOTE_DIR:-dev/sat}"
 TARGET="$USER@$HOST:$REMOTE"
 
 die() { printf 'sync: %s\n' "$1" >&2; exit 1; }

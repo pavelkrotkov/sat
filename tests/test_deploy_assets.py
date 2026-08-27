@@ -160,8 +160,8 @@ def test_seed_transfer_keeps_each_path_in_its_own_directory():
     """Several rsync sources with one destination flatten into it, leaving the
     database where nothing looks for it."""
     runbook = (DEPLOY / "README.md").read_text()
-    assert "hermes.local:/opt/satprep/data/" in runbook
-    assert "hermes.local:/opt/satprep/outputs/" in runbook
+    assert "hermes.local:dev/sat/data/" in runbook
+    assert "hermes.local:dev/sat/outputs/" in runbook
 
 
 # ------------------------------------------- invariants review turned up --
@@ -199,3 +199,13 @@ def test_offbox_recovery_set_includes_the_figures():
     backups/ alone leaves every figure question pointing at nothing."""
     runbook = (DEPLOY / "README.md").read_text()
     assert "artifacts/images/" in runbook.split("## Backups", 1)[1]
+
+
+def test_remote_paths_are_not_expanded_by_the_local_shell():
+    """$HOME in an rsync or ssh target expands here and points at this
+    machine's filesystem - /Users/pavel sent to a Linux box. rsync and ssh
+    both resolve a relative remote path against the remote home."""
+    for path in [DEPLOY / "sync-to-hermes.sh", DEPLOY / "README.md"]:
+        for line in _code(path).splitlines():
+            if "hermes.local:" in line or "$TARGET" in line:
+                assert "$HOME" not in line, f"{path.name}: {line.strip()}"

@@ -20,9 +20,13 @@ RestartSec=5s
 
 # The corpus is rebuildable; data/satprep.db is not. Nothing else on the box
 # needs write access to either.
+# ProtectSystem=strict already mounts the whole hierarchy read-only, /home
+# included, so ReadWritePaths is what grants the two exceptions. ProtectHome is
+# deliberately not set: with the repo under ~/dev it would fight ReadWritePaths
+# over the same paths, and the protection it adds is already covered above.
 ProtectSystem=strict
+ProtectHome=no
 ReadWritePaths=__DIR__/data __DIR__/exports
-ProtectHome=read-only
 PrivateTmp=yes
 NoNewPrivileges=yes
 

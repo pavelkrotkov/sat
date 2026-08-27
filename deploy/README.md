@@ -32,9 +32,8 @@ On the serving box:
 sudo apt install -y git sqlite3 avahi-daemon
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-sudo git clone https://github.com/pavelkrotkov/sat /opt/satprep
-sudo chown -R "$USER" /opt/satprep
-cd /opt/satprep && uv sync --frozen
+mkdir -p ~/dev && git clone https://github.com/pavelkrotkov/sat ~/dev/sat
+cd ~/dev/sat && uv sync --frozen
 ```
 
 Seed the database — **once**, before any drill is taken here:
@@ -42,11 +41,13 @@ Seed the database — **once**, before any drill is taken here:
 ```sh
 # from the ingest machine. Each item goes to its own subdirectory: with
 # several sources and one destination, rsync would flatten them all into
-# /opt/satprep, where nothing looks for them.
-ssh hermes.local 'mkdir -p /opt/satprep/{data,outputs,artifacts}'
-rsync -avz data/satprep.db            hermes.local:/opt/satprep/data/
-rsync -avz outputs/wrong_questions.json hermes.local:/opt/satprep/outputs/
-rsync -avz artifacts/                 hermes.local:/opt/satprep/artifacts/
+# ~/dev/sat, where nothing looks for them. The remote paths are relative:
+# rsync and ssh resolve them against the remote home, whereas $HOME would
+# expand here and send this machine's path to the other one.
+ssh hermes.local 'mkdir -p ~/dev/sat/{data,outputs,artifacts}'
+rsync -avz data/satprep.db            hermes.local:dev/sat/data/
+rsync -avz outputs/wrong_questions.json hermes.local:dev/sat/outputs/
+rsync -avz artifacts/                 hermes.local:dev/sat/artifacts/
 ```
 
 `artifacts/images/` must exist before the service starts: `satprep/server.py`
@@ -82,7 +83,7 @@ far side**. That matters: ingesting Bluebook wrong-answers creates historical
 that would need merging back.
 
 Set `SATPREP_HOST`, `SATPREP_USER` or `SATPREP_REMOTE_DIR` if your names
-differ from `hermes.local`, your login, and `/opt/satprep`.
+differ from `hermes.local`, your login, and `~/dev/sat`.
 
 Fetching from the College Board question bank is a plain network call with no
 browser session behind it, so run that directly on the serving box:
@@ -106,8 +107,8 @@ Pull them somewhere else periodically — a backup that lives only on the box
 it protects is not one:
 
 ```sh
-rsync -avz hermes.local:/opt/satprep/backups/        ~/satprep-backups/
-rsync -avz hermes.local:/opt/satprep/artifacts/images/ ~/satprep-backups/images/
+rsync -avz hermes.local:dev/sat/backups/        ~/satprep-backups/
+rsync -avz hermes.local:dev/sat/artifacts/images/ ~/satprep-backups/images/
 ```
 
 The figures are a separate line because the archive stores `images` as *path
