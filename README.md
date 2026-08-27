@@ -53,6 +53,9 @@ satprep/           config · db · clock · ids · analytics · cli · server
   and a mastery discount. Uses ALL historical questions, not just errors.
 * Sampler (`satprep/training/sampler.py`): additive, fully explainable weights; every drill
   stores its seed, algorithm version, chosen IDs and per-question score breakdown.
+  Bucket rules, the largest-remainder allocator and the graceful-fill rule live in
+  `satprep/training/composition.py` — pure, so drill composition is testable
+  without a database.
 * Spacing (`satprep/training/spacing.py`): SM-2-lite intervals; confidently-wrong → soonest,
   confidently-correct → longest; exact repeats yield to same-tag different-question.
 
