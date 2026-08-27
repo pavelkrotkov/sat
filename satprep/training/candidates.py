@@ -2,6 +2,10 @@
 
 A leaf, so `sampler` (which builds and scores candidates) and `composition`
 (which buckets them) can both depend on it without depending on each other.
+
+`question` is a hydrated `corpus.questions.Question`, not a sqlite3.Row -
+scoring and bucket rules read named attributes, so a typo is an
+AttributeError here rather than a KeyError several frames away.
 """
 
 
@@ -16,10 +20,10 @@ def row_field(state, key: str, default=None):
 
 
 class Candidate:
-    __slots__ = ("row", "tags", "components", "score", "state", "hist_correct")
+    __slots__ = ("question", "tags", "components", "score", "state", "hist_correct")
 
-    def __init__(self, row, tags):
-        self.row = row
+    def __init__(self, question, tags):
+        self.question = question
         self.tags = tags
         self.components: list[tuple[str, float]] = []
         self.score = 0.0

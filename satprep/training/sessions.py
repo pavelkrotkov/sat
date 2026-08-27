@@ -12,6 +12,7 @@ from .sampler import persist_session, select_drill
 from .spacing import update_after_attempt
 from .weakness import compute_weakness
 from ..corpus.tagger import diagnose_attempt
+from ..corpus.questions import load, load_many
 from ..corpus.tags import tags_by_question
 
 
@@ -22,17 +23,19 @@ def create_session(conn, mode: str, count: int | None = None, seed: str | None =
         # benchmark plans have no seed to derive an id from
         plan["session_id"] = opaque_id()
     persist_session(conn, plan)
+    by_id = load_many(conn, (item["question_id"] for item in plan["items"]))
     questions = []
     for item in plan["items"]:
-        row = conn.execute("SELECT * FROM questions WHERE id=?", (item["question_id"],)).fetchone()
-        if row:
-            questions.append({
-                "id": row["id"],
-                "passage": row["passage"],
-                "stem": row["stem"] or "Select the best answer.",
-                "choices": json.loads(row["choices_json"]),
-                "images": json.loads(row["images_json"] or "[]"),
-            })
+        q = by_id.get(item["question_id"])
+        if q is None:
+            continue
+        questions.append({
+            "id": q.id,
+            "passage": q.passage,
+            "stem": q.stem or "Select the best answer.",
+            "choices": [c.as_dict() for c in q.choices],
+            "images": list(q.images),
+        })
     return {"plan": plan, "questions": questions}
 
 
@@ -55,10 +58,10 @@ def submit_answer(conn, session_id: str, question_id: int, chosen_letter: str,
         # retried submission: never double-count attempts or spacing updates
         return {"correct": bool(prior["correct"]), "key": "",
                 "error_tags": [], "duplicate": True}
-    q = conn.execute("SELECT * FROM questions WHERE id=?", (question_id,)).fetchone()
+    q = load(conn, question_id)
     if q is None:
         raise ValueError(f"Question {question_id} not found")
-    correct = 1 if q["correct_letter"].upper() == chosen_letter.strip().upper()[:1] else 0
+    correct = 1 if q.is_correct_answer(chosen_letter) else 0
     confidence = max(1, min(3, int(confidence)))
     cur = conn.execute(
         """INSERT INTO attempts (session_id, question_id, chosen_letter, correct,
@@ -69,18 +72,17 @@ def submit_answer(conn, session_id: str, question_id: int, chosen_letter: str,
     )
     update_after_attempt(conn, question_id, correct, confidence)
 
-    choices = json.loads(q["choices_json"])
     error_tags = []
-    if q["pool"] == "protected_benchmark":
+    if q.pool == "protected_benchmark":
         mark_benchmark_seen(conn, [question_id])
     elif not correct:
-        error_tags = diagnose_attempt(conn, question_id, choices,
-                                      q["correct_letter"], chosen_letter[:1].upper())
+        error_tags = diagnose_attempt(conn, question_id, [c.as_dict() for c in q.choices],
+                                      q.correct_letter, chosen_letter[:1].upper())
         # spec section 6/13: diagnoses belong to THIS attempt, so older
         # reviews never inherit a later attempt's trap analysis
         conn.execute("UPDATE attempts SET error_tags=? WHERE id=?",
                      (json.dumps(error_tags), cur.lastrowid))
-    return {"correct": bool(correct), "key": q["correct_letter"], "error_tags": error_tags}
+    return {"correct": bool(correct), "key": q.correct_letter, "error_tags": error_tags}
 
 
 def complete_session(conn, session_id: str) -> dict:
@@ -105,12 +107,9 @@ def complete_session(conn, session_id: str) -> dict:
 def review_payload(conn, session_id: str) -> list[dict]:
     """Rich per-question review for incorrect or low-confidence answers."""
     rows = conn.execute(
-        """SELECT a.*, q.passage, q.stem, q.choices_json, q.correct_letter,
-                  q.rationale, q.official_skill, q.official_domain
-           FROM attempts a JOIN questions q ON q.id=a.question_id
-           WHERE a.session_id=? ORDER BY a.id""",
-        (session_id,),
+        "SELECT * FROM attempts WHERE session_id=? ORDER BY id", (session_id,)
     ).fetchall()
+    questions = load_many(conn, {r["question_id"] for r in rows})
     tags_by_q = tags_by_question(conn, {r["question_id"] for r in rows})
     err_rows = conn.execute(
         """SELECT et.question_id, et.tag FROM student_error_tags et
@@ -126,26 +125,25 @@ def review_payload(conn, session_id: str) -> list[dict]:
         needs_review = (not r["correct"]) or r["confidence"] <= 2
         if not needs_review:
             continue
-        choices = json.loads(r["choices_json"])
-        cmap = {c["letter"]: c["text"] for c in choices}
+        question = questions[r["question_id"]]
         tags = tags_by_q.get(r["question_id"], [])
         trap_tags = errs_by_q.get(r["question_id"], []) or _infer_trap(tags)
         lesson = next((config.TAG_LESSONS[t] for t in trap_tags if t in config.TAG_LESSONS), "")
-        skeleton = _logical_skeleton(r["passage"])
+        skeleton = _logical_skeleton(question.passage)
         out.append({
             "question_id": r["question_id"],
             "chosen_letter": r["chosen_letter"],
-            "chosen_text": cmap.get(r["chosen_letter"], ""),
+            "chosen_text": question.text_of(r["chosen_letter"]),
             "correct": bool(r["correct"]),
             "confidence": r["confidence"],
-            "key_letter": r["correct_letter"],
-            "key_text": cmap.get(r["correct_letter"], ""),
-            "why_key_works": _why_key_works(r["rationale"] or ""),
-            "official_skill": r["official_skill"],
+            "key_letter": question.correct_letter,
+            "key_text": question.text_of(question.correct_letter),
+            "why_key_works": _why_key_works(question.rationale),
+            "official_skill": question.official_skill,
             "reasoning_tags": tags,
             "trap_tags": trap_tags,
-            "rationale_official": r["rationale"],
-            "rationale_is_official": bool(r["rationale"]),
+            "rationale_official": question.rationale,
+            "rationale_is_official": bool(question.rationale),
             "passage_skeleton": skeleton,
             "lesson": lesson,
             "lesson_source": "derived rule" if lesson else "",

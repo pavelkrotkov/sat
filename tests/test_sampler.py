@@ -73,11 +73,13 @@ def test_error_clinic_prefers_due_errors(db):
 
 
 def test_exposure_penalty_demotes_seen_questions(db):
+    from satprep.corpus.questions import Question
     from satprep.training.sampler import Candidate, score_candidate
 
     conn = _seed(db)
     c = conn
-    row = c.execute("""SELECT q.* FROM questions q WHERE q.pool='historical' LIMIT 1""").fetchone()
+    row = Question.from_row(c.execute(
+        "SELECT * FROM questions WHERE pool='historical' LIMIT 1").fetchone())
     tags = ["qualifier_strength"]
     weakness = {"tag": {"qualifier_strength": {"score": 60}},
                 "skill": {"Inferences": {"score": 40}}}

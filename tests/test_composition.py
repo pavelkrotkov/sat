@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from satprep import config
+from satprep.corpus.questions import Choice, Question
 from satprep.training.candidates import Candidate
 from satprep.training.composition import (
     FALLBACK_BUCKET, MODE_COMPOSITIONS, allocate, compose, eligible_for,
@@ -24,9 +25,17 @@ WEAKNESS = {"tag": {"qualifier_strength": {"score": 80.0},
                     "chronology": {"score": 10.0}}}
 
 
+def question(qid, *, pool="fresh_training", skill="Inferences"):
+    return Question(
+        id=qid, fingerprint=f"fp{qid}", passage="p", stem="s?",
+        choices=(Choice("A", "a", True), Choice("B", "b")),
+        correct_letter="A", pool=pool, official_skill=skill,
+    )
+
+
 def cand(qid, *, pool="fresh_training", hist_correct=None, tags=("qualifier_strength",),
          skill="Inferences", score=1.0, state=None):
-    c = Candidate({"id": qid, "pool": pool, "official_skill": skill}, list(tags))
+    c = Candidate(question(qid, pool=pool, skill=skill), list(tags))
     c.hist_correct = hist_correct
     c.state = state
     c.score = score
@@ -164,7 +173,7 @@ def test_transfer_drill_never_serves_a_memorized_error():
 
     chosen = compose("transfer_drill", memorized + transferable, 12, WEAKNESS, rng(), NOW)
 
-    assert set(chosen).isdisjoint({c.row["id"] for c in memorized})
+    assert set(chosen).isdisjoint({c.question.id for c in memorized})
     assert set(chosen) == {100}   # only the transferable item survives
 
 

@@ -31,6 +31,12 @@ satprep/           config · db · clock · ids · analytics · cli · server
 `corpus` never imports `training`; the dependency runs one way, enforced by
 `tests/test_module_boundaries.py`.
 
+Stored questions are hydrated once into a `Question` value
+(`satprep/corpus/questions.py`) rather than passed around as `sqlite3.Row`,
+so `choices_json` is decoded in one place and a missing column fails at the
+seam. It is deliberately distinct from `ParsedQuestion`, which is a
+source-specific parse result carrying the student's answer.
+
 * `satprep/corpus/ingest.py` rebuilds the corpus from raw sources; **idempotent** — reruns
   never duplicate questions or attempt history.
 * Questions are fingerprinted by normalized `passage + stem + choices`
