@@ -15,46 +15,11 @@ from .. import ALGO_VERSION
 from .. import config
 from ..clock import utc_now
 from ..ids import session_id
+from .candidates import Candidate, row_field
+from .composition import MODE_COMPOSITIONS, compose, pools_for
 from .spacing import is_due
 from ..corpus.tags import tags_by_question
 from .weakness import cached_profile, compute_weakness
-
-
-def row_field(state, key: str, default=None):
-    """Read a field from sqlite3.Row or a duck-typed state object."""
-    if state is None:
-        return default
-    try:
-        return state[key]
-    except (KeyError, TypeError, IndexError):
-        return getattr(state, key, default)
-
-
-class Candidate:
-    __slots__ = ("row", "tags", "components", "score", "state", "hist_correct")
-
-    def __init__(self, row, tags):
-        self.row = row
-        self.tags = tags
-        self.components: list[tuple[str, float]] = []
-        self.score = 0.0
-        self.state = None
-        self.hist_correct = None  # True/False from scraped history, else None
-
-    def add(self, label: str, value: float) -> None:
-        if abs(value) > 1e-9:
-            self.components.append((label, round(value, 2)))
-            self.score += value
-
-
-MODE_COMPOSITIONS = {
-    # mode -> {bucket: count}; buckets cascade gracefully when pools run dry
-    "targeted_drill": {"old_wrong_due": 4, "old_correct_transfer": 3, "fresh_weak": 5},
-    "error_clinic": {"old_wrong_due": 8, "fresh_weak": 2},
-    "transfer_drill": {"old_correct_transfer": 6, "fresh_weak": 6},
-    "hard_mixed": {"hard_any": 27},
-    "fresh_benchmark": {"protected_unseen": None},  # size set by caller
-}
 
 
 def _load_candidates(conn, include_pools: tuple[str, ...]) -> list[Candidate]:
@@ -121,7 +86,7 @@ def score_candidate(cand: Candidate, weakness: dict, focus_tags: list[str] | Non
     seen_times = _sget("times_seen")
     hist_correct = cand.hist_correct if q["pool"] == "historical" else False
     # an item scraped as incorrect counts as due even before any in-app review
-    due_now = is_due(state) or (q["pool"] == "historical" and hist_correct == 0)
+    due_now = is_due(state, now) or (q["pool"] == "historical" and hist_correct == 0)
     if q["pool"] == "fresh_training":
         if matched:
             cand.add("fresh-matching-weak-tags", config.W_FRESH_MATCHING_WEAK)
@@ -184,79 +149,14 @@ def select_drill(conn, mode: str, count: int | None = None, seed: str | None = N
             ],
         }
 
-    pools_by_mode = {
-        "targeted_drill": ("historical", "fresh_training"),
-        "error_clinic": ("historical",),
-        "transfer_drill": ("historical", "fresh_training"),
-        "hard_mixed": ("historical", "fresh_training"),
-    }
-    if mode not in pools_by_mode:
-        raise ValueError(
-            f"Invalid mode: {mode}. Must be one of: {', '.join(sorted(pools_by_mode))}, fresh_benchmark"
-        )
-    include_pools = pools_by_mode[mode]
+    include_pools = pools_for(mode)
+    scored = [score_candidate(c, weakness, focus_tags, now)
+              for c in _load_candidates(conn, include_pools)]
 
-    candidates = _load_candidates(conn, include_pools)
-    scored = [score_candidate(c, weakness, focus_tags, now) for c in candidates]
-
-    comp = MODE_COMPOSITIONS[mode]
-    total_target = count or sum(v for v in comp.values() if v) or config.DEFAULT_DRILL_SIZE
-    scale = total_target / max(1, sum(v for v in comp.values() if v))
-    # largest-remainder allocation so rounded shares sum EXACTLY to target
-
-    chosen_ids: dict[int, str] = {}
+    shares = MODE_COMPOSITIONS[mode]
+    target = count or sum(v for v in shares.values() if v) or config.DEFAULT_DRILL_SIZE
+    chosen_ids = compose(mode, scored, target, weakness, rng, now)
     plan_items = []
-
-    def bucket_pool(name: str) -> list[Candidate]:
-        if name == "old_wrong_due":
-            # due = never scheduled / never drilled in-app yet, or schedule says due
-            pred = lambda c: (  # noqa: E731
-                c.row["pool"] == "historical"
-                and c.hist_correct == 0
-                and (c.state is None
-                     or row_field(c.state, "due_at") is None
-                     or is_due(c.state))
-            )
-        elif name == "old_correct_transfer":
-            pred = lambda c: (  # noqa: E731
-                c.row["pool"] == "historical"
-                and c.hist_correct == 1  # previously answered CORRECTLY only
-                and any(t in weakness.get("tag", {}) and weakness["tag"][t]["score"] >= 45 for t in c.tags)
-            )
-        elif name == "fresh_weak":
-            pred = lambda c: c.row["pool"] == "fresh_training" and (c.tags or c.row["official_skill"])  # noqa: E731
-        elif name == "hard_any":
-            pred = lambda c: True  # weighting already biases hard+weak  # noqa: E731
-        else:
-            pred = lambda c: True  # noqa: E731
-        return [c for c in scored if c.row["id"] not in chosen_ids and pred(c)]
-
-    active = [(b, (share or 0) * scale) for b, share in comp.items() if share]
-    wants = {b: int(x) for b, x in active}
-    leftover = total_target - sum(wants.values())
-    fracs = sorted(active, key=lambda bx: -(bx[1] - int(bx[1])))
-    for b, _x in fracs[:leftover]:
-        wants[b] += 1
-    for bucket, want in wants.items():
-        pool_cands = bucket_pool(bucket)
-        pool_cands.sort(key=lambda c: -c.score)
-        for c in pool_cands[:want]:
-            chosen_ids[c.row["id"]] = bucket
-
-    # graceful fill if composition underfilled; each mode keeps its guarantee
-    remaining = total_target - len(chosen_ids)
-    if remaining > 0:
-        def _eligible_fallback(c):
-            if c.row["id"] in chosen_ids:
-                return False
-            if mode == "transfer_drill" and c.row["pool"] == "historical" and c.hist_correct == 0:
-                return False  # spec section 11C: transfer drills contain no memorized errors
-            return True
-        rest = [c for c in scored if _eligible_fallback(c)]
-        rest.sort(key=lambda c: -c.score)
-        rng.shuffle(rest)  # jitter among candidates; slice AFTER shuffling
-        for c in rest[:max(0, remaining)]:
-            chosen_ids[c.row["id"]] = "best_available"
 
     for qid, bucket in chosen_ids.items():
         cand = next((c for c in scored if c.row["id"] == qid), None)
