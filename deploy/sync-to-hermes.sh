@@ -33,9 +33,14 @@ rsync -az --delete --info=stats1 \
 rsync -az --info=stats1 \
     "$REPO/artifacts/images/" "$TARGET/artifacts/images/"
 
-# Ingest is idempotent, so re-sending unchanged material is a no-op. Restart
-# picks up the new corpus; attempts already in the database are untouched.
-ssh "$USER@$HOST" "cd $REMOTE && uv run --frozen satprep ingest && uv run --frozen satprep analyze"
-ssh "$USER@$HOST" "sudo systemctl restart satprep"
+# A login shell, because uv installs to ~/.local/bin and a non-interactive ssh
+# command gets the system PATH only - Debian's default .bashrc returns early
+# before the line that would add it.
+#
+# No restart follows. satprep/server.py takes one connection per request via
+# the get_conn dependency, so the next page load already sees the new corpus.
+# Ingest is idempotent, so re-sending unchanged material is a no-op, and
+# attempts already in the database are untouched either way.
+ssh "$USER@$HOST" bash -lc "'cd \"$REMOTE\" && uv run --frozen satprep ingest && uv run --frozen satprep analyze'"
 
 echo "==> http://$HOST:8765"

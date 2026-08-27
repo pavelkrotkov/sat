@@ -40,10 +40,17 @@ cd /opt/satprep && uv sync --frozen
 Seed the database — **once**, before any drill is taken here:
 
 ```sh
-# from the ingest machine
-rsync -avz data/satprep.db artifacts/ outputs/wrong_questions.json \
-    hermes.local:/opt/satprep/
+# from the ingest machine. Each item goes to its own subdirectory: with
+# several sources and one destination, rsync would flatten them all into
+# /opt/satprep, where nothing looks for them.
+ssh hermes.local 'mkdir -p /opt/satprep/{data,outputs,artifacts}'
+rsync -avz data/satprep.db            hermes.local:/opt/satprep/data/
+rsync -avz outputs/wrong_questions.json hermes.local:/opt/satprep/outputs/
+rsync -avz artifacts/                 hermes.local:/opt/satprep/artifacts/
 ```
+
+`artifacts/images/` must exist before the service starts: `satprep/server.py`
+mounts it at import time, and `StaticFiles` raises on a missing directory.
 
 Then install the units:
 
@@ -102,7 +109,19 @@ it protects is not one:
 rsync -avz hermes.local:/opt/satprep/backups/ ~/satprep-backups/
 ```
 
-Restoring: stop the service, gunzip a snapshot over `data/satprep.db`, start.
+Restoring — the sidecar files matter:
+
+```sh
+sudo systemctl stop satprep
+rm -f data/satprep.db-wal data/satprep.db-shm
+gunzip -c backups/satprep-<stamp>.db.gz > data/satprep.db
+sudo systemctl start satprep
+```
+
+An unclean shutdown can leave `-wal` and `-shm` behind. They are newer than
+the snapshot you just installed, so SQLite replays their frames onto it —
+resurrecting the very attempts the restore was meant to discard, or corrupting
+the result. Remove them first.
 
 ## No authentication
 

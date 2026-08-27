@@ -94,3 +94,71 @@ def test_sync_never_sends_the_database():
     body = _code(DEPLOY / "sync-to-hermes.sh")
     assert "satprep.db" not in body
     assert "satprep ingest" in body, "ingest must run on the far side"
+
+
+# ------------------------------------------- invariants review turned up --
+
+def test_sync_does_not_restart_the_service():
+    """server.py takes one connection per request, so a new corpus is visible
+    on the next page load. A restart would need passwordless sudo over a
+    TTY-less ssh, which the runbook never provisions."""
+    body = _code(DEPLOY / "sync-to-hermes.sh")
+    assert "systemctl restart" not in body
+
+
+def test_remote_commands_run_through_a_login_shell():
+    """uv installs to ~/.local/bin, and a non-interactive ssh command gets the
+    system PATH only - Debian's .bashrc returns before the line adding it."""
+    body = _code(DEPLOY / "sync-to-hermes.sh")
+    assert "bash -lc" in body
+
+
+def test_installer_escapes_substitution_values():
+    """The values land in a sed replacement, where | is the delimiter and &
+    means the whole match. A path holding either would silently corrupt the
+    rendered unit instead of failing."""
+    body = _code(DEPLOY / "install.sh")
+    assert "esc()" in body
+    assert body.count('$(esc "') >= len(SUBSTITUTED)
+
+
+def test_installer_resolves_the_primary_group():
+    """A service account's group often differs from its name (nobody/nogroup),
+    and `install -g` would read the username as a group."""
+    body = _code(DEPLOY / "install.sh")
+    assert 'id -gn "$RUN_AS"' in body
+
+
+def test_service_gives_uv_a_writable_cache():
+    """ProtectHome=read-only also covers $HOME/.cache/uv, and --frozen only
+    pins the lockfile - uv still updates the project environment. Without both
+    halves the unit exits before uvicorn starts."""
+    unit = (DEPLOY / "satprep.service").read_text()
+    assert "--no-sync" in unit
+    assert "CacheDirectory=" in unit and "UV_CACHE_DIR=" in unit
+    # ...so install.sh has to build the environment while it still can.
+    assert "uv sync --frozen" in _code(DEPLOY / "install.sh")
+
+
+def test_retention_survives_a_missing_corpus_snapshot():
+    """The corpus export is explicitly optional. A glob matching nothing makes
+    `ls` exit non-zero, and under pipefail that would fail the run after a good
+    database snapshot had already been written."""
+    body = _code(DEPLOY / "backup.sh")
+    assert "find " in body
+    assert "ls -1t \"$DEST\"" not in body
+
+
+def test_restore_clears_the_wal_sidecars():
+    """A -wal newer than the snapshot replays onto it, resurrecting the very
+    attempts the restore was meant to discard."""
+    runbook = (DEPLOY / "README.md").read_text()
+    assert "satprep.db-wal" in runbook and "satprep.db-shm" in runbook
+
+
+def test_seed_transfer_keeps_each_path_in_its_own_directory():
+    """Several rsync sources with one destination flatten into it, leaving the
+    database where nothing looks for it."""
+    runbook = (DEPLOY / "README.md").read_text()
+    assert "hermes.local:/opt/satprep/data/" in runbook
+    assert "hermes.local:/opt/satprep/outputs/" in runbook

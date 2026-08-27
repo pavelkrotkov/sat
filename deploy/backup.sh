@@ -46,8 +46,17 @@ if command -v uv >/dev/null; then
         && gzip -f "$DEST/corpus-$stamp.jsonl"
 fi
 
-# Prune oldest first, counting only what this script writes.
-ls -1t "$DEST"/satprep-*.db.gz 2>/dev/null | tail -n "+$((KEEP + 1))" | xargs -r rm -f
-ls -1t "$DEST"/corpus-*.jsonl.gz 2>/dev/null | tail -n "+$((KEEP + 1))" | xargs -r rm -f
+# Prune oldest first, counting only what this script writes. `ls` on a glob
+# that matches nothing exits non-zero, which under pipefail would fail the
+# whole run *after* a good snapshot had already been written - and the corpus
+# export above is explicitly optional, so that case is reachable.
+prune() {
+    find "$DEST" -maxdepth 1 -name "$1" -print0 2>/dev/null \
+        | xargs -0r ls -1t 2>/dev/null \
+        | tail -n "+$((KEEP + 1))" \
+        | tr '\n' '\0' | xargs -0r rm -f
+}
+prune 'satprep-*.db.gz'
+prune 'corpus-*.jsonl.gz'
 
 printf 'backup: %s.gz (%s attempts)\n' "$out" "$attempts"

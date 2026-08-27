@@ -8,7 +8,13 @@ Wants=network-online.target
 Type=exec
 User=__USER__
 WorkingDirectory=__DIR__
-ExecStart=__UV__ run --frozen satprep serve --host __HOST__ --port __PORT__
+# --no-sync: the environment is built by install.sh, before the sandbox
+# applies. --frozen alone only pins the lockfile; uv would still try to update
+# the project environment here, and both it and $HOME/.cache/uv are read-only
+# under the settings below.
+Environment=UV_CACHE_DIR=%C/satprep
+CacheDirectory=satprep
+ExecStart=__UV__ run --frozen --no-sync satprep serve --host __HOST__ --port __PORT__
 Restart=on-failure
 RestartSec=5s
 
