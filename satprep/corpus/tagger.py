@@ -12,11 +12,11 @@ Error diagnosis (comparing the chosen wrong letter to the key) is separate
 and writes to student_error_tags.
 """
 
-import json
 import re
 
 from ..config import SKILL_TO_DOMAIN
 from ..clock import utc_now
+from .questions import iter_active
 from .tags import set_rule_tags
 
 # ------------------------------------------------------- official skills ---
@@ -334,26 +334,23 @@ def diagnose_attempt(conn, qid: int, choices: list[dict], correct_letter: str, s
 
 def run_full_tagging(conn) -> dict:
     """Tag every active question lacking rule tags; derive missing skills."""
-    rows = conn.execute(
-        """SELECT id, passage, stem, choices_json, official_skill FROM questions WHERE active=1"""
-    ).fetchall()
-    stats = {"questions": len(rows), "tagged": 0, "skills_derived": 0}
-    for row in rows:
-        choice_texts = [c["text"] for c in json_load(row["choices_json"])]
+    questions = list(iter_active(conn))
+    stats = {"questions": len(questions), "tagged": 0, "skills_derived": 0}
+    for question in questions:
         # choice-less questions (Bluebook omits options on correct reviews)
         # are still tagged from passage+stem so they inform the weakness model
-        tag_question_row(conn, row["id"], row["passage"], row["stem"], choice_texts)
+        tag_question_row(conn, question.id, question.passage, question.stem,
+                         question.choice_texts)
         stats["tagged"] += 1
-        if not row["official_skill"]:
-            skill, domain = derive_official_skill(row["stem"], row["passage"], choice_texts)
+        if not question.official_skill:
+            skill, domain = derive_official_skill(question.stem, question.passage,
+                                                  question.choice_texts)
             if skill or domain:
                 conn.execute(
                     "UPDATE questions SET official_skill=?, official_domain=?, skill_source=? WHERE id=?",
-                    (skill, domain, "derived" if skill else "derived-domain-only", row["id"]),
+                    (skill, domain, "derived" if skill else "derived-domain-only", question.id),
                 )
                 stats["skills_derived"] += 1
     return stats
 
 
-def json_load(value: str):
-    return json.loads(value) if value else []
