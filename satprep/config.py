@@ -176,6 +176,11 @@ MASTERY_RECENT_CORRECT_DISCOUNT = 0.25
 # count as transfer material rather than incidental practice.
 WEAK_TAG_THRESHOLD = 55.0
 
+# A tag is weak enough to make a previously-correct question worth re-testing
+# as transfer material above this model score. Lower than WEAK_TAG_THRESHOLD:
+# the bar for "worth practising" sits below the bar for "counts as a weakness".
+TRANSFER_TAG_THRESHOLD = 45.0
+
 # ------------------------------------------------------------- sampler -----
 # Relative weights for the additive selection score (see sampler.py).
 W_WEAK_TAG_MATCH = 2.2
