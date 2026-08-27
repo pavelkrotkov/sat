@@ -1,0 +1,24 @@
+[Unit]
+Description=satprep web UI
+Documentation=https://github.com/pavelkrotkov/sat/blob/main/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=__USER__
+WorkingDirectory=__DIR__
+ExecStart=__UV__ run --frozen satprep serve --host __HOST__ --port __PORT__
+Restart=on-failure
+RestartSec=5s
+
+# The corpus is rebuildable; data/satprep.db is not. Nothing else on the box
+# needs write access to either.
+ProtectSystem=strict
+ReadWritePaths=__DIR__/data __DIR__/exports
+ProtectHome=read-only
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

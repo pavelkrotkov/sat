@@ -1,0 +1,9 @@
+[Unit]
+Description=satprep nightly backup
+Documentation=https://github.com/pavelkrotkov/sat/blob/main/deploy/README.md
+
+[Service]
+Type=oneshot
+User=__USER__
+WorkingDirectory=__DIR__
+ExecStart=__DIR__/deploy/backup.sh
