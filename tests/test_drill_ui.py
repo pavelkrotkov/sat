@@ -394,6 +394,15 @@ def test_session_rows_link_to_their_results_page(live):
                              html, re.S)
             assert link, f"no <a> for {sid}"
             assert link.group(1).strip(), f"link for {sid} has no accessible text"
+        # both sessions are same-day (same created_at date) and share the mode,
+        # so a date-only aria-label would name them identically. The two
+        # accessible names must differ so screen-reader link navigation can
+        # tell them apart.
+        labels = re.findall(r'<a [^>]*href="/results/(?:'
+                            + re.escape(sid1) + "|" + re.escape(sid2) + ')"'
+                            + r'[^>]*aria-label="([^"]*)"', html)
+        assert len(labels) == 2, "each same-day session needs its own aria-label"
+        assert len(set(labels)) == 2, "same-day sessions share an accessible name"
 
 
 def test_progress_lists_every_completed_session_not_just_eight(live):

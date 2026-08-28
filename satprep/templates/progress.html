@@ -10,7 +10,7 @@
   <div class="bars session-bars">
     {% for s in d.all_sessions %}
     <div class="bar-row">
-      <div class="bar-head"><a class="name bar-link" href="/results/{{ s.id }}" aria-label="Open results for session of {{ s.created_at[:10] }}">{{ s.created_at[:10] }} · {{ s.mode }}</a><span class="value">{{ s.correct }}/{{ s.n }} · {{ s.accuracy }}%</span></div>
+      <div class="bar-head"><a class="name bar-link" href="/results/{{ s.id }}" aria-label="Open results for {{ s.mode }} session of {{ s.created_at[:10] }} at {{ s.finished_at[11:16] }} — {{ s.correct }} of {{ s.n }}">{{ s.created_at[:10] }} · {{ s.mode }}</a><span class="value">{{ s.correct }}/{{ s.n }} · {{ s.accuracy }}%</span></div>
       <div class="bar-track"><div class="bar-fill" style="width: {{ s.accuracy }}%"></div></div>
     </div>
     {% endfor %}
