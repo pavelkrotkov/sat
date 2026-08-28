@@ -1,7 +1,8 @@
 {% extends "base.html" %}
+{% set nav = 'drill' %}
+{% block title %}Start Drill · satprep{% endblock %}
 {% block content %}
 <h1>Start Drill</h1>
-<p class="muted">pools: historical {{ pool_counts.get('historical',0) }} · fresh {{ pool_counts.get('fresh_training',0) }} · protected {{ pool_counts.get('protected_benchmark',0) }} (never shown outside Benchmark)</p>
 <form method="post" action="/begin">
   <label>Mode
     <select name="mode">
@@ -21,6 +22,12 @@
       </optgroup>
     </select>
   </label>
-  <button type="submit">Begin</button>
+  <button class="btn wide" type="submit">Begin</button>
 </form>
+{# A maintenance statistic, not something she can act on — but useful enough
+   when the corpus is being rebuilt to keep one line of it here. #}
+<details>
+  <summary>Pool sizes</summary>
+  <p class="muted">historical {{ pool_counts.get('historical',0) }} · fresh {{ pool_counts.get('fresh_training',0) }} · protected {{ pool_counts.get('protected_benchmark',0) }} (never shown outside Benchmark)</p>
+</details>
 {% endblock %}

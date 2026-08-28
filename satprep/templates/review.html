@@ -1,4 +1,6 @@
 {% extends "base.html" %}
+{% set nav = 'drill' %}
+{% block title %}Review · satprep{% endblock %}
 {% block content %}
 <h1>Review Mistakes</h1>
 {% if not reviews %}<p>Clean session — nothing to review.</p>{% endif %}

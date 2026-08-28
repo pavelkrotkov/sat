@@ -1,9 +1,16 @@
 {% extends "base.html" %}
+{% set nav = 'drill' %}
+{% block title %}Question {{ idx + 1 }} of {{ total }} · satprep{% endblock %}
 {% block content %}
 <div class="progress"><div style="width: {{ (idx * 100 / total)|round(0) }}%"></div></div>
-<p class="muted">Question {{ idx + 1 }} of {{ total }} · session {{ sid[:8] }} · <span id="timer">0:00</span></p>
-<form method="post" action="/answer/{{ sid }}/{{ idx }}">
+<p class="drill-meta">
+  <span>Question {{ idx + 1 }} of {{ total }}</span>
+  {% if streak %}<span class="streak">{{ streak }} in a row</span>{% endif %}
+  <span class="timer" id="timer">0:00</span>
+</p>
+<form method="post" action="/answer/{{ sid }}/{{ idx }}" id="answer-form">
   <input type="hidden" name="question_id" value="{{ q.id }}">
+  <input type="hidden" name="elapsed_ms" id="elapsed_ms" value="0">
   {% if q.passage %}<div class="passage">{% for p in q.passage.split('\n') %}<p>{{ p }}</p>{% endfor %}</div>{% endif %}
   {% if q.images %}
     <div class="figures">
@@ -11,32 +18,22 @@
     </div>
   {% endif %}
   <p class="stem">{{ q.stem }}</p>
-  {% set letters = q.choices|map(attribute='letter')|list %}
   <div class="choices">
   {% for c in q.choices %}
     <label class="choice"><input type="radio" name="letter" value="{{ c.letter }}" required>
-      <b>{{ c.letter }}.</b> {{ c.text }}</label>
+      <span class="letter">{{ c.letter }}.</span> <span>{{ c.text }}</span></label>
   {% endfor %}
   </div>
+  {# Each confidence control is itself the submit button: a submit button
+     carries its own name/value, so this is two taps and no scroll to a
+     separate Next — with or without JavaScript. #}
   <fieldset class="confidence">
-    <legend>Confidence</legend>
-    <label><input type="radio" name="confidence" value="3" required>3 — confident, can prove it</label>
-    <label><input type="radio" name="confidence" value="2">2 — narrowed to two</label>
-    <label><input type="radio" name="confidence" value="1">1 — uncertain / guess</label>
+    <legend>Pick a choice, then rate your confidence to submit</legend>
+    <div class="conf-row">
+      <button class="conf-btn" type="submit" name="confidence" value="3">3<small>can prove it</small></button>
+      <button class="conf-btn" type="submit" name="confidence" value="2">2<small>narrowed to two</small></button>
+      <button class="conf-btn" type="submit" name="confidence" value="1">1<small>guess</small></button>
+    </div>
   </fieldset>
-  <button type="submit" onclick="sendTime()">Next →</button>
 </form>
-<script>
-const t0 = Date.now();
-setInterval(() => {
-  const s = Math.floor((Date.now() - t0) / 1000);
-  document.getElementById('timer').textContent = Math.floor(s/60) + ':' + String(s%60).padStart(2,'0');
-}, 1000);
-function sendTime(){
-  const f = document.querySelector('form');
-  const inp = document.createElement('input');
-  inp.type='hidden'; inp.name='elapsed_ms'; inp.value=Date.now()-t0;
-  f.appendChild(inp);
-}
-</script>
 {% endblock %}

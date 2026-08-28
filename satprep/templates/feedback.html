@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% set nav = 'drill' %}
+{% block title %}{{ 'Correct' if fb.correct else 'Incorrect' }} · satprep{% endblock %}
+{% block content %}
+<div class="progress"><div style="width: {{ ((idx + 1) * 100 / total)|round(0) }}%"></div></div>
+<p class="drill-meta">
+  <span>Question {{ idx + 1 }} of {{ total }}</span>
+  {% if fb.streak %}<span class="streak">{{ fb.streak }} in a row</span>{% endif %}
+</p>
+
+<div class="verdict {{ 'right' if fb.correct else 'wrong' }}">
+  <span class="mark" aria-hidden="true">{{ '✓' if fb.correct else '✗' }}</span>
+  <span>
+    <span class="headline">{{ 'Correct' if fb.correct else 'Not quite' }}</span>
+    <span class="muted">
+      {% if fb.correct %}
+        answered {{ fb.chosen_letter }} · confidence {{ fb.confidence }}
+      {% else %}
+        you answered {{ fb.chosen_letter or '—' }} · the key is {{ fb.key_letter }}
+      {% endif %}
+    </span>
+  </span>
+</div>
+
+<div class="key-line">
+  <span class="label">Key — {{ fb.key_letter }}</span>
+  <p>{{ fb.key_text }}</p>
+  {% if fb.why_key_works %}<p class="muted">{{ fb.why_key_works }}</p>{% endif %}
+  {% if not fb.correct and fb.chosen_text %}
+    <span class="label">Your answer — {{ fb.chosen_letter }}</span>
+    <p>{{ fb.chosen_text }}</p>
+  {% endif %}
+  {% if fb.official_skill %}<p class="muted">{{ fb.official_skill }}</p>{% endif %}
+</div>
+
+<a class="btn wide" href="{{ next_url }}" id="advance">{{ 'See results' if is_last else 'Next question →' }}</a>
+{% endblock %}
