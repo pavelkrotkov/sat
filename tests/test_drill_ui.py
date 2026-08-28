@@ -534,6 +534,40 @@ def test_sessions_in_the_same_second_still_order_deterministically(live):
             "same-second predecessors were dropped from the reference set"
 
 
+def test_answering_out_of_order_does_not_lock_the_student_out(live):
+    """Second-order bug in my own round-1 fix for the completion finding.
+
+    /question and /feedback are guessable GETs, so a drill can be answered out
+    of order. Completing on `is_last` alone closed the session the moment the
+    LAST question was answered - even with earlier ones outstanding - and
+    `submit_answer` refuses a session that is not open, so the student was
+    locked out of the rest of her own drill. Completion has to mean "every
+    question answered", which is a count, not an index.
+    """
+    with db_context(live) as conn:
+        sess = create_session(conn, "hard_mixed", count=4, seed="ooo")
+        sid = sess["plan"]["session_id"]
+        qs = sess["questions"]
+
+        # jump straight to the final question
+        last = len(qs) - 1
+        server_mod.answer(None, sid, last, question_id=qs[last]["id"], letter="B",
+                          confidence=3, elapsed_ms=100, conn=conn)
+        server_mod.feedback(None, sid, last, conn=conn)
+
+        status = conn.execute("SELECT status FROM sessions WHERE id=?", (sid,)).fetchone()
+        assert status["status"] == "open", "session closed with questions outstanding"
+
+        # the rest of the drill is still answerable
+        for idx in range(last):
+            server_mod.answer(None, sid, idx, question_id=qs[idx]["id"], letter="B",
+                              confidence=3, elapsed_ms=100, conn=conn)
+            server_mod.feedback(None, sid, idx, conn=conn)
+
+        status = conn.execute("SELECT status FROM sessions WHERE id=?", (sid,)).fetchone()
+        assert status["status"] == "completed", "session never completed"
+
+
 def test_choice_radios_keep_their_intrinsic_size(live):
     """Review finding: the generic `form input` rule is display:block,
     width:100%, min-height:44px. A choice radio inheriting it swallows the

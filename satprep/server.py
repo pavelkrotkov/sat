@@ -125,7 +125,17 @@ def feedback(request: Request, sid: str, idx: int, conn=Conn):
         # never answered: revealing the key here would hand out a free answer
         return RedirectResponse(f"/question/{sid}/{idx}", status_code=303)
     is_last = idx + 1 >= len(items)
-    if is_last:
+    # Completion is "every question answered", not "the last index was
+    # reached". /question and /feedback are guessable GETs, so a drill can be
+    # answered out of order; keying off `is_last` alone would close the
+    # session while earlier questions were still unanswered, and
+    # `submit_answer` refuses a session that is not open — locking the student
+    # out of her own drill. Counting attempts is the condition that actually
+    # means the drill is over.
+    answered = conn.execute(
+        "SELECT COUNT(DISTINCT question_id) FROM attempts WHERE session_id=?", (sid,)
+    ).fetchone()[0]
+    if answered >= len(items):
         # The last verdict has been delivered, so the drill is over whether or
         # not she taps "See results". Leaving completion to that click means a
         # closed tab drops a fully answered session out of the analytics and
