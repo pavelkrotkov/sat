@@ -406,6 +406,20 @@ summary {
 }
 .bar-head .name { font-weight: 600; }
 .bar-head .value { color: var(--muted); font-variant-numeric: tabular-nums; }
+/* A session row is a link to its results page. The date is the tap target, so
+ * it needs the same touch floor as the rest of the student surface, not just
+ * the ~24px of a text line. */
+.bar-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap);
+  margin: calc(var(--tap) / -2) calc(var(--s-3) / -1) calc(var(--tap) / -2) 0;
+  padding: 0 calc(var(--s-3) / 2);
+  border-radius: var(--radius-s);
+  text-decoration: none;
+}
+.bar-link:hover { text-decoration: underline; }
+.bar-link:active { background: var(--line-soft); }
 .bar-track { height: 10px; background: var(--line-soft); border-radius: 99px; overflow: hidden; }
 .bar-fill {
   height: 100%;

@@ -7,7 +7,8 @@ attempts into four buckets and must never crash on a live corpus.
 
 import pytest
 
-from satprep.analytics import full_dashboard, transfer_performance
+from satprep.analytics import (full_dashboard, recent_session_scores,
+                               transfer_performance)
 from conftest import add_question
 
 
@@ -308,3 +309,99 @@ def test_ensure_current_is_a_no_op_when_cache_covers_evidence(db, monkeypatch):
     weakness_mod.ensure_current(conn)
 
     assert calls == []
+
+
+# ------------------- session list for students (issue #28) ------------------
+
+def _completed(conn, sid, mode, qid, correct, finished_at):
+    conn.execute(
+        """INSERT INTO sessions (id, mode, created_at, seed, algo_version, plan_json, status)
+           VALUES (?,?,'2026-03-01T00:00:00+00:00','seed','sampler-v1','[]','completed')""",
+        (sid, mode),
+    )
+    conn.execute(
+        """INSERT INTO attempts (session_id, question_id, chosen_letter, correct,
+                                 confidence, time_ms, mode, attempted_at)
+           VALUES (?,?,'B',?,2,1000,?,?)""",
+        (sid, qid, int(correct), mode, finished_at),
+    )
+
+
+def test_all_completed_sessions_returns_every_finished_session(db):
+    """The dashboard keeps an eight-item slice; Progress must reach every
+    retained finished session, so the all-sessions helper is unbounded while
+    the dashboard limit stays in place."""
+    conn, _ = db
+    for i in range(12):
+        qid = add_question(conn, passage=f"p{i}", stem=f"s{i}?",
+                           choices=["a", "b", "c", "d"], source="bluebook_test",
+                           pool="historical")
+        _completed(conn, f"s{i:02d}", "targeted_drill", qid, i % 2,
+                   f"2026-03-{i + 1:02d}T00:00:00+00:00")
+    conn.commit()
+
+    all_sessions = recent_session_scores(conn, limit=None)
+    assert len(all_sessions) == 12
+
+    # the dashboard slice is unchanged: same source, bounded to eight
+    assert len(recent_session_scores(conn, limit=8)) == 8
+    dashboard = full_dashboard(conn)
+    assert len(dashboard["recent_sessions"]) == 8
+
+
+def test_all_completed_sessions_orders_by_finish_time_with_attempt_tiebreak(db):
+    """Ordering must survive even when finish times tie: the tie-break is the
+    id of the last attempt, not session creation order."""
+    conn, _ = db
+    q1 = add_question(conn, passage="a", stem="a?", choices=["a", "b", "c", "d"],
+                      source="bluebook_test", pool="historical")
+    q2 = add_question(conn, passage="b", stem="b?", choices=["a", "b", "c", "d"],
+                      source="bluebook_test", pool="historical")
+    # same finished_at on both; the later-inserted attempt in the second row
+    # is the true finish order
+    _completed(conn, "old", "targeted_drill", q1, 1, "2026-03-01T00:00:00+00:00")
+    _completed(conn, "new", "targeted_drill", q2, 0, "2026-03-01T00:00:00+00:00")
+    conn.commit()
+
+    ids = [s["id"] for s in recent_session_scores(conn, limit=None)]
+    assert ids == ["new", "old"]
+
+
+def test_all_completed_sessions_excludes_open_abandoned_historical_and_empty(db):
+    conn, _ = db
+    q = add_question(conn, passage="q", stem="q?", choices=["a", "b", "c", "d"],
+                     source="bluebook_test", pool="historical")
+    # finished in-app session: the only one that may appear
+    _completed(conn, "done", "targeted_drill", q, 1, "2026-03-01T00:00:00+00:00")
+    # imported historical attempts, not sessions she sat
+    conn.execute(
+        """INSERT INTO sessions (id, mode, created_at, seed, algo_version, plan_json, status)
+           VALUES ('hist','historical','2026-03-01T00:00:00+00:00','s','v','[]','completed')""")
+    conn.execute(
+        """INSERT INTO attempts (session_id, question_id, chosen_letter, correct,
+                                 confidence, time_ms, mode, attempted_at)
+           VALUES ('hist',?,'B',1,2,1000,'historical','2026-03-01T00:00:00+00:00')""",
+        (q,))
+    # open session with attempts: not finished
+    conn.execute(
+        """INSERT INTO sessions (id, mode, created_at, seed, algo_version, plan_json, status)
+           VALUES ('open','targeted_drill','2026-03-01T00:00:00+00:00','s','v','[]','open')""")
+    conn.execute(
+        """INSERT INTO attempts (session_id, question_id, chosen_letter, correct,
+                                 confidence, time_ms, mode, attempted_at)
+           VALUES ('open',?,'B',1,2,1000,'targeted_drill','2026-03-01T00:00:00+00:00')""",
+        (q,))
+    # completed session with no in-app attempts (imported-only / empty)
+    conn.execute(
+        """INSERT INTO sessions (id, mode, created_at, seed, algo_version, plan_json, status)
+           VALUES ('empty','targeted_drill','2026-03-01T00:00:00+00:00','s','v','[]','completed')""")
+    conn.commit()
+
+    ids = [s["id"] for s in recent_session_scores(conn, limit=None)]
+    assert ids == ["done"]
+
+
+def test_all_completed_sessions_empty_when_nothing_finished(db):
+    conn, _ = db
+    conn.commit()
+    assert recent_session_scores(conn, limit=None) == []

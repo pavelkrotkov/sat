@@ -228,6 +228,55 @@ def test_a_first_session_reads_as_a_baseline_not_an_improvement(live):
     assert comparison["is_personal_best"] is False
 
 
+def test_reopening_an_old_session_keeps_its_own_baseline(live):
+    """Issue #28: the student can reopen an old results page. Its historical
+    comparison must not drift — a session that was her first (no prior baseline)
+    must still read as a baseline when reopened after a later drill, because
+    session_comparison only counts sessions that finished *before* it."""
+    with db_context(live) as conn:
+        old = create_session(conn, "error_clinic", count=2, seed="reopen-old")
+        sid_old = old["plan"]["session_id"]
+        for q in old["questions"]:
+            submit_answer(conn, sid_old, q["id"], "B", 3, 100)
+        summary_old = complete_session(conn, sid_old)
+
+        # a later drill; must not creep into the old session's baseline
+        new = create_session(conn, "error_clinic", count=2, seed="reopen-new")
+        sid_new = new["plan"]["session_id"]
+        for q in new["questions"]:
+            submit_answer(conn, sid_new, q["id"], "B", 3, 100)
+        complete_session(conn, sid_new)
+
+        # reopen the old session's results
+        response = server_mod.results(None, sid_old, conn=conn)
+        comparison = session_comparison(conn, sid_old, summary_old)
+
+    assert response.status_code == 200
+    # its own score is preserved, and it still reads as a first-session baseline
+    assert comparison["accuracy"] == 100.0
+    assert comparison["baseline"] is None
+    assert comparison["is_personal_best"] is False
+    # the later session is not in its reference class
+    assert sid_new not in {p["id"] for p in comparison["previous"]}
+
+
+def test_reopened_results_page_carries_its_own_mistake_review(live):
+    """From a reopened /results/{sid} the existing mistake-review link must
+    still point at that same session's /review/{sid}."""
+    with db_context(live) as conn:
+        sess = create_session(conn, "error_clinic", count=2, seed="reopen-link")
+        sid = sess["plan"]["session_id"]
+        for q in sess["questions"]:
+            submit_answer(conn, sid, q["id"], "A", 3, 100)   # wrong on purpose
+        complete_session(conn, sid)
+
+        response = server_mod.results(None, sid, conn=conn)
+
+    html = response.body.decode()
+    assert f'href="/review/{sid}"' in html
+    assert "Review mistakes" in html
+
+
 def test_recent_scores_ignore_the_imported_history(live):
     """`mode='historical'` attempts are the scraped Bluebook backlog, not
     sessions she sat. Counting them would put a wall of 100%s on the screen."""
@@ -311,6 +360,83 @@ def test_progress_renders_on_an_empty_database(live):
         assert server_mod.dashboard(None, conn=conn).status_code == 200
 
 
+def test_session_rows_link_to_their_results_page(live):
+    """The score rows were presentation divs; the only way to reopen a result
+    was the opaque /results/{id} URL. Every rendered row must carry a link to
+    its own results page, with accessible text that says which session."""
+    with db_context(live) as conn:
+        first = create_session(conn, "error_clinic", count=2, seed="row1")
+        sid1 = first["plan"]["session_id"]
+        for q in first["questions"]:
+            submit_answer(conn, sid1, q["id"], "B", 3, 100)
+        complete_session(conn, sid1)
+
+        second = create_session(conn, "error_clinic", count=2, seed="row2")
+        sid2 = second["plan"]["session_id"]
+        for q in second["questions"]:
+            submit_answer(conn, sid2, q["id"], "A", 3, 100)
+        complete_session(conn, sid2)
+
+        d = full_dashboard(conn)
+        # /progress enriches the dashboard with the unbounded finished list;
+        # mirror that here since we render the template rather than hit the route.
+        d["all_sessions"] = recent_session_scores(conn, limit=None)
+
+    dashboard = server_mod.templates.get_template("dashboard.html").render(d=d)
+    progress = server_mod.templates.get_template("progress.html").render(d=d)
+
+    for html in (dashboard, progress):
+        assert f'href="/results/{sid1}"' in html, "a session row is not a link"
+        assert f'href="/results/{sid2}"' in html
+        # the link text names the session rather than being a bare chevron
+        for sid in (sid1, sid2):
+            link = re.search(rf'<a [^>]*href="/results/{sid}"[^>]*>(.*?)</a>',
+                             html, re.S)
+            assert link, f"no <a> for {sid}"
+            assert link.group(1).strip(), f"link for {sid} has no accessible text"
+
+
+def test_progress_lists_every_completed_session_not_just_eight(live):
+    """The dashboard slice is eight; Progress is where a student browses the
+    rest. With ten finished sessions, /progress must link all ten."""
+    with db_context(live) as conn:
+        sids = []
+        for i in range(10):
+            sess = create_session(conn, "error_clinic", count=1, seed=f"all{i}")
+            sid = sess["plan"]["session_id"]
+            submit_answer(conn, sid, sess["questions"][0]["id"], "B", 3, 100)
+            complete_session(conn, sid)
+            sids.append(sid)
+
+        response = server_mod.progress(None, conn=conn)
+
+    html = response.body.decode()
+    assert response.status_code == 200
+    for sid in sids:
+        assert f'href="/results/{sid}"' in html, f"session {sid} not browsable on /progress"
+
+
+def test_progress_empty_state_when_no_completed_sessions(live):
+    """With nothing finished the page still renders and says so, rather than
+    showing a header with no rows underneath."""
+    with db_context(live) as conn:
+        response = server_mod.progress(None, conn=conn)
+
+    html = response.body.decode()
+    assert response.status_code == 200
+    assert 'href="/results/' not in html
+    assert "No completed sessions" in html
+
+
+def test_session_row_links_clear_the_tap_target_minimum():
+    """A 30px text line is easy to miss on a 390px-wide phone; the linked row
+    needs the same touch floor as the rest of the student surface."""
+    css = (STATIC / "style.css").read_text()
+    # the session link itself carries the tap floor
+    assert re.search(r"\.bar-link\s*\{[^}]*min-height:\s*var\(--tap\)", css), \
+        ".bar-link lacks a min-height tap target"
+
+
 def test_weakness_data_reads_as_bars_with_the_table_behind_a_disclosure():
     """Three dense tables on a 390px screen. The comparison is the point, and
     a bar makes it without the student parsing a grid of numbers."""
@@ -370,6 +496,7 @@ def test_session_accuracy_bars_stay_within_the_track(live):
         complete_session(conn, sid)
 
         d = full_dashboard(conn)
+        d["all_sessions"] = recent_session_scores(conn, limit=None)
         widths = _rendered_bar_widths("progress.html", {"d": d})
 
     assert widths["plain"], "no session bars rendered"
