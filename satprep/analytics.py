@@ -174,7 +174,7 @@ def corpus_summary(conn) -> dict:
     }
 
 
-def recent_session_scores(conn, limit: int = 10, exclude: str | None = None,
+def recent_session_scores(conn, limit: int | None = 10, exclude: str | None = None,
                           before: tuple[str, int] | None = None) -> list[dict]:
     """Completed in-app sessions, most recently finished first, as accuracy.
 
@@ -196,10 +196,14 @@ def recent_session_scores(conn, limit: int = 10, exclude: str | None = None,
     so it is the true order in which the work was finished. Breaking the tie on
     the session rowid instead would silently reintroduce *creation* order,
     which is the ordering this function exists to stop using.
+
+    `limit=None` returns every retained finished session (Progress), while
+    `full_dashboard` keeps its eight-item slice. A bare `LIMIT ?` bound to
+    `NULL` is a sqlite3 type error in CPython, so the clause is appended only
+    when a limit is actually wanted.
     """
     before_at, before_row = before if before else (None, None)
-    rows = conn.execute(
-        """SELECT s.id AS id, s.mode AS mode, s.created_at AS created_at,
+    sql = """SELECT s.id AS id, s.mode AS mode, s.created_at AS created_at,
                   MAX(a.attempted_at) AS finished_at,
                   MAX(a.id) AS last_attempt_id,
                   COUNT(a.id) AS n, COALESCE(SUM(a.correct), 0) AS c
@@ -212,10 +216,12 @@ def recent_session_scores(conn, limit: int = 10, exclude: str | None = None,
               AND (? IS NULL
                    OR finished_at < ?
                    OR (finished_at = ? AND last_attempt_id < ?))
-           ORDER BY finished_at DESC, last_attempt_id DESC
-           LIMIT ?""",
-        (exclude, exclude, before_at, before_at, before_at, before_row, limit),
-    ).fetchall()
+           ORDER BY finished_at DESC, last_attempt_id DESC"""
+    params: list = [exclude, exclude, before_at, before_at, before_at, before_row]
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
     return [
         {"id": r["id"], "mode": r["mode"], "created_at": r["created_at"],
          "finished_at": r["finished_at"],
