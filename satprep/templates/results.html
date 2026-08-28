@@ -1,13 +1,60 @@
 {% extends "base.html" %}
+{% set nav = 'drill' %}
+{% block title %}Results · satprep{% endblock %}
 {% block content %}
 <h1>Results</h1>
+
+{% if comparison.accuracy is not none %}
+<div class="verdict {{ 'right' if comparison.delta is none or comparison.delta >= 0 else 'wrong' }}">
+  <span class="mark" aria-hidden="true">{{ '★' if comparison.is_personal_best else ('↑' if comparison.delta is not none and comparison.delta > 0 else ('↓' if comparison.delta is not none and comparison.delta < 0 else '•')) }}</span>
+  <span>
+    <span class="headline">{{ comparison.accuracy }}%</span>
+    <span class="muted">
+      {% if comparison.is_personal_best %}
+        best of your recent sessions
+      {% elif comparison.delta is none %}
+        your first session — this is the baseline to beat
+      {% elif comparison.delta > 0 %}
+        {{ comparison.delta }} points above your recent average of {{ comparison.baseline }}%
+      {% elif comparison.delta < 0 %}
+        {{ -comparison.delta }} points below your recent average of {{ comparison.baseline }}%
+      {% else %}
+        level with your recent average of {{ comparison.baseline }}%
+      {% endif %}
+    </span>
+  </span>
+</div>
+{% endif %}
+
 <section class="cards">
   <div class="card"><span class="big">{{ summary.correct }}/{{ summary.total }}</span><label>correct</label></div>
-  <div class="card"><span class="big">{{ summary.confident_wrong }}</span><label>confidently wrong</label></div>
+  <div class="card {{ 'bad' if summary.confident_wrong }}"><span class="big">{{ summary.confident_wrong }}</span><label>confidently wrong</label></div>
   <div class="card"><span class="big">{{ summary.low_conf_right }}</span><label>lucky rights</label></div>
   <div class="card"><span class="big">{{ summary.median_time_s or '—' }}s</span><label>median time</label></div>
 </section>
-<p>The weakness profile has been updated with this session.</p>
-<a class="btn" href="/review/{{ sid }}">Review mistakes</a>
-<a class="btn ghost" href="/">Dashboard</a>
+
+{% if comparison.previous %}
+<section>
+  <h2>Against your recent sessions</h2>
+  <div class="bars">
+    <div class="bar-row">
+      <div class="bar-head"><span class="name">this session</span><span class="value">{{ comparison.accuracy }}%</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width: {{ comparison.accuracy }}%"></div></div>
+    </div>
+    {% for p in comparison.previous %}
+    <div class="bar-row">
+      <div class="bar-head"><span class="name muted">{{ p.created_at[:10] }} · {{ p.mode }}</span><span class="value">{{ p.accuracy }}%</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width: {{ p.accuracy }}%; opacity: .45"></div></div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<p class="muted">The weakness profile has been updated with this session.</p>
+<div class="btn-row">
+  <a class="btn" href="/review/{{ sid }}">Review mistakes</a>
+  <a class="btn ghost" href="/start">Another drill</a>
+  <a class="btn ghost" href="/progress">Progress</a>
+</div>
 {% endblock %}

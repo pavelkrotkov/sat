@@ -1,47 +1,483 @@
+/* satprep — one hand-written stylesheet. No framework, no build step.
+ *
+ * Palette stays ink-on-paper: it is calm and right for reading passages under
+ * time pressure. Everything is a custom property on :root so the dark scheme
+ * at the bottom is one media block rather than a second stylesheet.
+ */
+
 :root {
-  --ink: #1a1d23; --paper: #fafaf8; --line: #e3e2dd; --accent: #0f6b54;
-  --bad: #a33b2e; --warn: #9a7b16; --muted: #6b7078;
+  /* ---- colour ------------------------------------------------------- */
+  --ink:        #1a1d23;
+  --ink-soft:   #40454e;
+  --paper:      #fafaf8;
+  --raised:     #ffffff;
+  --line:       #e3e2dd;
+  --line-soft:  #eeede8;
+  --accent:     #0f6b54;
+  --accent-ink: #ffffff;
+  --accent-wash:#eef6f2;
+  --bad:        #a33b2e;
+  --bad-wash:   #fbeeec;
+  --warn:       #9a7b16;
+  --warn-wash:  #fbf5e4;
+  --muted:      #6b7078;
+
+  /* ---- type --------------------------------------------------------- */
+  /* The old rule ended `Roboto, serif`, so any box without one of the three
+   * named faces rendered the whole UI in a serif. UI chrome is sans; only
+   * passages opt into the reading face. */
+  --font-ui:   -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+               "Helvetica Neue", Arial, sans-serif;
+  --font-read: Charter, "Iowan Old Style", "Palatino Linotype", Palatino,
+               Georgia, "Times New Roman", serif;
+
+  --step--1: 0.833rem;
+  --step-0:  1rem;
+  --step-1:  1.2rem;
+  --step-2:  1.44rem;
+  --step-3:  1.728rem;
+  --step-4:  2.074rem;
+
+  /* ---- spacing rhythm ----------------------------------------------- */
+  --s-1: 0.25rem;
+  --s-2: 0.5rem;
+  --s-3: 0.75rem;
+  --s-4: 1rem;
+  --s-5: 1.5rem;
+  --s-6: 2rem;
+  --s-7: 3rem;
+
+  --radius:   10px;
+  --radius-s: 8px;
+  --shadow:   0 1px 2px rgba(26, 29, 35, .06), 0 1px 8px rgba(26, 29, 35, .04);
+  --shadow-lift: 0 2px 4px rgba(26, 29, 35, .08), 0 6px 18px rgba(26, 29, 35, .08);
+
+  /* Below the ~44px platform minimum a target is a coin toss on a phone. */
+  --tap: 2.75rem;
+  --ease: cubic-bezier(.2, .7, .3, 1);
 }
+
 * { box-sizing: border-box; }
-body { margin: 0; font: 16px/1.55 -apple-system, "Segoe UI", Roboto, serif; color: var(--ink); background: var(--paper); }
-nav { display: flex; gap: 1.1rem; padding: .65rem 1.2rem; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--paper); }
-nav a { text-decoration: none; color: var(--muted); }
-nav a.brand { font-weight: 700; color: var(--accent); }
-main { max-width: 46rem; margin: 0 auto; padding: 1.2rem; }
-h1 { font-size: 1.5rem; } h2 { font-size: 1.1rem; margin-top: 2rem; }
-.muted { color: var(--muted); font-size: .88em; }
-.cards { display: flex; gap: .8rem; flex-wrap: wrap; }
-.card { border: 1px solid var(--line); border-radius: 10px; padding: .7rem 1rem; min-width: 8.5rem; background: #fff; }
-.card .big { display: block; font-size: 1.6rem; font-weight: 700; }
-.card label { color: var(--muted); font-size: .78em; }
-.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 1.4rem; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  font: var(--step-0)/1.55 var(--font-ui);
+  color: var(--ink);
+  background: var(--paper);
+  /* iOS grey-flashes every tap target without this. */
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ------------------------------------------------------------------ nav -- */
+
+nav {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  padding: var(--s-3) var(--s-5);
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: saturate(1.6) blur(8px);
+}
+nav a {
+  text-decoration: none;
+  color: var(--muted);
+  font-size: var(--step-0);
+  padding: var(--s-2) var(--s-1);
+  border-radius: var(--radius-s);
+  transition: color .15s var(--ease);
+}
+nav a:hover { color: var(--ink); }
+nav a.brand {
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: -.01em;
+  margin-right: auto;
+}
+nav a[aria-current="page"] {
+  color: var(--ink);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+main {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: var(--s-5) var(--s-4) var(--s-7);
+}
+
+/* ----------------------------------------------------------------- type -- */
+
+h1 { font-size: var(--step-3); line-height: 1.2; letter-spacing: -.015em; margin: 0 0 var(--s-4); }
+h2 { font-size: var(--step-1); line-height: 1.25; margin: var(--s-6) 0 var(--s-3); }
+h3 { font-size: var(--step-0); margin: var(--s-4) 0 var(--s-2); }
+p  { margin: 0 0 var(--s-4); }
+
+.muted { color: var(--muted); font-size: var(--step--1); }
+.lede  { font-size: var(--step-1); color: var(--ink-soft); }
+
+a { color: var(--accent); }
+
+/* Every interactive element gets the same visible keyboard ring. */
+:where(a, button, input, select, summary, .choice):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-s);
+}
+
+/* --------------------------------------------------------------- cards --- */
+
+.cards { display: flex; gap: var(--s-3); flex-wrap: wrap; }
+.card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--s-3) var(--s-4);
+  min-width: 8.5rem;
+  background: var(--raised);
+  box-shadow: var(--shadow);
+}
+.card .big {
+  display: block;
+  font-size: var(--step-3);
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.02em;
+}
+.card label { color: var(--muted); font-size: var(--step--1); font-weight: 500; }
+.card.good .big { color: var(--accent); }
+.card.bad .big  { color: var(--bad); }
+
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-5); }
 @media (max-width: 720px) { .cols { grid-template-columns: 1fr; } }
+
+/* --------------------------------------------------------------- tables -- */
+
 table { width: 100%; border-collapse: collapse; font-size: .92em; }
-td, th { padding: .28rem .45rem; border-bottom: 1px solid var(--line); text-align: left; }
-th { color: var(--muted); font-weight: 600; }
-.btn { display: inline-block; background: var(--accent); color: #fff; padding: .5rem 1rem; border-radius: 8px; text-decoration: none; border: 0; font-size: 1rem; cursor: pointer; }
-.btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
-.passage { border-left: 3px solid var(--line); padding-left: .9rem; }
-.stem { font-weight: 550; }
-.choices { display: grid; gap: .5rem; margin: 1rem 0; }
-.choice { border: 1px solid var(--line); border-radius: 8px; padding: .55rem .8rem; background: #fff; cursor: pointer; display: block; }
-.choice:has(input:checked) { border-color: var(--accent); outline: 1px solid var(--accent); }
-.confidence { border: 1px dashed var(--line); border-radius: 8px; margin-bottom: 1rem; }
-.confidence legend { font-size: .85em; color: var(--muted); padding: 0 .4rem; }
-.confidence label { display: block; }
-.progress { height: 4px; background: var(--line); border-radius: 2px; margin-bottom: .8rem; }
-.progress div { height: 100%; background: var(--accent); border-radius: 2px; transition: width .25s; }
-.review { border: 1px solid var(--line); border-radius: 10px; padding: 1rem; margin-bottom: 1rem; background: #fff; }
-.pill { font-size: .75em; padding: .15rem .55rem; border-radius: 99px; color: #fff; }
-.pill.bad { background: var(--bad); } .pill.warn { background: var(--warn); }
-label { font-weight: 600; }
-.skeleton li, .misconceptions li { margin-bottom: .35rem; }
-.lesson { background: #eef6f2; padding: .55rem .8rem; border-radius: 8px; }
-form select, form input { margin: .2rem 0 .8rem; padding: .4rem; font-size: 1rem; width: 100%; max-width: 26rem; }
-form button[type=submit] { margin-top: .3rem; }
+td, th { padding: var(--s-2) var(--s-2); border-bottom: 1px solid var(--line-soft); text-align: left; }
+th { color: var(--muted); font-weight: 600; font-size: var(--step--1); }
+
+/* A table is still the right shape for the operator pages; on a phone it
+ * scrolls in its own box instead of forcing the page sideways. */
+.scroll-x { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+/* -------------------------------------------------------------- buttons -- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--tap);
+  background: var(--accent);
+  color: var(--accent-ink);
+  padding: var(--s-2) var(--s-5);
+  border-radius: var(--radius-s);
+  text-decoration: none;
+  border: 1px solid transparent;
+  font: 600 var(--step-0)/1.2 var(--font-ui);
+  cursor: pointer;
+  transition: transform .12s var(--ease), box-shadow .15s var(--ease),
+              background-color .15s var(--ease);
+}
+.btn:hover  { box-shadow: var(--shadow-lift); }
+.btn:active { transform: translateY(1px); box-shadow: none; }
+.btn.ghost  { background: transparent; color: var(--accent); border-color: var(--accent); }
+.btn.ghost:hover { background: var(--accent-wash); }
+.btn.wide   { display: flex; width: 100%; }
+button[disabled], .btn[disabled] { opacity: .5; cursor: not-allowed; }
+
+.btn-row { display: flex; flex-wrap: wrap; gap: var(--s-3); }
+
+/* ------------------------------------------------------------- the drill - */
+
+.progress {
+  height: 6px;
+  background: var(--line);
+  border-radius: 99px;
+  margin-bottom: var(--s-3);
+  overflow: hidden;
+}
+.progress div {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 99px;
+  transition: width .35s var(--ease);
+}
+
+.drill-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-3);
+  color: var(--muted);
+  font-size: var(--step--1);
+  margin-bottom: var(--s-4);
+}
+.drill-meta .timer { font-variant-numeric: tabular-nums; }
+.streak {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.passage {
+  font-family: var(--font-read);
+  font-size: var(--step-0);
+  line-height: 1.65;
+  border-left: 3px solid var(--line);
+  padding-left: var(--s-4);
+  margin-bottom: var(--s-4);
+}
+.passage p:last-child { margin-bottom: 0; }
+
+.stem { font-weight: 600; font-size: var(--step-1); line-height: 1.4; }
+
+.choices { display: grid; gap: var(--s-2); margin: var(--s-4) 0 var(--s-5); }
+
+/* The whole row is the target, so the tap does not have to find the radio. */
+.choice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  min-height: var(--tap);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  padding: var(--s-3) var(--s-4);
+  background: var(--raised);
+  cursor: pointer;
+  font-weight: 400;
+  transition: border-color .15s var(--ease), background-color .15s var(--ease),
+              transform .12s var(--ease);
+}
+.choice:hover  { border-color: var(--muted); }
+.choice:active { transform: scale(.995); }
+.choice input { margin: .22rem 0 0; accent-color: var(--accent); flex: none; }
+.choice .letter { font-weight: 700; flex: none; }
+.choice:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-wash);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.choice:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Confidence: three large buttons, each of which submits. Two taps total,
+ * no scroll to a separate submit. */
+.confidence {
+  border: 0;
+  padding: 0;
+  margin: 0 0 var(--s-4);
+  min-width: 0;
+}
+.confidence legend {
+  padding: 0;
+  font-size: var(--step--1);
+  color: var(--muted);
+  margin-bottom: var(--s-2);
+}
+.conf-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s-2); }
+@media (max-width: 420px) { .conf-row { grid-template-columns: 1fr; } }
+
+.conf-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 3.25rem;
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--raised);
+  color: var(--ink);
+  font: 600 var(--step-0)/1.2 var(--font-ui);
+  cursor: pointer;
+  transition: border-color .15s var(--ease), background-color .15s var(--ease),
+              transform .12s var(--ease), box-shadow .15s var(--ease);
+}
+.conf-btn small { font-weight: 500; font-size: var(--step--1); color: var(--muted); }
+.conf-btn:hover { border-color: var(--accent); background: var(--accent-wash); box-shadow: var(--shadow); }
+.conf-btn:active { transform: translateY(1px); }
+.conf-btn[value="3"] { border-left: 3px solid var(--accent); }
+.conf-btn[value="2"] { border-left: 3px solid var(--warn); }
+.conf-btn[value="1"] { border-left: 3px solid var(--bad); }
+
+/* JS enables the two-tap flow; without it the fallback submit stays. */
+.nojs-submit { margin-top: var(--s-3); }
+
+/* ------------------------------------------------------------- feedback -- */
+
+.verdict {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  border-radius: var(--radius);
+  padding: var(--s-4) var(--s-5);
+  margin-bottom: var(--s-4);
+  border: 1px solid;
+  animation: rise .25s var(--ease) both;
+}
+.verdict .mark { font-size: var(--step-4); line-height: 1; }
+.verdict .headline { font-size: var(--step-2); font-weight: 700; letter-spacing: -.01em; }
+.verdict.right { background: var(--accent-wash); border-color: var(--accent); color: var(--accent); }
+.verdict.wrong { background: var(--bad-wash);    border-color: var(--bad);    color: var(--bad); }
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.key-line {
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--s-4);
+  margin-bottom: var(--s-4);
+}
+.key-line .label {
+  display: block;
+  font-size: var(--step--1);
+  color: var(--muted);
+  margin-bottom: var(--s-1);
+}
+
+/* -------------------------------------------------------------- review --- */
+
+.review {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--s-4);
+  margin-bottom: var(--s-4);
+  background: var(--raised);
+  box-shadow: var(--shadow);
+}
+.pill {
+  display: inline-block;
+  font-size: var(--step--1);
+  font-weight: 600;
+  padding: var(--s-1) var(--s-3);
+  border-radius: 99px;
+  color: #fff;
+}
+.pill.bad  { background: var(--bad); }
+.pill.warn { background: var(--warn); }
+.pill.good { background: var(--accent); }
+
+.skeleton li, .misconceptions li { margin-bottom: var(--s-2); }
+.lesson { background: var(--accent-wash); padding: var(--s-3) var(--s-4); border-radius: var(--radius-s); }
+
+details { margin-bottom: var(--s-3); }
+summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: var(--step--1);
+  font-weight: 600;
+  padding: var(--s-2) 0;
+  min-height: var(--tap);
+  display: flex;
+  align-items: center;
+}
+
+/* ----------------------------------------------------------------- bars -- */
+
+/* Weakness data is comparative; a bar reads at a glance where a table cell
+ * has to be compared by eye against the ones above it. */
+.bars { display: grid; gap: var(--s-3); margin-bottom: var(--s-3); }
+.bar-row { display: grid; gap: var(--s-1); }
+.bar-head {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--s-3);
+  font-size: var(--step--1);
+}
+.bar-head .name { font-weight: 600; }
+.bar-head .value { color: var(--muted); font-variant-numeric: tabular-nums; }
+.bar-track { height: 10px; background: var(--line-soft); border-radius: 99px; overflow: hidden; }
+.bar-fill {
+  height: 100%;
+  border-radius: 99px;
+  background: var(--accent);
+  transition: width .4s var(--ease);
+}
+.bar-fill.risk { background: linear-gradient(90deg, var(--warn), var(--bad)); }
+
+/* ----------------------------------------------------------------- misc -- */
+
+form label { display: block; font-weight: 600; margin-bottom: var(--s-3); }
+form select, form input {
+  display: block;
+  margin: var(--s-2) 0 0;
+  padding: var(--s-2) var(--s-3);
+  min-height: var(--tap);
+  font: var(--step-0)/1.3 var(--font-ui);
+  color: var(--ink);
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  width: 100%;
+  max-width: 26rem;
+}
+form select:hover, form input:hover { border-color: var(--muted); }
+form button[type=submit] { margin-top: var(--s-3); }
+
 .inline { display: inline; }
 .weights td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
 .pos { color: var(--accent); } .neg { color: var(--bad); }
 tr.ok td:nth-child(6) { color: var(--accent); }
 
-.figures img { max-width: 100%; border: 1px solid var(--line); border-radius: 8px; margin: .4rem 0; }
+.figures img {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  margin: var(--s-2) 0;
+  background: var(--raised);
+}
+
+.stack > * + * { margin-top: var(--s-4); }
+.next-up {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--raised);
+  padding: var(--s-4) var(--s-5);
+  box-shadow: var(--shadow);
+}
+.next-up h2 { margin-top: 0; }
+
+/* --------------------------------------------------------------- motion -- */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    transition-duration: .001ms !important;
+  }
+}
+
+/* ------------------------------------------------------------ dark mode -- */
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink:        #e7e6e1;
+    --ink-soft:   #c2c1bb;
+    --paper:      #14161a;
+    --raised:     #1c1f24;
+    --line:       #2f333a;
+    --line-soft:  #262a30;
+    --accent:     #4fbd9c;
+    --accent-ink: #10201b;
+    --accent-wash:#16302a;
+    --bad:        #e2796a;
+    --bad-wash:   #34211e;
+    --warn:       #d6b552;
+    --warn-wash:  #322c19;
+    --muted:      #9aa0a8;
+    --shadow:      0 1px 2px rgba(0, 0, 0, .4), 0 1px 8px rgba(0, 0, 0, .25);
+    --shadow-lift: 0 2px 4px rgba(0, 0, 0, .45), 0 6px 18px rgba(0, 0, 0, .35);
+  }
+  .pill { color: #10201b; }
+  /* Tell the UA to render form controls and scrollbars dark too. */
+  html { color-scheme: dark; }
+}

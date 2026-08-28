@@ -1,68 +1,54 @@
 {% extends "base.html" %}
+{% block title %}satprep{% endblock %}
 {% block content %}
-<h1>Dashboard</h1>
-<section class="cards">
-  <div class="card"><span class="big">{{ d.corpus.questions_total }}</span><label>questions in corpus</label></div>
-  <div class="card"><span class="big">{{ d.corpus.rw_historical }}</span><label>historical R&W</label></div>
-  <div class="card"><span class="big">{{ d.corpus.fresh_training }}</span><label>fresh training</label></div>
-  <div class="card"><span class="big">{{ d.corpus.protected_benchmark_unseen }}</span><label>protected benchmark</label></div>
+{# Leads with what to do next. Corpus counts are a maintenance statistic and
+   have moved to /admin, where the person who cares about them already is. #}
+<section class="next-up stack">
+  <h2>{{ 'Ready when you are' if d.next_action.has_history else 'Start here' }}</h2>
+  {% if d.next_action.focus_tag %}
+    <p class="lede">Next drill targets <b>{{ d.next_action.focus_tag }}</b> — your weakest reasoning pattern right now.</p>
+  {% else %}
+    <p class="lede">A targeted drill is 12 questions, about 15 minutes.</p>
+  {% endif %}
+  <div class="btn-row">
+    <a class="btn" href="/start{% if d.next_action.focus_tag %}?focus={{ d.next_action.focus_tag }}{% endif %}">Start drill</a>
+    <a class="btn ghost" href="/progress">See progress</a>
+  </div>
+  {% if d.next_action.last_session_at %}
+    <p class="muted">Last session {{ d.next_action.last_session_at[:10] }}</p>
+  {% endif %}
 </section>
 
-<div class="cols">
+{% if d.recent_sessions %}
 <section>
-  <h2>Weakest official skills</h2>
-  <table>
-    <tr><th>skill</th><th>risk</th><th>history</th></tr>
-    {% for s in d.skills[:8] %}
-      <tr><td>{{ s.skill }}</td><td>{{ s.risk_score }}</td><td>{{ s.correct }}/{{ s.seen }}</td></tr>
+  <h2>Recent sessions</h2>
+  <div class="bars">
+    {% for s in d.recent_sessions %}
+    <div class="bar-row">
+      <div class="bar-head"><span class="name">{{ s.created_at[:10] }}</span><span class="value">{{ s.correct }}/{{ s.n }} · {{ s.accuracy }}%</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width: {{ s.accuracy }}%"></div></div>
+    </div>
     {% endfor %}
-  </table>
-</section>
-<section>
-  <h2>Weakest reasoning patterns</h2>
-  <table>
-    <tr><th>tag</th><th>risk</th><th>wrong/seen</th></tr>
-    {% for t in d.tags[:10] %}
-      <tr><td>{{ t.tag }}</td><td>{{ t.risk_score }}</td><td>{{ t.wrong }}/{{ t.seen }}</td></tr>
-    {% endfor %}
-  </table>
-</section>
-</div>
-
-<section>
-  <h2>Transfer performance (the metric that matters)</h2>
-  <table>
-    <tr><th>bucket</th><th>n</th><th>accuracy %</th></tr>
-    {% for k, v in d.transfer.items() %}
-      <tr><td>{{ k }}</td><td>{{ v.n }}</td><td>{{ v.accuracy if v.accuracy is not none else '—' }}</td></tr>
-    {% endfor %}
-  </table>
-</section>
-
-<section>
-  <h2>Start training</h2>
-  <a class="btn" href="/start">New targeted drill</a>
-  <a class="btn ghost" href="/benchmark">Fresh benchmark</a>
-</section>
-
-{% if d.recent_trend %}
-<section>
-  <h2>Recent trend by reasoning tag (last sessions)</h2>
-  <table>
-    <tr><th>tag</th><th>n</th><th>recent accuracy %</th></tr>
-    {% for t in d.recent_trend %}
-      <tr><td>{{ t.tag }}</td><td>{{ t.recent_n }}</td><td>{{ t.recent_accuracy }}</td></tr>
-    {% endfor %}
-  </table>
+  </div>
 </section>
 {% endif %}
 
 <section>
-  <h2>High-value misconceptions</h2>
-  <ul class="misconceptions">
-  {% for m in d.misconceptions[:6] %}
-    <li><b>{{ m.chosen or '?' }} → {{ m.key }}</b> · {{ m.skill }} · {{ m.error_tags|join(', ') or 'diagnosis pending' }}<br><small>{{ m.stem_excerpt }}</small></li>
-  {% endfor %}
-  </ul>
+  <h2>What to work on</h2>
+  {% if d.tags %}
+  <div class="bars">
+    {% for t in d.tags[:5] %}
+    <div class="bar-row">
+      <div class="bar-head">
+        <span class="name"><a href="/start?focus={{ t.tag }}">{{ t.tag }}</a></span>
+        <span class="value">{{ t.wrong }}/{{ t.seen }} wrong</span>
+      </div>
+      <div class="bar-track"><div class="bar-fill risk" style="width: {{ (t.risk_score * 100)|round(0) if t.risk_score <= 1 else 100 }}%"></div></div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="muted">Not enough answers yet to say. Finish a drill and this fills in.</p>
+  {% endif %}
 </section>
 {% endblock %}

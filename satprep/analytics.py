@@ -174,6 +174,79 @@ def corpus_summary(conn) -> dict:
     }
 
 
+def recent_session_scores(conn, limit: int = 10, exclude: str | None = None) -> list[dict]:
+    """Completed in-app sessions, newest first, as accuracy percentages.
+
+    Bare counts on the results screen ("8/12") say nothing about whether that
+    is a good day. Her own recent sessions are the only reference class that
+    means anything here.
+    """
+    rows = conn.execute(
+        """SELECT s.id AS id, s.mode AS mode, s.created_at AS created_at,
+                  COUNT(a.id) AS n, COALESCE(SUM(a.correct), 0) AS c
+           FROM sessions s
+           JOIN attempts a ON a.session_id = s.id AND a.mode != 'historical'
+           WHERE s.status = 'completed' AND (? IS NULL OR s.id != ?)
+           GROUP BY s.id
+           HAVING n > 0
+           ORDER BY s.created_at DESC
+           LIMIT ?""",
+        (exclude, exclude, limit),
+    ).fetchall()
+    return [
+        {"id": r["id"], "mode": r["mode"], "created_at": r["created_at"],
+         "n": r["n"], "correct": r["c"],
+         "accuracy": round(100 * r["c"] / r["n"], 1)}
+        for r in rows
+    ]
+
+
+def session_comparison(conn, session_id: str, summary: dict) -> dict:
+    """This session's accuracy against the recent ones before it.
+
+    `delta` is None when there is no prior session to compare against, so the
+    first drill reads as a baseline rather than an improvement of zero.
+    """
+    total = summary.get("total") or 0
+    accuracy = round(100 * summary.get("correct", 0) / total, 1) if total else None
+    previous = recent_session_scores(conn, limit=5, exclude=session_id)
+    baseline = (round(sum(p["accuracy"] for p in previous) / len(previous), 1)
+                if previous else None)
+    delta = (round(accuracy - baseline, 1)
+             if accuracy is not None and baseline is not None else None)
+    best = max((p["accuracy"] for p in previous), default=None)
+    return {
+        "accuracy": accuracy,
+        "baseline": baseline,
+        "delta": delta,
+        "previous": previous,
+        "is_personal_best": (accuracy is not None and best is not None
+                             and accuracy > best),
+    }
+
+
+def next_action(conn) -> dict:
+    """What she should do next, which is what the dashboard should lead with.
+
+    Corpus size is a maintenance statistic: it tells the operator the ingest
+    worked and tells the student nothing she can act on.
+    """
+    weakest = risk_scores(conn, "tag")
+    focus, score = "", 0.0
+    if weakest:
+        focus, score = max(weakest.items(), key=lambda kv: kv[1])
+    last = conn.execute(
+        """SELECT created_at FROM sessions
+           WHERE status='completed' ORDER BY created_at DESC LIMIT 1"""
+    ).fetchone()
+    return {
+        "focus_tag": focus,
+        "focus_score": score,
+        "last_session_at": last["created_at"] if last else None,
+        "has_history": last is not None,
+    }
+
+
 def full_dashboard(conn) -> dict:
     # One model snapshot for the whole response: settle the cache before any
     # section reads it, or a lazy refresh partway through leaves the sections
@@ -186,4 +259,6 @@ def full_dashboard(conn) -> dict:
         "misconceptions": high_value_misconceptions(conn),
         "transfer": transfer_performance(conn),
         "recent_trend": trend_by_tag(conn),
+        "next_action": next_action(conn),
+        "recent_sessions": recent_session_scores(conn, limit=8),
     }

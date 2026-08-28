@@ -1,7 +1,10 @@
 {% extends "base.html" %}
+{% block title %}Question History · satprep{% endblock %}
 {% block content %}
 <h1>Question History</h1>
+<p class="muted"><a href="/admin">← Admin</a></p>
 <h2>Sessions</h2>
+<div class="scroll-x">
 <table>
 <tr><th>when</th><th>mode</th><th>status</th><th>answered</th><th>correct</th><th>why?</th></tr>
 {% for s in sessions %}
@@ -12,7 +15,9 @@
 </tr>
 {% endfor %}
 </table>
+</div>
 <h2>Recent attempts</h2>
+<div class="scroll-x">
 <table>
 <tr><th>when</th><th>mode</th><th>yours</th><th>key</th><th>conf</th><th>ok</th><th>skill</th></tr>
 {% for a in attempts %}
@@ -23,4 +28,5 @@
 </tr>
 {% endfor %}
 </table>
+</div>
 {% endblock %}
