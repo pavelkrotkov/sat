@@ -24,12 +24,12 @@
    than rendering three dense tables on a 390px screen. #}
 <section>
   <h2>Weakest reasoning patterns</h2>
-  {% if d.tags %}
+  {% if d.practice_tags %}
   <div class="bars">
-    {% for t in d.tags[:5] %}
+    {% for t in d.practice_tags[:5] %}
     <div class="bar-row">
       <div class="bar-head">
-        <span class="name"><a href="/start?focus={{ t.tag }}">{{ t.tag }}</a></span>
+        <span class="name"><a href="/start?focus={{ t.name }}">{{ t.name }}</a></span>
         <span class="value">{{ t.wrong }}/{{ t.seen }} wrong</span>
       </div>
       <div class="bar-track"><div class="bar-fill risk" style="width: {{ [t.risk_score, 100]|min }}%"></div></div>
@@ -41,8 +41,8 @@
     <div class="scroll-x">
       <table>
         <tr><th>tag</th><th>risk</th><th>wrong/seen</th></tr>
-        {% for t in d.tags %}
-        <tr><td>{{ t.tag }}</td><td>{{ t.risk_score }}</td><td>{{ t.wrong }}/{{ t.seen }}</td></tr>
+        {% for t in d.practice_tags %}
+        <tr><td>{{ t.name }}</td><td>{{ t.risk_score }}</td><td>{{ t.wrong }}/{{ t.seen }}</td></tr>
         {% endfor %}
       </table>
     </div>
@@ -54,12 +54,12 @@
 
 <section>
   <h2>Weakest skills</h2>
-  {% if d.skills %}
+  {% if d.practice_skills %}
   <div class="bars">
-    {% for s in d.skills[:5] %}
+    {% for s in d.practice_skills[:5] %}
     <div class="bar-row">
       <div class="bar-head">
-        <span class="name">{{ s.skill }}</span>
+        <span class="name">{{ s.name }}</span>
         <span class="value">{{ s.correct }}/{{ s.seen }}</span>
       </div>
       <div class="bar-track"><div class="bar-fill risk" style="width: {{ [s.risk_score, 100]|min }}%"></div></div>
@@ -71,8 +71,8 @@
     <div class="scroll-x">
       <table>
         <tr><th>skill</th><th>risk</th><th>history</th></tr>
-        {% for s in d.skills %}
-        <tr><td>{{ s.skill }}</td><td>{{ s.risk_score }}</td><td>{{ s.correct }}/{{ s.seen }}</td></tr>
+        {% for s in d.practice_skills %}
+        <tr><td>{{ s.name }}</td><td>{{ s.risk_score }}</td><td>{{ s.correct }}/{{ s.seen }}</td></tr>
         {% endfor %}
       </table>
     </div>

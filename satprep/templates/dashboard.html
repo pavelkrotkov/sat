@@ -35,12 +35,12 @@
 
 <section>
   <h2>What to work on</h2>
-  {% if d.tags %}
+  {% if d.practice_tags %}
   <div class="bars">
-    {% for t in d.tags[:5] %}
+    {% for t in d.practice_tags[:5] %}
     <div class="bar-row">
       <div class="bar-head">
-        <span class="name"><a href="/start?focus={{ t.tag }}">{{ t.tag }}</a></span>
+        <span class="name"><a href="/start?focus={{ t.name }}">{{ t.name }}</a></span>
         <span class="value">{{ t.wrong }}/{{ t.seen }} wrong</span>
       </div>
       <div class="bar-track"><div class="bar-fill risk" style="width: {{ [t.risk_score, 100]|min }}%"></div></div>

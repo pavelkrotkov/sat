@@ -506,9 +506,10 @@ def test_the_comparison_baseline_does_not_change_retroactively(live):
 
 
 def test_sessions_in_the_same_second_still_order_deterministically(live):
-    """clock.utc_now is second-resolution, so two drills back to back tie on
-    created_at; a plain `<` would drop the earlier one out of the reference
-    set entirely."""
+    """clock.utc_now is second-resolution, so drills finishing back to back tie
+    on the timestamp; a plain `<` would drop the earlier ones out of the
+    reference set entirely. The tie-break is the last attempt's autoincrement
+    id, which is the real order the work finished in."""
     with db_context(live) as conn:
         ids = []
         for n in range(3):
@@ -519,14 +520,16 @@ def test_sessions_in_the_same_second_still_order_deterministically(live):
             complete_session(conn, sid)
             ids.append(sid)
 
-        stamps = {r["created_at"] for r in
-                  conn.execute("SELECT created_at FROM sessions").fetchall()}
+        stamps = {r["attempted_at"] for r in
+                  conn.execute("SELECT attempted_at FROM attempts").fetchall()}
+        anchor = conn.execute(
+            """SELECT MAX(a.attempted_at) AS finished_at, MAX(a.id) AS last_attempt_id
+               FROM attempts a WHERE a.session_id = ? AND a.mode != 'historical'""",
+            (ids[-1],),
+        ).fetchone()
         previous = recent_session_scores(
             conn, exclude=ids[-1],
-            before=(conn.execute("SELECT created_at FROM sessions WHERE id=?",
-                                 (ids[-1],)).fetchone()["created_at"],
-                    conn.execute("SELECT rowid FROM sessions WHERE id=?",
-                                 (ids[-1],)).fetchone()["rowid"]))
+            before=(anchor["finished_at"], anchor["last_attempt_id"]))
 
     # the fixture is only meaningful if the timestamps really did collide
     if len(stamps) == 1:
@@ -566,6 +569,147 @@ def test_answering_out_of_order_does_not_lock_the_student_out(live):
 
         status = conn.execute("SELECT status FROM sessions WHERE id=?", (sid,)).fetchone()
         assert status["status"] == "completed", "session never completed"
+
+
+# ------------------------------------------------ round-2 review findings --
+
+def test_a_benchmark_never_shows_feedback_between_questions(live):
+    """Review finding (P1): the fresh benchmark is the one honest measurement
+    in the system - its questions are protected, and answering one marks it
+    seen irreversibly. Revealing the key and rationale after each answer
+    teaches during the measurement, so a later item can benefit from
+    instruction delivered mid-benchmark and the baseline can never be retaken.
+    """
+    with db_context(live) as conn:
+        for i in range(10):
+            add_question(conn, stem=f"protected {i}?", source="cb",
+                         pool="protected_benchmark", correct="B")
+        conn.commit()
+
+        sess = create_session(conn, "fresh_benchmark", count=4)
+        sid = sess["plan"]["session_id"]
+        qs = sess["questions"]
+        assert len(qs) >= 2, "need a multi-question benchmark to prove the leak"
+
+        # answering does not route to a verdict
+        response = server_mod.answer(None, sid, 0, question_id=qs[0]["id"],
+                                     letter="A", confidence=3, elapsed_ms=100,
+                                     conn=conn)
+        assert response.headers["location"] == f"/question/{sid}/1"
+
+        # ...and the feedback URL is a plain GET, so it needs the same guard
+        direct = server_mod.feedback(None, sid, 0, conn=conn)
+        assert direct.status_code == 303, "benchmark feedback rendered a key"
+        assert direct.headers["location"] == f"/question/{sid}/1"
+
+
+def test_a_training_drill_still_shows_feedback(live):
+    """The benchmark guard must not cost the feature everywhere else."""
+    with db_context(live) as conn:
+        sess = create_session(conn, "error_clinic", count=2, seed="train")
+        sid = sess["plan"]["session_id"]
+        response = server_mod.answer(None, sid, 0,
+                                     question_id=sess["questions"][0]["id"],
+                                     letter="B", confidence=3, elapsed_ms=100,
+                                     conn=conn)
+    assert response.headers["location"] == f"/feedback/{sid}/0"
+
+
+def test_a_benchmark_still_reaches_its_results(live):
+    """Skipping /feedback must not strand the session: /question past the end
+    still redirects to /results, which completes it."""
+    with db_context(live) as conn:
+        for i in range(10):
+            add_question(conn, stem=f"pb-done {i}?", source="cb",
+                         pool="protected_benchmark", correct="B")
+        conn.commit()
+
+        sess = create_session(conn, "fresh_benchmark", count=3)
+        sid = sess["plan"]["session_id"]
+        qs = sess["questions"]
+        for idx, q in enumerate(qs):
+            server_mod.answer(None, sid, idx, question_id=q["id"], letter="B",
+                              confidence=3, elapsed_ms=100, conn=conn)
+
+        past_end = server_mod.question(None, sid, len(qs), conn=conn)
+        assert past_end.headers["location"] == f"/results/{sid}"
+        server_mod.results(None, sid, conn=conn)
+        status = conn.execute("SELECT status FROM sessions WHERE id=?", (sid,)).fetchone()
+    assert status["status"] == "completed"
+
+
+def test_progress_reflects_drills_not_only_the_imported_history(live):
+    """Review finding: /progress was built from skill_accuracy/tag_accuracy,
+    which filter to `a.mode='historical'` - they describe the scraped Bluebook
+    backlog. Her own drills moved the weakness score while the wrong/seen
+    counts beside it never changed, and a profile built purely from in-app
+    answers rendered as "not enough data yet"."""
+    with db_context(live) as conn:
+        # tag every question in the corpus, so whatever the sampler picks
+        # carries the tag - otherwise this asserts on the sampler's choices
+        # rather than on the profile the page reads
+        for (qid,) in conn.execute("SELECT id FROM questions").fetchall():
+            conn.execute(
+                "INSERT OR IGNORE INTO question_tags (question_id, tag, origin, created_at)"
+                " VALUES (?,'scope_shift','rule','2026-01-01')", (qid,))
+        conn.commit()
+
+        sess = create_session(conn, "hard_mixed", count=6, seed="prac")
+        sid = sess["plan"]["session_id"]
+        for q in sess["questions"]:
+            submit_answer(conn, sid, q["id"], "A", 3, 100)     # all wrong
+        complete_session(conn, sid)
+
+        d = full_dashboard(conn)
+
+        # the historical-only view is empty: there are no historical attempts
+        assert d["tags"] == []
+        # ...but the student-facing view is not
+        assert d["practice_tags"], "Progress shows nothing despite a full drill"
+        names = {t["name"] for t in d["practice_tags"]}
+        assert "scope_shift" in names
+
+        entry = next(t for t in d["practice_tags"] if t["name"] == "scope_shift")
+        assert entry["seen"] > 0, "wrong/seen never moves with in-app answers"
+        assert entry["wrong"] > 0
+
+        # and it renders, rather than claiming there is nothing to show
+        html = server_mod.templates.get_template("progress.html").render(d=d)
+    # scoped to the reasoning-pattern section: these fixture questions carry no
+    # official_skill, so the skills section is legitimately empty here
+    tags_section = html.split("Weakest reasoning patterns", 1)[1].split("</section>", 1)[0]
+    assert "Not enough answers yet" not in tags_section
+    assert "scope_shift" in tags_section
+
+
+def test_a_comparison_is_frozen_by_completion_not_creation(live):
+    """Review finding: `status` was evaluated now while the ordering key was
+    creation time, so an older session left open and finished later slid into
+    a newer session's baseline after that newer results page had already been
+    shown. Ordering on when the work actually finished closes that."""
+    with db_context(live) as conn:
+        stale = create_session(conn, "error_clinic", count=2, seed="stale")
+        stale_sid = stale["plan"]["session_id"]          # created first, left open
+
+        newer = create_session(conn, "error_clinic", count=2, seed="newer")
+        newer_sid = newer["plan"]["session_id"]
+        for q in newer["questions"]:
+            submit_answer(conn, newer_sid, q["id"], "B", 3, 100)
+        newer_summary = complete_session(conn, newer_sid)
+
+        before = session_comparison(conn, newer_sid, newer_summary)
+        assert before["baseline"] is None, "nothing had finished before it"
+
+        # the older session is only now finished
+        for q in stale["questions"]:
+            submit_answer(conn, stale_sid, q["id"], "A", 3, 100)
+        complete_session(conn, stale_sid)
+
+        after = session_comparison(conn, newer_sid, newer_summary)
+
+    assert after["baseline"] is None, (
+        "a session finished later was backdated into an earlier baseline")
+    assert after == before
 
 
 def test_choice_radios_keep_their_intrinsic_size(live):

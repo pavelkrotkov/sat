@@ -107,9 +107,21 @@ def answer(request: Request, sid: str, idx: int,
                  conn=Conn):
     submit_answer(conn, sid, question_id, letter, confidence, elapsed_ms)
     _commit(conn)
+    if _is_measurement(conn, sid):
+        # A benchmark is a measurement, not a lesson. Teaching between its
+        # questions lets a later item benefit from instruction delivered
+        # mid-measurement, and each protected question is irreversibly marked
+        # seen on submission - so the baseline cannot be taken again.
+        return RedirectResponse(f"/question/{sid}/{idx + 1}", status_code=303)
     # Straight to the feedback screen: the moment right after committing to a
     # choice is the one where the key and the reason land.
     return RedirectResponse(f"/feedback/{sid}/{idx}", status_code=303)
+
+
+def _is_measurement(conn, sid: str) -> bool:
+    """True for sessions whose value depends on not being taught mid-session."""
+    row = conn.execute("SELECT mode FROM sessions WHERE id=?", (sid,)).fetchone()
+    return bool(row) and row["mode"] == "fresh_benchmark"
 
 
 @app.get("/feedback/{sid}/{idx}", response_class=HTMLResponse)
@@ -124,6 +136,11 @@ def feedback(request: Request, sid: str, idx: int, conn=Conn):
     if payload is None:
         # never answered: revealing the key here would hand out a free answer
         return RedirectResponse(f"/question/{sid}/{idx}", status_code=303)
+    if _is_measurement(conn, sid):
+        # /answer never sends a benchmark here, but this is a plain GET and
+        # therefore guessable; the redirect above would be a fig leaf without
+        # the same guard on the route that actually renders the key.
+        return RedirectResponse(f"/question/{sid}/{idx + 1}", status_code=303)
     is_last = idx + 1 >= len(items)
     # Completion is "every question answered", not "the last index was
     # reached". /question and /feedback are guessable GETs, so a drill can be
