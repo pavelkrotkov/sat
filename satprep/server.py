@@ -13,13 +13,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import config
-from .analytics import full_dashboard
+from .analytics import corpus_summary, full_dashboard, session_comparison
 from .db import db_context
 from .corpus.questions import load as load_question
 from .corpus.tags import all_tags_with_origin, set_manual, suppress
 from .config import REASONING_TAGS
-from .training.sessions import (complete_session, create_session, review_payload,
-                                submit_answer)
+from .training.sessions import (answer_feedback, complete_session, create_session,
+                                current_streak, review_payload, submit_answer)
 from .training.weakness import compute_weakness
 from .training.weakness import cached_profile
 
@@ -96,6 +96,7 @@ def question(request: Request, sid: str, idx: int, conn=Conn):
     q = load_question(conn, items[idx]["question_id"])
     return templates.TemplateResponse(request, "question.html", {"q": q, "sid": sid, "idx": idx,
         "total": len(items),
+        "streak": current_streak(conn, sid),
     })
 
 
@@ -106,14 +107,72 @@ def answer(request: Request, sid: str, idx: int,
                  conn=Conn):
     submit_answer(conn, sid, question_id, letter, confidence, elapsed_ms)
     _commit(conn)
-    return RedirectResponse(f"/question/{sid}/{idx + 1}", status_code=303)
+    if _is_measurement(conn, sid):
+        # A benchmark is a measurement, not a lesson. Teaching between its
+        # questions lets a later item benefit from instruction delivered
+        # mid-measurement, and each protected question is irreversibly marked
+        # seen on submission - so the baseline cannot be taken again.
+        return RedirectResponse(f"/question/{sid}/{idx + 1}", status_code=303)
+    # Straight to the feedback screen: the moment right after committing to a
+    # choice is the one where the key and the reason land.
+    return RedirectResponse(f"/feedback/{sid}/{idx}", status_code=303)
+
+
+def _is_measurement(conn, sid: str) -> bool:
+    """True for sessions whose value depends on not being taught mid-session."""
+    row = conn.execute("SELECT mode FROM sessions WHERE id=?", (sid,)).fetchone()
+    return bool(row) and row["mode"] == "fresh_benchmark"
+
+
+@app.get("/feedback/{sid}/{idx}", response_class=HTMLResponse)
+def feedback(request: Request, sid: str, idx: int, conn=Conn):
+    plan_row = conn.execute("SELECT plan_json FROM sessions WHERE id=?", (sid,)).fetchone()
+    if not plan_row:
+        return RedirectResponse("/start", status_code=303)
+    items = json.loads(plan_row["plan_json"])
+    if idx >= len(items):
+        return RedirectResponse(f"/results/{sid}", status_code=303)
+    payload = answer_feedback(conn, sid, items[idx]["question_id"])
+    if payload is None:
+        # never answered: revealing the key here would hand out a free answer
+        return RedirectResponse(f"/question/{sid}/{idx}", status_code=303)
+    if _is_measurement(conn, sid):
+        # /answer never sends a benchmark here, but this is a plain GET and
+        # therefore guessable; the redirect above would be a fig leaf without
+        # the same guard on the route that actually renders the key.
+        return RedirectResponse(f"/question/{sid}/{idx + 1}", status_code=303)
+    is_last = idx + 1 >= len(items)
+    # Completion is "every question answered", not "the last index was
+    # reached". /question and /feedback are guessable GETs, so a drill can be
+    # answered out of order; keying off `is_last` alone would close the
+    # session while earlier questions were still unanswered, and
+    # `submit_answer` refuses a session that is not open — locking the student
+    # out of her own drill. Counting attempts is the condition that actually
+    # means the drill is over.
+    answered = conn.execute(
+        "SELECT COUNT(DISTINCT question_id) FROM attempts WHERE session_id=?", (sid,)
+    ).fetchone()[0]
+    if answered >= len(items):
+        # The last verdict has been delivered, so the drill is over whether or
+        # not she taps "See results". Leaving completion to that click means a
+        # closed tab drops a fully answered session out of the analytics and
+        # never refreshes the weakness cache; the old redirect chain reached
+        # /results on its own. complete_session is idempotent.
+        complete_session(conn, sid)
+        _commit(conn)
+    return templates.TemplateResponse(request, "feedback.html", {"fb": payload,
+        "sid": sid, "idx": idx, "total": len(items), "is_last": is_last,
+        "next_url": (f"/results/{sid}" if is_last else f"/question/{sid}/{idx + 1}"),
+    })
 
 
 @app.get("/results/{sid}", response_class=HTMLResponse)
 def results(request: Request, sid: str, conn=Conn):
     summary = complete_session(conn, sid)  # idempotent-ish; refreshes weakness cache
+    comparison = session_comparison(conn, sid, summary)
     _commit(conn)
     return templates.TemplateResponse(request, "results.html", {"summary": summary, "sid": sid,
+        "comparison": comparison,
     })
 
 
@@ -121,6 +180,18 @@ def results(request: Request, sid: str, conn=Conn):
 def review(request: Request, sid: str, conn=Conn):
     rows = review_payload(conn, sid)
     return templates.TemplateResponse(request, "review.html", {"reviews": rows, "sid": sid,
+    })
+
+
+@app.get("/progress", response_class=HTMLResponse)
+def progress(request: Request, conn=Conn):
+    """The student-facing half of the old /weaknesses and /history pages.
+
+    Weakness data is comparative, so it reads as bars; the full tables stay
+    one `<details>` away rather than filling a 390px screen.
+    """
+    d = full_dashboard(conn)
+    return templates.TemplateResponse(request, "progress.html", {"d": d,
     })
 
 
@@ -182,6 +253,7 @@ def admin(request: Request, conn=Conn):
         "SELECT id, mode, created_at, seed, algo_version FROM sessions ORDER BY created_at DESC LIMIT 20"
     ).fetchall()
     return templates.TemplateResponse(request, "admin.html", {"sessions": recent_sessions,
+        "corpus": corpus_summary(conn),
     })
 
 

@@ -144,7 +144,9 @@ def test_full_dashboard_renders_with_in_app_attempts(four_buckets):
     conn, _ = four_buckets
 
     d = full_dashboard(conn)
-    assert set(d) == {"corpus", "skills", "tags", "misconceptions", "transfer", "recent_trend"}
+    assert set(d) == {"corpus", "skills", "tags", "misconceptions", "transfer",
+                      "recent_trend", "next_action", "recent_sessions",
+                      "practice_tags", "practice_skills"}
     # every in-app attempt is accounted for in exactly one bucket
     assert sum(b["n"] for b in d["transfer"].values()) == 4
 

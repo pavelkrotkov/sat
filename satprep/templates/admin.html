@@ -1,11 +1,33 @@
 {% extends "base.html" %}
+{% block title %}Admin · satprep{% endblock %}
 {% block content %}
 <h1>Settings / Admin</h1>
+{# The operator's surface. These pages used to sit in the student's top-level
+   nav, where Benchmark in particular is a trap: it spends protected questions
+   that only exist to give one honest measurement. #}
+<div class="btn-row">
+  <a class="btn ghost" href="/weaknesses">Weakness analysis</a>
+  <a class="btn ghost" href="/history">History</a>
+  <a class="btn ghost" href="/benchmark">Fresh benchmark</a>
+</div>
+
+<h2>Corpus</h2>
+<section class="cards">
+  <div class="card"><span class="big">{{ corpus.questions_total }}</span><label>questions active</label></div>
+  <div class="card"><span class="big">{{ corpus.rw_historical }}</span><label>historical R&amp;W</label></div>
+  <div class="card"><span class="big">{{ corpus.fresh_training }}</span><label>fresh training</label></div>
+  <div class="card"><span class="big">{{ corpus.protected_benchmark_unseen }}</span><label>protected unseen</label></div>
+  <div class="card"><span class="big">{{ corpus.attempts_total }}</span><label>attempts</label></div>
+  <div class="card"><span class="big">{{ corpus.sessions_total }}</span><label>sessions</label></div>
+</section>
+
 <h2>Recent sessions (selection traces)</h2>
+<div class="scroll-x">
 <table>
 <tr><th>session</th><th>mode</th><th>created</th><th>seed</th><th>algo</th><th></th></tr>
 {% for s in sessions %}
 <tr><td><code>{{ s.id }}</code></td><td>{{ s.mode }}</td><td>{{ s.created_at[:19] }}</td><td><code>{{ s.seed[:18] }}</code></td><td>{{ s.algo_version }}</td><td><a href="/admin/why/{{ s.id }}">why selected?</a></td></tr>
 {% endfor %}
 </table>
+</div>
 {% endblock %}

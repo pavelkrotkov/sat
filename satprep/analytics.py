@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import config
 from .corpus.tags import tags_by_question
-from .training.weakness import ensure_current, risk_scores
+from .training.weakness import cached_profile, ensure_current, risk_scores
 
 
 def skill_accuracy(conn) -> list[dict]:
@@ -174,6 +174,140 @@ def corpus_summary(conn) -> dict:
     }
 
 
+def recent_session_scores(conn, limit: int = 10, exclude: str | None = None,
+                          before: tuple[str, int] | None = None) -> list[dict]:
+    """Completed in-app sessions, most recently finished first, as accuracy.
+
+    Bare counts on the results screen ("8/12") say nothing about whether that
+    is a good day. Her own recent sessions are the only reference class that
+    means anything here.
+
+    Ordering is by when a session's work actually *finished* — `MAX(attempted_at)`
+    over its attempts — not when it was created. A drill started on Monday and
+    finished on Friday belongs after Tuesday's drill, and using creation order
+    would let an older session that is still open slot itself behind results
+    pages that were already rendered without it.
+
+    `before` is a (finished_at, last_attempt_id) pair, restricting the set to
+    sessions that finished earlier, so a results page reads the same whenever
+    it is opened. Timestamps are second-resolution (`clock.utc_now`), so two
+    drills finishing in the same second tie on the timestamp alone. The
+    tie-break is the id of the last attempt — `attempts.id` is autoincrement,
+    so it is the true order in which the work was finished. Breaking the tie on
+    the session rowid instead would silently reintroduce *creation* order,
+    which is the ordering this function exists to stop using.
+    """
+    before_at, before_row = before if before else (None, None)
+    rows = conn.execute(
+        """SELECT s.id AS id, s.mode AS mode, s.created_at AS created_at,
+                  MAX(a.attempted_at) AS finished_at,
+                  MAX(a.id) AS last_attempt_id,
+                  COUNT(a.id) AS n, COALESCE(SUM(a.correct), 0) AS c
+           FROM sessions s
+           JOIN attempts a ON a.session_id = s.id AND a.mode != 'historical'
+           WHERE s.status = 'completed'
+             AND (? IS NULL OR s.id != ?)
+           GROUP BY s.id
+           HAVING n > 0
+              AND (? IS NULL
+                   OR finished_at < ?
+                   OR (finished_at = ? AND last_attempt_id < ?))
+           ORDER BY finished_at DESC, last_attempt_id DESC
+           LIMIT ?""",
+        (exclude, exclude, before_at, before_at, before_at, before_row, limit),
+    ).fetchall()
+    return [
+        {"id": r["id"], "mode": r["mode"], "created_at": r["created_at"],
+         "finished_at": r["finished_at"],
+         "n": r["n"], "correct": r["c"],
+         "accuracy": round(100 * r["c"] / r["n"], 1)}
+        for r in rows
+    ]
+
+
+def session_comparison(conn, session_id: str, summary: dict) -> dict:
+    """This session's accuracy against the recent ones that finished before it.
+
+    `delta` is None when there is no prior session to compare against, so the
+    first drill reads as a baseline rather than an improvement of zero — and
+    keeps reading that way when the page is opened again months later.
+    """
+    total = summary.get("total") or 0
+    accuracy = round(100 * summary.get("correct", 0) / total, 1) if total else None
+    anchor = conn.execute(
+        """SELECT MAX(a.attempted_at) AS finished_at, MAX(a.id) AS last_attempt_id
+           FROM attempts a
+           WHERE a.session_id = ? AND a.mode != 'historical'""",
+        (session_id,),
+    ).fetchone()
+    previous = recent_session_scores(
+        conn, limit=5, exclude=session_id,
+        before=((anchor["finished_at"], anchor["last_attempt_id"])
+                if anchor and anchor["finished_at"] else None),
+    )
+    baseline = (round(sum(p["accuracy"] for p in previous) / len(previous), 1)
+                if previous else None)
+    delta = (round(accuracy - baseline, 1)
+             if accuracy is not None and baseline is not None else None)
+    best = max((p["accuracy"] for p in previous), default=None)
+    return {
+        "accuracy": accuracy,
+        "baseline": baseline,
+        "delta": delta,
+        "previous": previous,
+        "is_personal_best": (accuracy is not None and best is not None
+                             and accuracy > best),
+    }
+
+
+def next_action(conn) -> dict:
+    """What she should do next, which is what the dashboard should lead with.
+
+    Corpus size is a maintenance statistic: it tells the operator the ingest
+    worked and tells the student nothing she can act on.
+    """
+    weakest = risk_scores(conn, "tag")
+    focus, score = "", 0.0
+    if weakest:
+        focus, score = max(weakest.items(), key=lambda kv: kv[1])
+    last = conn.execute(
+        """SELECT created_at FROM sessions
+           WHERE status='completed' ORDER BY created_at DESC LIMIT 1"""
+    ).fetchone()
+    return {
+        "focus_tag": focus,
+        "focus_score": score,
+        "last_session_at": last["created_at"] if last else None,
+        "has_history": last is not None,
+    }
+
+
+def practice_profile(conn, entity_type: str) -> list[dict]:
+    """Weak entities as the student experiences them: every attempt counts.
+
+    `skill_accuracy` and `tag_accuracy` filter to `a.mode='historical'` — they
+    exist to describe the scraped Bluebook backlog. Driving a student-facing
+    page from them means her own drills move the weakness score while the
+    wrong/seen counts beside it never budge, and a profile built purely from
+    in-app answers renders as "not enough data yet". This reads the same
+    all-attempt model `/weaknesses` does.
+    """
+    profile = cached_profile(conn, entity_type)
+    out = []
+    for entity, stats in profile.items():
+        wrong = stats.get("wrong", 0)
+        correct = stats.get("correct", 0)
+        seen = wrong + correct
+        out.append({
+            "name": entity,
+            "risk_score": stats.get("score", 0.0),
+            "wrong": wrong,
+            "correct": correct,
+            "seen": seen,
+        })
+    return sorted(out, key=lambda x: -x["risk_score"])
+
+
 def full_dashboard(conn) -> dict:
     # One model snapshot for the whole response: settle the cache before any
     # section reads it, or a lazy refresh partway through leaves the sections
@@ -186,4 +320,9 @@ def full_dashboard(conn) -> dict:
         "misconceptions": high_value_misconceptions(conn),
         "transfer": transfer_performance(conn),
         "recent_trend": trend_by_tag(conn),
+        "next_action": next_action(conn),
+        "recent_sessions": recent_session_scores(conn, limit=8),
+        # student-facing: counts every attempt, not just the historical import
+        "practice_tags": practice_profile(conn, "tag"),
+        "practice_skills": practice_profile(conn, "skill"),
     }

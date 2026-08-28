@@ -85,6 +85,61 @@ def submit_answer(conn, session_id: str, question_id: int, chosen_letter: str,
     return {"correct": bool(correct), "key": q.correct_letter, "error_tags": error_tags}
 
 
+def answer_feedback(conn, session_id: str, question_id: int) -> dict | None:
+    """What to show in the moment right after one answer.
+
+    The drill used to withhold right/wrong until `/review/{sid}` at the end of
+    the session, which is the wrong moment for learning: the recall is
+    strongest immediately after committing to a choice. This assembles the
+    same material `review_payload` does, for a single question and regardless
+    of whether it was correct.
+
+    Returns None when the question has not been answered in this session, so
+    the caller can send the student back to it rather than reveal a key for
+    an answer never given.
+    """
+    row = conn.execute(
+        """SELECT chosen_letter, correct, confidence FROM attempts
+           WHERE session_id=? AND question_id=?""",
+        (session_id, question_id),
+    ).fetchone()
+    if row is None:
+        return None
+    question = load(conn, question_id)
+    if question is None:
+        return None
+    return {
+        "question_id": question_id,
+        "correct": bool(row["correct"]),
+        "confidence": row["confidence"],
+        "chosen_letter": row["chosen_letter"],
+        "chosen_text": question.text_of(row["chosen_letter"]),
+        "key_letter": question.correct_letter,
+        "key_text": question.text_of(question.correct_letter),
+        "why_key_works": _why_key_works(question.rationale),
+        "official_skill": question.official_skill,
+        "streak": current_streak(conn, session_id),
+    }
+
+
+def current_streak(conn, session_id: str) -> int:
+    """Consecutive correct answers ending at the most recent attempt.
+
+    A 4px progress bar was the only signal across a 27-question module. This
+    is the cheap counter that makes a good run visible while it is happening.
+    """
+    rows = conn.execute(
+        "SELECT correct FROM attempts WHERE session_id=? ORDER BY id DESC",
+        (session_id,),
+    ).fetchall()
+    streak = 0
+    for r in rows:
+        if not r["correct"]:
+            break
+        streak += 1
+    return streak
+
+
 def complete_session(conn, session_id: str) -> dict:
     conn.execute("UPDATE sessions SET status='completed' WHERE id=?", (session_id,))
     rows = conn.execute(
