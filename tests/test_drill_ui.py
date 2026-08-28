@@ -274,6 +274,22 @@ def test_the_operator_pages_are_still_reachable_from_admin():
         assert f'href="{page}"' in admin
 
 
+def test_admin_stays_reachable_without_typing_a_url(live):
+    """Round-1 review: moving the operator pages behind /admin while removing
+    every link to /admin left the whole operator surface reachable only by
+    knowing the URL. A footer link is discoverable without being a third tab
+    beside Drill and Progress."""
+    base = (TEMPLATES / "base.html").read_text()
+    footer = base.split("<footer>", 1)[1].split("</footer>", 1)[0]
+    assert 'href="/admin"' in footer
+
+    # and it renders on the student's own pages, not just in the source
+    with db_context(live) as conn:
+        html = server_mod.templates.get_template("progress.html").render(
+            d=full_dashboard(conn))
+    assert 'href="/admin"' in html
+
+
 def test_the_dashboard_leads_with_an_action_not_the_corpus_size(live):
     """Corpus counts tell the operator the ingest worked and tell the student
     nothing she can act on. They moved to /admin."""
@@ -411,3 +427,127 @@ def test_keyboard_shortcuts_are_wired_without_stealing_typed_input():
     assert "keydown" in js
     assert "textarea" in js and "select" in js      # never steal from a field
     assert "metaKey" in js and "ctrlKey" in js      # nor from a browser shortcut
+
+
+# ------------------------------------------------ round-1 review findings --
+
+def test_the_last_answer_completes_the_session(live):
+    """Review finding: routing /answer to a feedback screen left completion
+    hanging off the optional "See results" tap. A student who closes the tab
+    after the final verdict had a fully answered session stuck at 'open',
+    permanently missing from analytics with a stale weakness cache - where the
+    old redirect chain reached /results on its own."""
+    with db_context(live) as conn:
+        sess = create_session(conn, "error_clinic", count=2, seed="last")
+        sid = sess["plan"]["session_id"]
+        qs = sess["questions"]
+
+        for idx, q in enumerate(qs):
+            server_mod.answer(None, sid, idx, question_id=q["id"], letter="B",
+                              confidence=3, elapsed_ms=100, conn=conn)
+            server_mod.feedback(None, sid, idx, conn=conn)
+
+        status = conn.execute("SELECT status FROM sessions WHERE id=?", (sid,)).fetchone()
+        assert status["status"] == "completed", "session left open after the last answer"
+        # ...and it is therefore visible to the analytics she is shown
+        assert sid in {s["id"] for s in recent_session_scores(conn)}
+
+
+def test_completing_from_feedback_twice_is_harmless(live):
+    """The student can still tap through to /results, which completes again.
+    Double completion must not double-count anything."""
+    with db_context(live) as conn:
+        sess = create_session(conn, "error_clinic", count=2, seed="twice")
+        sid = sess["plan"]["session_id"]
+        for idx, q in enumerate(sess["questions"]):
+            submit_answer(conn, sid, q["id"], "B", 3, 100)
+
+        server_mod.feedback(None, sid, 1, conn=conn)     # completes
+        first = recent_session_scores(conn)
+        server_mod.results(None, sid, conn=conn)         # completes again
+        second = recent_session_scores(conn)
+
+    assert first == second
+
+
+def test_the_comparison_baseline_does_not_change_retroactively(live):
+    """Review finding: an old results URL fetched the globally newest sessions
+    and excluded only its own id, so a first session stopped reading as the
+    baseline once a later drill existed. The reference set is now the sessions
+    that actually preceded the one being viewed."""
+    with db_context(live) as conn:
+        first = create_session(conn, "error_clinic", count=2, seed="retro1")
+        sid1 = first["plan"]["session_id"]
+        for q in first["questions"]:
+            submit_answer(conn, sid1, q["id"], "B", 3, 100)
+        summary1 = complete_session(conn, sid1)
+
+        at_the_time = session_comparison(conn, sid1, summary1)
+        assert at_the_time["baseline"] is None
+        assert at_the_time["delta"] is None
+
+        later = create_session(conn, "error_clinic", count=2, seed="retro2")
+        sid2 = later["plan"]["session_id"]
+        for q in later["questions"]:
+            submit_answer(conn, sid2, q["id"], "A", 3, 100)
+        complete_session(conn, sid2)
+
+        revisited = session_comparison(conn, sid1, summary1)
+
+    assert revisited["baseline"] is None, "an earlier session gained a later baseline"
+    assert revisited["delta"] is None
+    assert revisited == at_the_time
+
+    # the later session does see the earlier one
+    with db_context(live) as conn:
+        summary2 = complete_session(conn, sid2)
+        forward = session_comparison(conn, sid2, summary2)
+    assert forward["baseline"] == 100.0
+
+
+def test_sessions_in_the_same_second_still_order_deterministically(live):
+    """clock.utc_now is second-resolution, so two drills back to back tie on
+    created_at; a plain `<` would drop the earlier one out of the reference
+    set entirely."""
+    with db_context(live) as conn:
+        ids = []
+        for n in range(3):
+            sess = create_session(conn, "error_clinic", count=2, seed=f"tie{n}")
+            sid = sess["plan"]["session_id"]
+            for q in sess["questions"]:
+                submit_answer(conn, sid, q["id"], "B", 3, 100)
+            complete_session(conn, sid)
+            ids.append(sid)
+
+        stamps = {r["created_at"] for r in
+                  conn.execute("SELECT created_at FROM sessions").fetchall()}
+        previous = recent_session_scores(
+            conn, exclude=ids[-1],
+            before=(conn.execute("SELECT created_at FROM sessions WHERE id=?",
+                                 (ids[-1],)).fetchone()["created_at"],
+                    conn.execute("SELECT rowid FROM sessions WHERE id=?",
+                                 (ids[-1],)).fetchone()["rowid"]))
+
+    # the fixture is only meaningful if the timestamps really did collide
+    if len(stamps) == 1:
+        assert {p["id"] for p in previous} == set(ids[:-1]), \
+            "same-second predecessors were dropped from the reference set"
+
+
+def test_choice_radios_keep_their_intrinsic_size(live):
+    """Review finding: the generic `form input` rule is display:block,
+    width:100%, min-height:44px. A choice radio inheriting it swallows the
+    whole flex row and pushes the letter and answer text out of view - worst
+    on the phone layout this PR exists for."""
+    css = (STATIC / "style.css").read_text()
+
+    # the generic rule no longer matches a radio or a checkbox at all
+    generic = re.search(r"form select,\s*\n(form input[^{]*)\{", css)
+    assert generic, "the generic form input rule moved; re-check this guard"
+    assert "[type=radio]" in generic.group(1)
+    assert "[type=checkbox]" in generic.group(1)
+
+    # ...and the choice radio restores intrinsic sizing explicitly anyway
+    choice_rule = css.split(".choice input {", 1)[1].split("}", 1)[0]
+    assert "width: auto" in choice_rule
+    assert "min-height: 0" in choice_rule

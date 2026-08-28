@@ -174,24 +174,37 @@ def corpus_summary(conn) -> dict:
     }
 
 
-def recent_session_scores(conn, limit: int = 10, exclude: str | None = None) -> list[dict]:
+def recent_session_scores(conn, limit: int = 10, exclude: str | None = None,
+                          before: tuple[str, int] | None = None) -> list[dict]:
     """Completed in-app sessions, newest first, as accuracy percentages.
 
     Bare counts on the results screen ("8/12") say nothing about whether that
     is a good day. Her own recent sessions are the only reference class that
     means anything here.
+
+    `before` is a (created_at, rowid) pair restricting the set to sessions
+    that precede it, so a results page reads the same whenever it is opened;
+    without it, revisiting an old URL compares that session against drills
+    that had not happened yet. Timestamps are second-resolution
+    (`clock.utc_now`), so two drills in the same second tie on `created_at`
+    alone — the rowid breaks that tie by insertion order.
     """
+    before_at, before_row = before if before else (None, None)
     rows = conn.execute(
         """SELECT s.id AS id, s.mode AS mode, s.created_at AS created_at,
                   COUNT(a.id) AS n, COALESCE(SUM(a.correct), 0) AS c
            FROM sessions s
            JOIN attempts a ON a.session_id = s.id AND a.mode != 'historical'
-           WHERE s.status = 'completed' AND (? IS NULL OR s.id != ?)
+           WHERE s.status = 'completed'
+             AND (? IS NULL OR s.id != ?)
+             AND (? IS NULL
+                  OR s.created_at < ?
+                  OR (s.created_at = ? AND s.rowid < ?))
            GROUP BY s.id
            HAVING n > 0
-           ORDER BY s.created_at DESC
+           ORDER BY s.created_at DESC, s.rowid DESC
            LIMIT ?""",
-        (exclude, exclude, limit),
+        (exclude, exclude, before_at, before_at, before_at, before_row, limit),
     ).fetchall()
     return [
         {"id": r["id"], "mode": r["mode"], "created_at": r["created_at"],
@@ -202,14 +215,21 @@ def recent_session_scores(conn, limit: int = 10, exclude: str | None = None) -> 
 
 
 def session_comparison(conn, session_id: str, summary: dict) -> dict:
-    """This session's accuracy against the recent ones before it.
+    """This session's accuracy against the recent ones that preceded it.
 
     `delta` is None when there is no prior session to compare against, so the
-    first drill reads as a baseline rather than an improvement of zero.
+    first drill reads as a baseline rather than an improvement of zero — and
+    keeps reading that way when the page is opened again months later.
     """
     total = summary.get("total") or 0
     accuracy = round(100 * summary.get("correct", 0) / total, 1) if total else None
-    previous = recent_session_scores(conn, limit=5, exclude=session_id)
+    anchor = conn.execute(
+        "SELECT created_at, rowid FROM sessions WHERE id=?", (session_id,)
+    ).fetchone()
+    previous = recent_session_scores(
+        conn, limit=5, exclude=session_id,
+        before=(anchor["created_at"], anchor["rowid"]) if anchor else None,
+    )
     baseline = (round(sum(p["accuracy"] for p in previous) / len(previous), 1)
                 if previous else None)
     delta = (round(accuracy - baseline, 1)

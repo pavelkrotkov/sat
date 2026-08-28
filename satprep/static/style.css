@@ -254,7 +254,19 @@ button[disabled], .btn[disabled] { opacity: .5; cursor: not-allowed; }
 }
 .choice:hover  { border-color: var(--muted); }
 .choice:active { transform: scale(.995); }
-.choice input { margin: .22rem 0 0; accent-color: var(--accent); flex: none; }
+.choice input {
+  /* The generic `form select, form input` rule below is display:block,
+   * width:100% and min-height:44px. A choice radio inheriting that eats the
+   * whole flex row and pushes the letter and answer text out of it — worst on
+   * the phone layout this exists for. Intrinsic sizing, restored explicitly. */
+  display: inline-block;
+  width: auto;
+  min-height: 0;
+  padding: 0;
+  margin: .22rem 0 0;
+  accent-color: var(--accent);
+  flex: none;
+}
 .choice .letter { font-weight: 700; flex: none; }
 .choice:has(input:checked) {
   border-color: var(--accent);
@@ -406,7 +418,10 @@ summary {
 /* ----------------------------------------------------------------- misc -- */
 
 form label { display: block; font-weight: 600; margin-bottom: var(--s-3); }
-form select, form input {
+/* Deliberately not `form input`: a radio or checkbox is a fixed-size control,
+ * and stretching one to 100% breaks any row it sits in. */
+form select,
+form input:not([type=radio]):not([type=checkbox]):not([type=hidden]) {
   display: block;
   margin: var(--s-2) 0 0;
   padding: var(--s-2) var(--s-3);
@@ -419,7 +434,8 @@ form select, form input {
   width: 100%;
   max-width: 26rem;
 }
-form select:hover, form input:hover { border-color: var(--muted); }
+form select:hover,
+form input:not([type=radio]):not([type=checkbox]):hover { border-color: var(--muted); }
 form button[type=submit] { margin-top: var(--s-3); }
 
 .inline { display: inline; }
@@ -437,6 +453,23 @@ tr.ok td:nth-child(6) { color: var(--accent); }
 }
 
 .stack > * + * { margin-top: var(--s-4); }
+
+/* The operator's way back in: reachable without typing a URL, quiet enough
+ * that it is not a third tab competing with Drill and Progress. */
+footer {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: var(--s-5) var(--s-4) var(--s-6);
+  border-top: 1px solid var(--line-soft);
+  text-align: right;
+}
+footer a {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: var(--step--1);
+  padding: var(--s-2);
+}
+footer a:hover { color: var(--ink); }
 .next-up {
   border: 1px solid var(--line);
   border-left: 3px solid var(--accent);

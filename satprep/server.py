@@ -125,6 +125,14 @@ def feedback(request: Request, sid: str, idx: int, conn=Conn):
         # never answered: revealing the key here would hand out a free answer
         return RedirectResponse(f"/question/{sid}/{idx}", status_code=303)
     is_last = idx + 1 >= len(items)
+    if is_last:
+        # The last verdict has been delivered, so the drill is over whether or
+        # not she taps "See results". Leaving completion to that click means a
+        # closed tab drops a fully answered session out of the analytics and
+        # never refreshes the weakness cache; the old redirect chain reached
+        # /results on its own. complete_session is idempotent.
+        complete_session(conn, sid)
+        _commit(conn)
     return templates.TemplateResponse(request, "feedback.html", {"fb": payload,
         "sid": sid, "idx": idx, "total": len(items), "is_last": is_last,
         "next_url": (f"/results/{sid}" if is_last else f"/question/{sid}/{idx + 1}"),
