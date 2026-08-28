@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import config
-from .analytics import corpus_summary, full_dashboard, session_comparison
+from .analytics import corpus_summary, full_dashboard, recent_session_scores, session_comparison
 from .db import db_context
 from .corpus.questions import load as load_question
 from .corpus.tags import all_tags_with_origin, set_manual, suppress
@@ -188,9 +188,12 @@ def progress(request: Request, conn=Conn):
     """The student-facing half of the old /weaknesses and /history pages.
 
     Weakness data is comparative, so it reads as bars; the full tables stay
-    one `<details>` away rather than filling a 390px screen.
+    one `<details>` away rather than filling a 390px screen. `all_sessions`
+    is the unbounded finished-session list: the dashboard keeps its eight-item
+    slice, Progress is where the rest can be browsed and reopened.
     """
     d = full_dashboard(conn)
+    d["all_sessions"] = recent_session_scores(conn, limit=None)
     return templates.TemplateResponse(request, "progress.html", {"d": d,
     })
 
