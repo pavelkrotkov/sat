@@ -13,12 +13,13 @@ import re
 import pytest
 
 from satprep import server as server_mod
-from satprep.analytics import next_action, recent_session_scores, session_comparison
+from satprep.analytics import (full_dashboard, next_action, recent_session_scores,
+                               session_comparison)
 from satprep.db import db_context
 from satprep.training.sessions import (answer_feedback, complete_session,
                                        create_session, current_streak,
                                        submit_answer)
-from conftest import add_question
+from conftest import add_attempt, add_question
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 TEMPLATES = REPO / "satprep" / "templates"
@@ -308,6 +309,66 @@ def test_weakness_data_reads_as_bars_with_the_table_behind_a_disclosure():
 
 
 # -------------------------------------------------------------- the basics --
+
+def test_weakness_bars_are_scaled_to_the_risk_score_not_pinned_full(live):
+    """Regression: risk_score is a 0-100 scale (weakness.score_from returns
+    `round(min(100.0, score), 1)`), but the bar width was written as though it
+    were a 0-1 fraction, with a `<= 1` guard falling through to a literal 100.
+    Every bar therefore rendered full width and the comparison the bars exist
+    to make was destroyed. Rendering the real template is the only thing that
+    catches it - reading the markup does not.
+    """
+    with db_context(live) as conn:
+        qids = [add_question(conn, stem=f"weak {i}?",
+                             tags=("qualifier_strength",) if i % 2 else ("scope_shift",),
+                             source="bluebook_test", pool="historical")
+                for i in range(12)]
+        for i, qid in enumerate(qids):
+            add_attempt(conn, qid, correct=(i % 3 == 0))
+        conn.commit()
+
+        d = full_dashboard(conn)
+        widths = _rendered_bar_widths("progress.html", {"d": d})
+
+    assert d["tags"], "fixture produced no tag rows to chart"
+    for t in d["tags"]:
+        assert 0 <= t["risk_score"] <= 100
+        # the scale really is 0-100, so a fraction-shaped guard is wrong
+        assert t["risk_score"] > 1
+
+    risk_widths = widths["risk"]
+    assert risk_widths, "no risk bars rendered"
+    assert not all(w == 100 for w in risk_widths), "every risk bar is pinned full width"
+    for width, tag in zip(risk_widths, d["tags"][:5]):
+        assert width == min(tag["risk_score"], 100)
+
+
+def test_session_accuracy_bars_stay_within_the_track(live):
+    """Accuracy is already a percentage; a bar wider than its track would
+    overflow the rounded corners rather than clip."""
+    with db_context(live) as conn:
+        sess = create_session(conn, "error_clinic", count=2, seed="width")
+        sid = sess["plan"]["session_id"]
+        for q in sess["questions"]:
+            submit_answer(conn, sid, q["id"], "B", 3, 100)
+        complete_session(conn, sid)
+
+        d = full_dashboard(conn)
+        widths = _rendered_bar_widths("progress.html", {"d": d})
+
+    assert widths["plain"], "no session bars rendered"
+    for w in widths["plain"]:
+        assert 0 <= w <= 100
+
+
+def _rendered_bar_widths(template_name: str, context: dict) -> dict:
+    """Render a template for real and read the bar widths back out of it."""
+    html = server_mod.templates.get_template(template_name).render(**context)
+    risk, plain = [], []
+    for match in re.finditer(r'class="bar-fill( risk)?" style="width: ([0-9.]+)%', html):
+        (risk if match.group(1) else plain).append(float(match.group(2)))
+    return {"risk": risk, "plain": plain}
+
 
 def test_dark_mode_follows_the_system_setting():
     css = (STATIC / "style.css").read_text()

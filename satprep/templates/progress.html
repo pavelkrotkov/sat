@@ -32,7 +32,7 @@
         <span class="name"><a href="/start?focus={{ t.tag }}">{{ t.tag }}</a></span>
         <span class="value">{{ t.wrong }}/{{ t.seen }} wrong</span>
       </div>
-      <div class="bar-track"><div class="bar-fill risk" style="width: {{ (t.risk_score * 100)|round(0) if t.risk_score <= 1 else 100 }}%"></div></div>
+      <div class="bar-track"><div class="bar-fill risk" style="width: {{ [t.risk_score, 100]|min }}%"></div></div>
     </div>
     {% endfor %}
   </div>
@@ -62,7 +62,7 @@
         <span class="name">{{ s.skill }}</span>
         <span class="value">{{ s.correct }}/{{ s.seen }}</span>
       </div>
-      <div class="bar-track"><div class="bar-fill risk" style="width: {{ (s.risk_score * 100)|round(0) if s.risk_score <= 1 else 100 }}%"></div></div>
+      <div class="bar-track"><div class="bar-fill risk" style="width: {{ [s.risk_score, 100]|min }}%"></div></div>
     </div>
     {% endfor %}
   </div>
