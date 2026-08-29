@@ -12,6 +12,7 @@ Endpoints used:
   POST .../digital/get-question           -> full content {external_id}
 """
 
+import base64
 import html as html_mod
 import json
 import re
@@ -19,7 +20,9 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 
+from .. import config
 from ..config import SKILL_TO_DOMAIN
 from ..clock import utc_now
 from . import fingerprint as fpmod
@@ -29,9 +32,29 @@ SAT_RW_ASMT = 99   # SAT
 SAT_RW_TEST = 1    # Reading and Writing
 DOMAINS = ["INI", "CAS", "EOI", "SEC"]
 
+# Inline figures (EQB embeds graphs/diagrams in the stimulus HTML) are written
+# here; the server serves this directory at /figures. Overridable for tests.
+FIGURE_DIR = config.IMAGES_DIR
+
 _DIFFICULTY_MAP = {"H": "hard", "M": "medium", "L": "easy", "E": "easy"}
 
 _STRIPTAGS = re.compile(r"<[^>]+>")
+_SVG_RE = re.compile(r"<svg\b.*?</svg>", re.IGNORECASE | re.DOTALL)
+_IMG_DATA_RE = re.compile(
+    r"<img\b[^>]*?\bsrc=(['\"])(data:image/(?:png|jpe?g|gif|webp|svg\+xml);base64,[^'\"]+)\1",
+    re.IGNORECASE | re.DOTALL,
+)
+_FIGURE_BLOCK_RE = re.compile(r"<figure\b.*?</figure>", re.IGNORECASE | re.DOTALL)
+# One document-order pass over all three figure shapes. Group 1 holds the
+# data-URI payload, set only by the <img> branch (an <img> inside a <figure>
+# is consumed by the figure branch first, at the earlier offset).
+_ANY_FIGURE_RE = re.compile(
+    r"<figure\b.*?</figure>"
+    r"|<svg\b.*?</svg>"
+    r"|<img\b[^>]*?\bsrc=(?:['\"])("
+    r"data:image/(?:png|jpe?g|gif|webp|svg\+xml);base64,[^'\"]+)(?:['\"][^>]*)?>",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _post(url: str, payload: dict, retries: int = 3) -> object:
@@ -59,6 +82,74 @@ def _clean_html(html: str | None) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _save_figure(ext_id: str, index: int, content: bytes, suffix: str,
+                 image_dir: Path) -> str:
+    """Write one figure into image_dir; returns the bare filename stored in
+    images_json (the template renders /figures/<name> via the basename filter)."""
+    image_dir.mkdir(parents=True, exist_ok=True)
+    name = f"eqb-{ext_id}-figure-{index}.{suffix}"
+    (image_dir / name).write_bytes(content)
+    return name
+
+
+def _extract_figures(ext_id: str, html: str, image_dir: Path,
+                     start_index: int = 1) -> tuple[str, list[str], int]:
+    """Pull inline figures out of EQB stimulus/stem HTML.
+
+    Returns (remaining_html, saved_filenames, next_index). One
+    document-order pass over <figure> blocks, bare inline <svg>, and
+    data-URI <img> tags. The matched figure markup is replaced by its
+    visible text (SVG <text> nodes, <figcaption>, alt text, …) so that
+    axis labels and captions still reach the cleaned passage/stem —
+    which keeps legacy fingerprints (computed from the fully stripped
+    text) stable across re-imports. `start_index`/`next_index` let callers
+    share one numbering across multiple HTML fields (stem + stimulus) so
+    filenames stay unique in document order.
+    """
+    assets: list[str] = []
+    index = start_index
+
+    def _payload(match: re.Match) -> tuple[bytes, str] | None:
+        """Content + suffix for one match, or None to skip (keep as text)."""
+        block = match.group(0)
+        data = match.group(1)  # set only by the bare data-URI <img> branch
+        if data is None:
+            svg = _SVG_RE.search(block)
+            if svg:
+                return svg.group(0).encode("utf-8"), "svg"
+            inner = _IMG_DATA_RE.search(block)  # <figure><img data:...></figure>
+            if inner:
+                data = inner.group(2)
+            else:
+                return None  # <figure> with no savable asset: keep its text
+        if "," not in data:  # malformed data URI: skip, keep as text
+            return None
+        b64 = data.split(",", 1)[1]
+        mime = data[len("data:image/"):].split(";", 1)[0].lower()
+        suffix = {"jpeg": "jpg", "svg+xml": "svg"}.get(mime) or mime
+        suffix = suffix.rsplit("/", 1)[-1].split("+", 1)[-1]
+        if not suffix.isalnum() or len(suffix) > 5:
+            return None  # unknown/unsafe type: skip
+        try:
+            return base64.b64decode(b64, validate=True), suffix
+        except Exception:
+            return None  # malformed payload: skip, keep as text
+
+    def _repl(match: re.Match) -> str:
+        nonlocal index
+        got = _payload(match)
+        if got is not None:
+            content, suffix = got
+            name = _save_figure(ext_id, index, content, suffix, image_dir)
+            assets.append(name)
+            index += 1
+        # always leave the visible text (labels, captions, alt) in place
+        return _clean_html(match.group(0)) or " "
+
+    remaining = _ANY_FIGURE_RE.sub(_repl, html)
+    return remaining, assets, index
+
+
 def list_questions(domains: list[str] | None = None,
                    assessment: int = SAT_RW_ASMT, test: int = SAT_RW_TEST) -> list[dict]:
     out: list[dict] = []
@@ -79,7 +170,7 @@ def fetch_question(external_id: str) -> dict | None:
         return None
 
 
-def _normalize(detail: dict, meta: dict) -> dict | None:
+def _normalize(detail: dict, meta: dict, image_dir: Path | None = None) -> dict | None:
     options = detail.get("answerOptions") or []
     if len(options) < 2:
         return None
@@ -105,16 +196,28 @@ def _normalize(detail: dict, meta: dict) -> dict | None:
     difficulty = meta.get("difficulty") or ""
     difficulty = _DIFFICULTY_MAP.get(str(difficulty).strip().upper(),
                                      str(difficulty).strip().lower())
+    # Figures (graphs/diagrams) live inline in the stem and stimulus HTML. Save
+    # them before _clean_html strips markup; their visible text (labels,
+    # captions) is left in place so the stored text still matches legacy rows.
+    image_dir = image_dir if image_dir is not None else FIGURE_DIR
+    ext_id = str(meta.get("external_id") or detail.get("externalid") or "")
+    # One numbering across both fields so stem+stimulus figures never
+    # collide on a filename, in document order within each field.
+    stem_html, stem_images, nxt = _extract_figures(ext_id, detail.get("stem") or "", image_dir)
+    stim_html, stim_images, _ = _extract_figures(ext_id, detail.get("stimulus") or "",
+                                                 image_dir, start_index=nxt)
+    images = stem_images + stim_images
     return {
-        "passage": _clean_html(detail.get("stimulus")),
-        "stem": _clean_html(detail.get("stem")),
+        "passage": _clean_html(stim_html),
+        "stem": _clean_html(stem_html),
         "choices": choices,
+        "images": images,
         "correct": correct_letter,
         "domain": meta.get("primary_class_cd_desc", ""),
         "skill": meta.get("skill_desc", ""),
         "difficulty": difficulty if difficulty in ("easy", "medium", "hard") else "",
         "rationale": _clean_html(detail.get("rationale")),
-        "ext_id": str(meta.get("external_id") or detail.get("externalid") or ""),
+        "ext_id": ext_id,
     }
 
 
@@ -129,9 +232,23 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
         return "invalid"
     fp = fpmod.fingerprint(row["passage"], row["stem"], [c["text"] for c in choices])
     exists = conn.execute(
-        "SELECT id, choices_json, official_skill, difficulty, pool FROM questions WHERE fingerprint=?",
+        "SELECT id, choices_json, images_json, official_skill, difficulty, pool FROM questions WHERE fingerprint=?",
         (fp,),
     ).fetchone()
+
+    images = row.get("images") or []
+    images_json = json.dumps(images)
+
+    def _backfill_images(target_id: int, current: str) -> None:
+        if not images:
+            return
+        try:
+            if json.loads(current or "null"):
+                return  # already has figures
+        except ValueError:
+            pass
+        conn.execute("UPDATE questions SET images_json=? WHERE id=?",
+                     (images_json, target_id))
 
     def _reconcile(target_id: int) -> str:
         skill = exists_row["official_skill"] or row.get("skill", "")
@@ -149,6 +266,7 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
              exists_row["official_skill"] == "" and bool(skill),
              row.get("rationale", ""), target_id),
         )
+        _backfill_images(target_id, exists_row["images_json"] or "")
         return "duplicate"
 
     exists_row = None
@@ -163,22 +281,60 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
         skill = row.get("skill", "")
         conn.execute(
             """UPDATE questions SET
-                   difficulty=CASE WHEN difficulty='' AND ?!='' THEN ? ELSE difficulty END,
-                   official_skill=CASE WHEN official_skill='' AND ?!='' THEN ? ELSE official_skill END,
-                   official_domain=CASE WHEN official_skill='' AND ?!='' THEN ? ELSE official_domain END,
-                   rationale=CASE WHEN rationale='' AND ?!='' THEN ? ELSE rationale END
-               WHERE id=?""",
+                  difficulty=CASE WHEN difficulty='' AND ?!='' THEN ? ELSE difficulty END,
+                  official_skill=CASE WHEN official_skill='' AND ?!='' THEN ? ELSE official_skill END,
+                  official_domain=CASE WHEN official_skill='' AND ?!='' THEN ? ELSE official_domain END,
+                  rationale=CASE WHEN rationale='' AND ?!='' THEN ? ELSE rationale END
+              WHERE id=?""",
             (diff, diff, skill, skill, skill, SKILL_TO_DOMAIN.get(skill, ""),
              row.get("rationale", ""), row.get("rationale", ""), exists["id"]),
         )
+        _backfill_images(exists["id"], exists["images_json"] or "")
         return "duplicate"
+
+    # External-identity pass: figure extraction changed the normalized
+    # passage/stem text (SVG labels and captions now survive into it), so a
+    # re-import of an existing bank item can miss the content fingerprint.
+    # The stored external_id is the canonical identity — match on it so a
+    # known item reconciles instead of inserting a fresh duplicate (which
+    # could land in the protected benchmark pool).
+    ext = row.get("ext_id", "")
+    if ext:
+        # (no content-fingerprint match — that path returned 'duplicate'
+        # above; matching the same row twice here would be a no-op at best)
+        ext_row = conn.execute(
+            """SELECT id, choices_json, images_json, official_skill, difficulty, pool
+               FROM questions
+               WHERE source='college_board_question_bank'
+                 AND json_valid(provenance_json)
+                 AND json_extract(provenance_json, '$.external_id')=?""",
+            (ext,),
+        ).fetchone()
+        if ext_row is not None:
+            exists_row = ext_row
+            if ext_row["choices_json"] == "[]" and choices:
+                return _reconcile(ext_row["id"])
+            diff = (row.get("difficulty") or "").strip().lower()
+            skill = row.get("skill", "")
+            conn.execute(
+                """UPDATE questions SET
+                      difficulty=CASE WHEN difficulty='' AND ?!='' THEN ? ELSE difficulty END,
+                      official_skill=CASE WHEN official_skill='' AND ?!='' THEN ? ELSE official_skill END,
+                      official_domain=CASE WHEN official_skill='' AND ?!='' THEN ? ELSE official_domain END,
+                      rationale=CASE WHEN rationale='' AND ?!='' THEN ? ELSE rationale END
+                  WHERE id=?""",
+                (diff, diff, skill, skill, skill, SKILL_TO_DOMAIN.get(skill, ""),
+                 row.get("rationale", ""), row.get("rationale", ""), ext_row["id"]),
+            )
+            _backfill_images(ext_row["id"], ext_row["images_json"] or "")
+            return "duplicate"
 
     # Loose reconciliation pass: a stored choice-less record whose normalized
     # passage+stem matches this bank item IS the same question seen before.
     loose = fpmod.fingerprint_loose(row["passage"], row["stem"])
     for cand in conn.execute(
-        """SELECT id, passage, stem, official_skill, choices_json FROM questions
-           WHERE active=1 AND choices_json='[]'"""
+        """SELECT id, passage, stem, official_skill, choices_json, images_json FROM questions
+          WHERE active=1 AND choices_json='[]'"""
     ).fetchall():
         if fpmod.fingerprint_loose(cand["passage"], cand["stem"]) != loose:
             continue
@@ -196,7 +352,7 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
         (
             fp, "college_board_question_bank", batch, row.get("ext_id", ""), "",
             row["passage"], row["stem"], json.dumps(choices), correct,
-            row.get("rationale", ""), "[]",
+            row.get("rationale", ""), images_json,
             row.get("domain", ""), row.get("skill", ""),
             "metadata" if row.get("skill") else "unknown",
             diff if diff in ("easy", "medium", "hard") else "",
@@ -268,6 +424,77 @@ def fetch_qbank(conn, hard_only: bool = False, domains: list[str] | None = None,
             conn.commit()
             print(f"  {i}/{len(todo)} … {stats}")
         time.sleep(sleep_s)
+    return stats
+
+
+def backfill_figures(conn, figure_hint: bool = True, limit: int = 0,
+                     sleep_s: float = 0.25) -> dict:
+    """Re-fetch bank questions whose figures were dropped at ingest time and
+    attach them.
+
+    The original EQB ingest stripped all markup from stimulus/stem without
+    saving the inline figures, so graph/diagram questions stored an empty
+    images_json. This exists solely to repair those rows: matching is by
+    stored external_id, figures are re-extracted from the live record, and only
+    rows that gain figures are updated.
+
+    `figure_hint` limits the sweep to rows whose stem cites a figure. Returns a
+    stats dict; updates are committed incrementally so the sweep is resumable.
+    """
+    sql = (
+        "SELECT id, source_question_number, provenance_json, images_json"
+        " FROM questions"
+        " WHERE source='college_board_question_bank' AND active=1"
+        " AND images_json IN ('[]','','null')"
+    )
+    if figure_hint:
+        # Stems that name the embedded asset in any common word; the full
+        # sweep (figure_hint=False) is the only one that can't miss any.
+        sql += (" AND (stem LIKE '%graph%' OR stem LIKE '%figure%' OR stem LIKE '%diagram%'"
+                " OR stem LIKE '%table%' OR stem LIKE '%chart%' OR stem LIKE '%scatterplot%'"
+                " OR stem LIKE '%map%' OR stem LIKE '%illustration%' OR stem LIKE '%plot%')")
+    sql += " ORDER BY id"
+    rows = conn.execute(sql).fetchall()
+    if limit:
+        rows = rows[:limit]
+    stats = {"candidate": 0, "fetched": 0, "failed": 0, "now_images": 0,
+             "still_empty": 0}
+    for i, r in enumerate(rows, 1):
+        stats["candidate"] += 1
+        try:
+            ext = json.loads(r["provenance_json"] or "{}").get("external_id") \
+                or r["source_question_number"]
+        except json.JSONDecodeError:
+            ext = r["source_question_number"]
+        if not ext:
+            stats["failed"] += 1
+            continue
+        detail = fetch_question(str(ext))
+        if detail is None:
+            stats["failed"] += 1
+            continue
+        stats["fetched"] += 1
+        # Reuse the full normalization so figure numbering/ordering matches
+        # the normal ingest path (shared across stem and stimulus).
+        row = _normalize(detail, {"external_id": str(ext)})
+        images = row["images"] if row else []
+        if not images:
+            stats["still_empty"] += 1
+            # Checkpoint even when this candidate gained nothing, so an
+            # interrupted run resumes where it left off (resumable sweep).
+            if i % 50 == 0:
+                conn.commit()
+                print(f"  backfill {i}/{len(rows)} … {stats}")
+            time.sleep(sleep_s)
+            continue
+        conn.execute("UPDATE questions SET images_json=? WHERE id=?",
+                     (json.dumps(images), r["id"]))
+        stats["now_images"] += 1
+        if i % 50 == 0:
+            conn.commit()
+            print(f"  backfill {i}/{len(rows)} … {stats}")
+        time.sleep(sleep_s)
+    conn.commit()
     return stats
 
 
