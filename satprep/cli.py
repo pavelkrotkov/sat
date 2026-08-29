@@ -20,7 +20,7 @@ from .db import db_context
 from .analytics import full_dashboard
 from .corpus.archive import ARCHIVE_VERSION, export_corpus, restore_corpus
 from .corpus.ingest import ingest_bluebook, ingest_qbank
-from .corpus.qbank_fetch import fetch_qbank
+from .corpus.qbank_fetch import backfill_figures, fetch_qbank
 from .corpus.tagger import run_full_tagging
 from .training.sessions import (complete_session, create_session, review_payload,
                                 submit_answer)
@@ -154,6 +154,12 @@ def cmd_fetch_qbank(args) -> None:
         stats = fetch_qbank(conn, hard_only=args.hard_only, domains=domains,
                             limit=args.limit, sleep_s=args.sleep)
         print("done:", json.dumps(stats))
+        # Repair rows whose figures were dropped before extraction existed:
+        # re-fetch the stored imageless bank questions and attach figures.
+        # Default is the stem-hint sweep; --full-sweep checks every one.
+        bstats = backfill_figures(conn, figure_hint=not args.full_sweep,
+                                  limit=args.limit, sleep_s=args.sleep)
+        print("backfill:", json.dumps(bstats))
         # tag BEFORE snapshotting so the archive never stores tag-less rows
         print(f"tagging: {run_full_tagging(conn)}")
         _auto_export(conn)
@@ -265,6 +271,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--domains", default="", help="comma list, e.g. INI,CAS (default all R&W)")
     sp.add_argument("--limit", type=int, default=0, help="cap number fetched (0 = all)")
     sp.add_argument("--sleep", type=float, default=0.25, help="politeness delay seconds")
+    sp.add_argument("--full-sweep", action="store_true",
+                    help="backfill figures on ALL imageless bank rows, "
+                         "not just stems that name a figure")
     sp.set_defaults(func=cmd_fetch_qbank)
 
     sp = sub.add_parser("export", help="write the JSONL corpus archive")
