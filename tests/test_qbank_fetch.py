@@ -150,6 +150,33 @@ def test_normalize_without_figures_leaves_images_empty(fig_dirs):
     assert not any(fig_dirs.iterdir())
 
 
+def test_normalize_extracts_data_uri_image_and_skips_malformed(fig_dirs):
+    """<img src=\"data:image/png;base64,...\"> figures are saved; malformed
+    data URIs (no base64 payload / bad base64) are skipped without crashing,
+    and no unknown file suffix can reach disk."""
+    import base64 as b64
+
+    png = b64.b64encode(b"\x89PNG\r\n\x1a\n").decode()
+    detail = {
+        **DETAIL,
+        "stimulus": (
+            f'<img src="data:image/png;base64,{png}">'
+            '<img src="data:image/png;base64,not-valid-base64!!!">'
+            '<img src="data:image/svg%0a%0aevil">'  # no payload at all
+        ),
+        "externalid": "ext-img",
+    }
+    meta = dict(META, external_id="ext-img")
+    row = _normalize(detail, meta)
+
+    assert len(row["images"]) == 1
+    assert row["images"][0].endswith(".png")
+    saved = fig_dirs / row["images"][0]
+    assert saved.read_bytes() == b"\x89PNG\r\n\x1a\n"
+    # malformed img tags were left as text, not written anywhere
+    assert [p.suffix for p in fig_dirs.iterdir()] == [".png"]
+
+
 def test_insert_persists_figures_into_images_json(db, fig_dirs):
     conn, path = db
     row = _normalize(DETAIL_FIG, FIG_META)

@@ -104,11 +104,19 @@ def _extract_figures(ext_id: str, html: str, image_dir: Path) -> tuple[str, list
 
     def _img(match: re.Match) -> str:
         payload = match.group(2)
+        if "," not in payload:  # malformed data URI: skip, keep as text
+            return match.group(0)
         data = payload.split(",", 1)[1]
         mime = payload[len("data:image/"):].split(";", 1)[0].lower()
-        suffix = {"jpeg": "jpg", "svg+xml": "svg"}.get(mime, mime)
-        name = _save_figure(ext_id, len(assets) + 1,
-                            base64.b64decode(data), suffix, image_dir)
+        suffix = {"jpeg": "jpg", "svg+xml": "svg"}.get(mime) or mime
+        suffix = suffix.rsplit("/", 1)[-1].split("+", 1)[-1]
+        if not suffix.isalnum() or len(suffix) > 5:
+            return match.group(0)  # unknown/unsafe type: skip
+        try:
+            decoded = base64.b64decode(data, validate=True)
+        except Exception:
+            return match.group(0)  # malformed payload: skip, keep as text
+        name = _save_figure(ext_id, len(assets) + 1, decoded, suffix, image_dir)
         assets.append(name)
         return " "
 
@@ -205,9 +213,15 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
     images_json = json.dumps(images)
 
     def _backfill_images(target_id: int, current: str) -> None:
-        if images and not current.strip("[]\"'"):
-            conn.execute("UPDATE questions SET images_json=? WHERE id=?",
-                         (images_json, target_id))
+        if not images:
+            return
+        try:
+            if json.loads(current or "null"):
+                return  # already has figures
+        except ValueError:
+            pass
+        conn.execute("UPDATE questions SET images_json=? WHERE id=?",
+                     (images_json, target_id))
 
     def _reconcile(target_id: int) -> str:
         skill = exists_row["official_skill"] or row.get("skill", "")
@@ -363,15 +377,16 @@ def backfill_figures(conn, figure_hint: bool = True, limit: int = 0,
     `figure_hint` limits the sweep to rows whose stem cites a figure. Returns a
     stats dict; updates are committed incrementally so the sweep is resumable.
     """
-    and_hint = ("AND (stem LIKE '%graph%' OR stem LIKE '%figure%' OR stem LIKE '%diagram%')"
-                if figure_hint else "")
-    rows = conn.execute(
-        f"""SELECT id, source_question_number, provenance_json, images_json
-            FROM questions
-            WHERE source='college_board_question_bank' AND active=1
-              AND images_json IN ('[]','','null') {and_hint}
-            ORDER BY id"""
-    ).fetchall()
+    sql = (
+        "SELECT id, source_question_number, provenance_json, images_json"
+        " FROM questions"
+        " WHERE source='college_board_question_bank' AND active=1"
+        " AND images_json IN ('[]','','null')"
+    )
+    if figure_hint:
+        sql += " AND (stem LIKE '%graph%' OR stem LIKE '%figure%' OR stem LIKE '%diagram%')"
+    sql += " ORDER BY id"
+    rows = conn.execute(sql).fetchall()
     if limit:
         rows = rows[:limit]
     stats = {"candidate": 0, "fetched": 0, "failed": 0, "now_images": 0,
