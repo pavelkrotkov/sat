@@ -97,7 +97,9 @@ def test_cross_source_duplicate_enriches_choiceless_row(db):
 
 # ------------------------------------------------- figures from EQB (issue: imageless graph stems) --
 
-SVG = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'><rect width='10' height='10'/></svg>"
+SVG = ("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>"
+       "<rect width='100' height='100'/>"
+       "<text x='5' y='10'>yield (tons)</text></svg>")
 
 DETAIL_FIG = {
     "type": "mcq",
@@ -125,11 +127,13 @@ def fig_dirs(tmp_path, monkeypatch):
 FIG_META = dict(META, external_id="ext-fig")
 
 
-def test_normalize_extracts_svg_figure_and_strips_markup(fig_dirs):
+def test_normalize_extracts_svg_figure_and_keeps_visible_text(fig_dirs):
     """The EQB embeds figures in the stimulus HTML. _clean_html strips every
     tag, which deleted the graph while its 'uses data from the graph' stem
     survived - rendering an unanswerable question. Figures must be saved and
-    the markup must not leak into the cleaned text."""
+    the markup must not leak into the cleaned text. Visible text inside the
+    figure (axis labels) is KEPT so the passage matches what the old ingest
+    stored (fingerprint stability) and what the student sees."""
     row = _normalize(DETAIL_FIG, FIG_META)
 
     assert len(row["images"]) == 1
@@ -138,10 +142,12 @@ def test_normalize_extracts_svg_figure_and_strips_markup(fig_dirs):
     assert saved.exists() and saved.stat().st_size > 0
     assert b"<svg" in saved.read_bytes()
     # no markup leaked into the cleaned text
-    assert "<svg" not in row["passage"] and "figure" not in row["passage"]
+    assert "<svg" not in row["passage"] and "rect" not in row["passage"]
     assert "<svg" not in row["stem"]
     # the visible text around the figure is intact
     assert "scatterplot shows yield" in row["passage"]
+    # text inside the svg (axis label) is preserved
+    assert "yield (tons)" in row["passage"]
 
 
 def test_normalize_without_figures_leaves_images_empty(fig_dirs):
@@ -175,6 +181,94 @@ def test_normalize_extracts_data_uri_image_and_skips_malformed(fig_dirs):
     assert saved.read_bytes() == b"\x89PNG\r\n\x1a\n"
     # malformed img tags were left as text, not written anywhere
     assert [p.suffix for p in fig_dirs.iterdir()] == [".png"]
+
+
+def test_figures_in_both_fields_get_unique_numbers(fig_dirs):
+    """A question with a figure in BOTH stem and stimulus must produce two
+    distinct files, not two names colliding on -figure-1 (which would
+    overwrite the first figure with the second)."""
+    detail = {
+        **DETAIL,
+        "stem": f"See the graph. <figure>{SVG}</figure>",
+        "stimulus": f"<p>Second panel.</p><figure>{SVG}</figure>",
+        "externalid": "ext-two",
+    }
+    row = _normalize(detail, dict(META, external_id="ext-two"))
+    assert len(row["images"]) == 2
+    assert len(set(row["images"])) == 2, row["images"]
+    for n in row["images"]:
+        assert (fig_dirs / n).exists()
+    names = [n.rsplit("-", 1)[1] for n in row["images"]]
+    assert names == ["1.svg", "2.svg"]
+
+
+def test_mixed_formats_extracted_in_document_order(fig_dirs):
+    """A data-URI <img> followed by an inline <svg> in the same field must
+    be saved in source order — the template renders images in list order,
+    so 'the first graph' references must match the display."""
+    import base64 as b64
+    png = b64.b64encode(b"\x89PNG\r\n\x1a\n").decode()
+    detail = {
+        **DETAIL,
+        "stimulus": (
+            f'<figure><img src="data:image/png;base64,{png}"></figure>'
+            f"<figure>{SVG}</figure>"
+        ),
+        "externalid": "ext-mix",
+    }
+    row = _normalize(detail, dict(META, external_id="ext-mix"))
+    assert [n.rsplit(".", 1)[1] for n in row["images"]] == ["png", "svg"]
+    assert [n.rsplit("-", 1)[1].split(".")[0] for n in row["images"]] == ["1", "2"]
+
+
+def test_figure_with_caption_keeps_caption_text(fig_dirs):
+    """A figure whose content is an extracted image plus a <figcaption> must
+    not lose the caption: the old _clean_html path kept it, and dropping it
+    would make some questions incomplete."""
+    detail = {
+        **DETAIL,
+        "stimulus": (f"<p>Preamble.</p>"
+                     f"<figure>{SVG}<figcaption>Figure 1. Yield by season.</figcaption></figure>"
+                     "<p>Postamble.</p>"),
+        "externalid": "ext-cap",
+    }
+    row = _normalize(detail, dict(META, external_id="ext-cap"))
+    assert len(row["images"]) == 1
+    assert "Figure 1. Yield by season." in row["passage"]
+    assert "Preamble." in row["passage"] and "Postamble." in row["passage"]
+
+
+def test_external_identity_reconciles_on_reimport(db, fig_dirs):
+    """Figure extraction changes the stored passage/stem text, so a re-import
+    of a known bank item can miss the content fingerprint. The external_id
+    is canonical: matching on it must reconcile (duplicate) instead of
+    inserting a second, fresh-pool copy of the same question."""
+    from satprep.corpus.fingerprint import fingerprint
+
+    conn, path = db
+    # legacy row: text as the OLD ingest stored it (no figure markup), no images
+    legacy_passage = "The scatterplot shows yield versus rainfall."
+    conn.execute(
+        """INSERT INTO questions (fingerprint, source, source_test, source_question_number,
+             module, passage, stem, choices_json, correct_letter, rationale, images_json,
+             official_domain, official_skill, skill_source, difficulty, pool,
+             seen_benchmark, is_new_bank, import_batch, imported_at, provenance_json)
+           VALUES ('legacy', 'college_board_question_bank', 'ext-fig', '', '',
+             ?, 'Which choice most effectively uses data from the graph to complete the text?',
+             '["opt A","opt B","opt C","opt D"]', 'C', '', '[]',
+             '', 'Inferences', 'metadata', 'hard', 'protected_benchmark',
+             0, 1, 'old', '2026-01-01', ?)""",
+        (legacy_passage, json.dumps({"external_id": "ext-fig"})),
+    )
+    # new ingest: passage now contains the preserved figure text, images attached
+    row = _normalize(DETAIL_FIG, FIG_META)
+    outcome = insert_qbank_row(conn, row, batch="reimport")
+
+    assert outcome == "duplicate"
+    assert conn.execute("SELECT COUNT(*) FROM questions").fetchone()[0] == 1
+    r = conn.execute("SELECT images_json FROM questions WHERE fingerprint='legacy'").fetchone()
+    assert json.loads(r["images_json"]) == row["images"], \
+        "re-import by external identity did not backfill the figures"
 
 
 def test_insert_persists_figures_into_images_json(db, fig_dirs):
