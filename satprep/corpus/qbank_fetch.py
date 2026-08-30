@@ -128,6 +128,8 @@ def _extract_figures(ext_id: str, html: str, image_dir: Path,
         # b64decode(validate=True) raises on any whitespace, which silently
         # dropped the figure (issue #31). Strip before decoding.
         b64 = re.sub(r"\s+", "", data.split(",", 1)[1])
+        if not b64:  # whitespace-only payload: nothing to save, skip
+            return None
         mime = data[len("data:image/"):].split(";", 1)[0].lower()
         suffix = {"jpeg": "jpg", "svg+xml": "svg"}.get(mime) or mime
         suffix = suffix.rsplit("/", 1)[-1].split("+", 1)[-1]

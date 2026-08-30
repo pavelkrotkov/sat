@@ -206,6 +206,25 @@ def test_normalize_saves_multiline_base64_data_uri(fig_dirs):
     assert saved.read_bytes() == b"\x89PNG\r\n\x1a\n" + bytes(range(200))
 
 
+def test_normalize_skips_whitespace_only_payload(fig_dirs):
+    """A data URI whose base64 payload is only whitespace strips to an empty
+    string. b64decode('', validate=True) returns b'' (no error), so without
+    an explicit guard the extraction path would save a zero-byte image and
+    replace the markup. It must skip like any other malformed payload."""
+    detail = {
+        **DETAIL,
+        "stimulus": (
+            '<img src="data:image/png;base64,   \n  ">'
+            '<img src="data:image/png;base64,">'
+        ),
+        "externalid": "ext-blank",
+    }
+    row = _normalize(detail, dict(META, external_id="ext-blank"))
+
+    assert row["images"] == []
+    assert not any(fig_dirs.iterdir()), "whitespace-only payload must not be saved"
+
+
 def test_figures_in_both_fields_get_unique_numbers(fig_dirs):
     """A question with a figure in BOTH stem and stimulus must produce two
     distinct files, not two names colliding on -figure-1 (which would
