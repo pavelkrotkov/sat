@@ -124,7 +124,10 @@ def _extract_figures(ext_id: str, html: str, image_dir: Path,
                 return None  # <figure> with no savable asset: keep its text
         if "," not in data:  # malformed data URI: skip, keep as text
             return None
-        b64 = data.split(",", 1)[1]
+        # Long payloads commonly serialize with newlines every ~76 chars;
+        # b64decode(validate=True) raises on any whitespace, which silently
+        # dropped the figure (issue #31). Strip before decoding.
+        b64 = re.sub(r"\s+", "", data.split(",", 1)[1])
         mime = data[len("data:image/"):].split(";", 1)[0].lower()
         suffix = {"jpeg": "jpg", "svg+xml": "svg"}.get(mime) or mime
         suffix = suffix.rsplit("/", 1)[-1].split("+", 1)[-1]

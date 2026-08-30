@@ -183,6 +183,29 @@ def test_normalize_extracts_data_uri_image_and_skips_malformed(fig_dirs):
     assert [p.suffix for p in fig_dirs.iterdir()] == [".png"]
 
 
+def test_normalize_saves_multiline_base64_data_uri(fig_dirs):
+    """Issue #31: long data-URI payloads commonly serialize with newlines
+    every ~76 chars. The capture regex spans them, but
+    b64decode(validate=True) raises on any whitespace, so the figure was
+    silently dropped and the student got a text-only question. Whitespace
+    inside the payload must be stripped before decoding."""
+    import base64 as b64
+
+    payload = b64.b64encode(b"\x89PNG\r\n\x1a\n" + bytes(range(200))).decode()
+    wrapped = "\n".join(payload[i:i + 40] for i in range(0, len(payload), 40))
+    assert "\n" in wrapped  # the shape that used to be dropped
+    detail = {
+        **DETAIL,
+        "stimulus": f'<img src="data:image/png;base64,{wrapped}">',
+        "externalid": "ext-wrapped",
+    }
+    row = _normalize(detail, dict(META, external_id="ext-wrapped"))
+
+    assert len(row["images"]) == 1, "wrapped base64 payload was silently dropped"
+    saved = fig_dirs / row["images"][0]
+    assert saved.read_bytes() == b"\x89PNG\r\n\x1a\n" + bytes(range(200))
+
+
 def test_figures_in_both_fields_get_unique_numbers(fig_dirs):
     """A question with a figure in BOTH stem and stimulus must produce two
     distinct files, not two names colliding on -figure-1 (which would
