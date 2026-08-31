@@ -106,6 +106,19 @@ class Finding:
         return f"{self.level.upper():7s} {self.path} [{self.code}] {self.message}"
 
 
+def _under_raw(p: pathlib.Path) -> bool:
+    """True iff p.resolve() is the same file as, or a child of, RAW.
+
+    `pathlib.Path.is_relative_to` is available on 3.9+; this wrapper
+    tolerates the case where `resolve()` follows a symlink outside RAW
+    (the resolve+relative_to pair catches that)."""
+    try:
+        p.resolve().relative_to(RAW.resolve())
+    except ValueError:
+        return False
+    return True
+
+
 def find_repo_root(start: pathlib.Path) -> pathlib.Path:
     return REPO_ROOT
 
@@ -134,6 +147,13 @@ def check_frontmatter(rel: pathlib.Path, text: str) -> tuple[dict, list[Finding]
     fm, err = parse_frontmatter(text)
     if err:
         findings.append(Finding("error", rel.as_posix(), "FM_MISSING", err))
+        return {}, findings
+    # YAML may parse to a non-mapping (a list, a scalar) at the top level.
+    # Reject it explicitly so callers don't blow up on fm["type"].
+    if not isinstance(fm, dict):
+        findings.append(Finding("error", rel.as_posix(), "FM_NOT_MAPPING",
+                                f"frontmatter must be a YAML mapping, "
+                                f"got {type(fm).__name__}"))
         return {}, findings
     if "type" not in fm:
         findings.append(Finding("error", rel.as_posix(), "FM_TYPE",
@@ -205,8 +225,8 @@ def check_manifest(findings: list[Finding]) -> list[dict]:
                                     f"line {lineno}: duplicate source_id {sid}"))
         seen_ids.add(sid)
 
-        for field in ("url", "retrieved_at", "sha256", "bytes",
-                      "transcript", "authority"):
+        for field in ("title", "url", "retrieved_at", "content_type",
+                      "sha256", "bytes", "transcript", "authority"):
             if field not in row or row[field] in (None, ""):
                 findings.append(Finding("error", "kb/raw/source-manifest.jsonl",
                                         "MANIFEST_FIELD",
@@ -224,7 +244,16 @@ def check_manifest(findings: list[Finding]) -> list[dict]:
         if rel:
             p = (RAW / rel).resolve()
             # Defend against path traversal: every committed transcript must
-            # live under kb/raw/ and point at a real .txt file.
+            # live under kb/raw/ and point at a real .txt file. After
+            # .resolve() a symlink inside the vault could resolve outside
+            # the raw dir, so verify the canonical path is still under RAW.
+            try:
+                p.relative_to(RAW)
+            except ValueError:
+                findings.append(Finding("error", "kb/raw/source-manifest.jsonl",
+                                        "MANIFEST_TRAVERSAL",
+                                        f"line {lineno}: transcript resolves "
+                                        f"outside kb/raw/: {rel}"))
             if not p.is_file():
                 findings.append(Finding("error", "kb/raw/source-manifest.jsonl",
                                         "MANIFEST_PATH",
@@ -315,16 +344,29 @@ def check_links_and_refs(
         # sources[] must reference committed transcripts. The path is
         # relative to the kb/raw/ directory (the manifest's anchor), so we
         # also accept a vault-relative "raw/transcripts/..." form for
-        # forward compatibility.
-        if fm and isinstance(fm.get("sources"), list):
-            for s in fm["sources"]:
+        # forward compatibility. Scalar (non-list) sources are a common
+        # YAML mistake and must surface as an error rather than silently
+        # drop.
+        sources = fm.get("sources")
+        if sources is None:
+            pass                          # already flagged by FM_REQUIRED
+        elif not isinstance(sources, list):
+            findings.append(Finding("error", rel, "SOURCE_SCALAR",
+                                    f"sources must be a list, got "
+                                    f"{type(sources).__name__}"))
+        else:
+            for s in sources:
                 if not s:
                     continue
                 if s.startswith("raw/"):
                     candidate = (RAW / s[len("raw/"):]).resolve()
                 else:
                     candidate = (RAW / s).resolve()
-                if not candidate.is_file():
+                if not _under_raw(candidate):
+                    findings.append(Finding("error", rel, "SOURCE_TRAVERSAL",
+                                            f"sources entry resolves outside "
+                                            f"kb/raw/: {s!r}"))
+                elif not candidate.is_file():
                     findings.append(Finding("error", rel, "SOURCE_MISSING",
                                             f"sources entry not committed: {s!r}"))
                 elif candidate not in transcript_paths:
@@ -353,16 +395,24 @@ def check_links_and_refs(
         fm, _ = check_frontmatter(pathlib.Path(rel), text)
         if not fm:
             continue
-        if isinstance(fm.get("sources"), list):
-            for s in fm["sources"]:
-                if not s:
-                    continue
-                if s.startswith("raw/"):
-                    cited.add((RAW / s[len("raw/"):]).resolve())
-                else:
-                    cited.add((RAW / s).resolve())
+        if not isinstance(fm.get("sources"), list):
+            continue
+        for s in fm["sources"]:
+            if not s:
+                continue
+            if s.startswith("raw/"):
+                candidate = (RAW / s[len("raw/"):]).resolve()
+            else:
+                candidate = (RAW / s).resolve()
+            if _under_raw(candidate):
+                cited.add(candidate)
     for t in sorted(manifest_rows, key=lambda r: r.get("transcript", "")):
-        if t.get("transcript") and (RAW / t["transcript"]).resolve() not in cited:
+        if not t.get("transcript"):
+            continue
+        m_path = (RAW / t["transcript"]).resolve()
+        if not _under_raw(m_path):
+            continue                          # already flagged in check_manifest
+        if m_path not in cited:
             findings.append(Finding("warning", "kb/raw/source-manifest.jsonl",
                                     "TRANSCRIPT_ORPHAN",
                                     f"transcript {t['transcript']!r} is not "
@@ -495,9 +545,6 @@ def main() -> int:
     elif not args.quiet:
         for f in findings:
             print(f.render(), file=sys.stderr)
-        print(f"KB lint: {len(errors)} error(s), {len(warnings)} warning(s), "
-              f"{len(pages)} page(s) scanned",
-              file=sys.stderr)
 
     if not args.check:
         idx = build_retrieval_index(pages, manifest_rows, sections)
@@ -510,6 +557,35 @@ def main() -> int:
                   f"({len(idx['pages'])} pages, "
                   f"{len(idx['sources'])} sources)",
                   file=sys.stderr)
+    else:
+        # --check: validate only. If the committed index would be regenerated
+        # to something different, the vault metadata has drifted and the
+        # committed index is stale; surface that as an error so CI fails
+        # before the build can publish a stale lookup index. Also re-print
+        # the findings (the new INDEX_STALE wasn't in the pre-build print).
+        idx = build_retrieval_index(pages, manifest_rows, sections)
+        regenerated = json.dumps(idx, sort_keys=True, indent=2,
+                                 ensure_ascii=False) + "\n"
+        if args.index_out.is_file():
+            committed = args.index_out.read_text(encoding="utf-8")
+            if committed != regenerated:
+                findings.append(Finding(
+                    "error",
+                    args.index_out.relative_to(REPO_ROOT).as_posix(),
+                    "INDEX_STALE",
+                    "committed retrieval index is stale relative to the "
+                    "vault; run scripts/check_kb.py (without --check) to "
+                    "regenerate, then commit the result"))
+        if not args.quiet and not args.json:
+            for f in findings:
+                print(f.render(), file=sys.stderr)
+
+    errors = [f for f in findings if f.level == "error"]
+    warnings = [f for f in findings if f.level == "warning"]
+    if not args.quiet and not args.json:
+        print(f"KB lint: {len(errors)} error(s), {len(warnings)} warning(s), "
+              f"{len(pages)} page(s) scanned",
+              file=sys.stderr)
 
     return 1 if errors else 0
 

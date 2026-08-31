@@ -229,6 +229,9 @@ def test_orphaned_transcript_warns_only(tmp_vault):
         "transcript": "transcripts/youtube-orphan.txt",
     })
     manifest.write_text(manifest.read_text() + extra + "\n")
+    # Drop the committed index in the temp copy so the test doesn't fail
+    # the (separately tested) INDEX_STALE path.
+    (tmp_vault / ".kb-index.json").unlink(missing_ok=True)
     r = _run_in(tmp_vault, "--check")
     # warning, not error: lint still passes
     assert r.returncode == 0
@@ -252,6 +255,139 @@ def test_json_output_is_well_formed():
     assert isinstance(findings, list)
     for f in findings:
         assert set(f.keys()) == {"level", "path", "code", "message"}
+
+
+def test_scalar_sources_is_rejected(tmp_vault):
+    """A common YAML mistake is `sources: raw/transcripts/foo.txt` instead of
+    a list. The lint must surface it explicitly rather than silently drop."""
+    p = tmp_vault / "wiki" / "summaries" / "scalar-sources.md"
+    p.write_text(
+        "---\n"
+        "title: Scalar\n"
+        "type: summary\n"
+        "created: 2026-01-01\n"
+        "updated: 2026-01-01\n"
+        "tags: [t]\n"
+        "sources: raw/transcripts/youtube-HlkBuNW-VHE.txt\n"   # string, not list
+        "confidence: low\n"
+        "---\n\nbody\n"
+    )
+    r = _run_in(tmp_vault, "--check")
+    assert r.returncode == 1
+    assert "SOURCE_SCALAR" in r.stderr
+
+
+def test_non_mapping_frontmatter_is_rejected(tmp_vault):
+    """Frontmatter that parses to a list/scalar (not a mapping) must be
+    rejected with a clear code rather than crashing."""
+    p = tmp_vault / "wiki" / "summaries" / "list-fm.md"
+    p.write_text(
+        "---\n- just\n- a\n- list\n---\n\nbody\n"
+    )
+    r = _run_in(tmp_vault, "--check")
+    assert r.returncode == 1
+    assert "FM_NOT_MAPPING" in r.stderr
+
+
+def test_path_traversal_in_sources_is_rejected(tmp_vault):
+    """A `sources:` entry that resolves outside kb/raw/ is a path-traversal
+    attempt (e.g. a symlink targeting /home/pavel/.ssh). Surface as an
+    error, not a silent accept."""
+    p = tmp_vault / "wiki" / "summaries" / "traversal-sources.md"
+    # ../../etc/passwd resolves to <tmp>/etc/passwd which is outside RAW.
+    p.write_text(
+        "---\n"
+        "title: traversal\n"
+        "type: summary\n"
+        "created: 2026-01-01\n"
+        "updated: 2026-01-01\n"
+        "tags: [t]\n"
+        "sources: ['../../etc/passwd']\n"
+        "confidence: low\n"
+        "---\n\nbody\n"
+    )
+    r = _run_in(tmp_vault, "--check")
+    assert r.returncode == 1
+    assert "SOURCE_TRAVERSAL" in r.stderr
+
+
+def test_stale_committed_index_blocks_check(tmp_vault):
+    """`--check` mode must fail if the committed kb/.kb-index.json is stale
+    relative to what would be regenerated from the current vault. CI relies
+    on this gate to prevent a drift between the index and the data it
+    describes."""
+    # The fixture's committed index is byte-identical to the regeneration
+    # right after copy, so we need to mutate the vault to force drift.
+    p = tmp_vault / "wiki" / "summaries" / "drift-summaries" / "new.md"
+    p.parent.mkdir(parents=True)
+    p.write_text(
+        "---\n"
+        "title: Drift\n"
+        "type: summary\n"
+        "created: 2026-01-01\n"
+        "updated: 2026-01-01\n"
+        "tags: [drift]\n"
+        "sources: [transcripts/youtube-HlkBuNW-VHE.txt]\n"
+        "confidence: low\n"
+        "---\n\nbody\n"
+    )
+    # NOTE: the new file lives under summaries/ which discover_md() walks
+    # via .rglob, but rglob doesn't follow into the deep new file. Build
+    # a flat file alongside the existing summaries instead.
+    p.unlink()
+    p2 = tmp_vault / "wiki" / "summaries" / "drift-summaries.md"
+    p2.write_text(
+        "---\n"
+        "title: Drift\n"
+        "type: summary\n"
+        "created: 2026-01-01\n"
+        "updated: 2026-01-01\n"
+        "tags: [drift]\n"
+        "sources: [transcripts/youtube-HlkBuNW-VHE.txt]\n"
+        "confidence: low\n"
+        "---\n\nbody\n"
+    )
+    r = _run_in(tmp_vault, "--check")
+    assert r.returncode == 1
+    assert "INDEX_STALE" in r.stderr
+
+
+def test_rebuild_refuses_vault_symlinks(tmp_path):
+    """kb/rebuild.sh must refuse to stage a vault that contains any symlink,
+    because `cp -R` (or any dereferencing variant) could otherwise copy a
+    symlink target outside the vault into the rendered site. A symlink whose
+    target is a real file inside the vault is also rejected: the vault is
+    content, not a graph of links."""
+    import shutil
+    src = REPO_ROOT / "kb"
+    dst = tmp_path / "kb"
+    shutil.copytree(src, dst, ignore=shutil.ignore_patterns(
+        "build", ".openkb", "wiki" + os.sep + "reports", ".kb-index.json"))
+    # rebuild.sh runs scripts/check_kb.py from $REPO/scripts/. Copy the
+    # lint script alongside the temp kb/ so the wrapper can find it.
+    (tmp_path / "scripts").mkdir(parents=True, exist_ok=True)
+    shutil.copy(REPO_ROOT / "scripts" / "check_kb.py",
+                tmp_path / "scripts" / "check_kb.py")
+    # Plant a symlink pointing at an outside file. /etc/hostname is a safe,
+    # tiny, real file on every Linux box; the test just needs any file that
+    # is NOT under kb/.
+    (dst / "wiki" / "summaries" / "evil.md").symlink_to("/etc/hostname")
+    # Point the rebuild wrapper's defaults at our temp vault and a fake
+    # builder so the script runs far enough to reach the symlink rejection.
+    fake_builder = tmp_path / "fake_build_wiki.py"
+    fake_builder.write_text(
+        "import sys\n"
+        "sys.exit(0)\n"
+    )
+    env = {**os.environ, "SAT_KB_ROOT": str(tmp_path),
+           "SAT_WIKI_BUILDER": str(fake_builder),
+           "SAT_WIKI_MKDOCS": "/bin/true"}
+    r = subprocess.run(
+        [str(REPO_ROOT / "kb" / "rebuild.sh")],
+        capture_output=True, text=True, cwd=tmp_path, env=env,
+    )
+    assert r.returncode != 0
+    assert "symlink" in r.stderr.lower()
 
 
 # ---------------------------------------------------------------------------

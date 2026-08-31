@@ -40,23 +40,16 @@ jobs:
         run: uv run pytest -q
 
   kb-build:
-    name: KB build (reproducible, no deploy)
+    name: KB build (lint-gated; full rebuild is local/controller)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install MkDocs + Material
-        run: pip install mkdocs mkdocs-material
-      - name: Run the build (path-independent; SAT_WIKI_BUILDER not required
-            because the lint+builder runs in-process once the shared script is
-            not present — we run the lint and skip the build step that needs
-            the controller's research-fabric layout. CI verifies the lint
-            path; the full rebuild is exercised locally and on the controller.)
-        run: |
-          python3 scripts/check_kb.py --check
-          # Build only when the shared research-fabric builder is available;
-          # the default $BUILDER path is host-specific and would 404 in CI.
-          if [ -f /home/pavel/research-fabric/tools/wiki/build_wiki.py ]; then
-            SAT_WIKI_BUILDER=/home/pavel/research-fabric/tools/wiki/build_wiki.py ./kb/rebuild.sh
-          else
-            echo "shared builder not present in CI; lint-only check is the gate"
-          fi
+      - name: Install lint prerequisites
+        run: pip install pyyaml
+      - name: Lint KB (with stale-index detection)
+        run: python3 scripts/check_kb.py --check
+      # The full MkDocs build requires the shared research-fabric builder at
+      # /home/pavel/research-fabric/tools/wiki/build_wiki.py, which is
+      # controller-host-only. The lint + index-regeneration path is the CI
+      # gate; the full rebuild is exercised on the controller after merge
+      # (kb/rebuild.sh).
