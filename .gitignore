@@ -17,6 +17,13 @@ data/
 .venv/
 imports/
 
+# SAT Prep knowledge base — generated/runtime artifacts (see kb/README.md)
+# OpenKB runtime state, generated lint reports, and local MkDocs build output
+# belong to the controller host or a disposable build dir, not the vault.
+kb/.openkb/
+kb/wiki/reports/
+kb/build/
+
 # python packaging
 *.egg-info/
 dist/

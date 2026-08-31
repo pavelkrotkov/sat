@@ -163,6 +163,58 @@ uv run pytest -q
 Includes leakage tests hammering every mode × 25 seeds asserting protected
 benchmark questions can never appear outside benchmark mode.
 
+### SAT Prep knowledge base
+
+A curated Markdown knowledge base (`kb/`) sits alongside the trainer as an
+explanatory layer. It holds strategy summaries and a cross-source concept page
+grounded in six immutable video transcripts, plus optional per-question reviews.
+The rendered site is a disposable presentation layer.
+
+There are four distinct layers with separate owners:
+
+| Layer | Location | Authoritative for |
+| --- | --- | --- |
+| SQLite training state | `data/satprep.db` | Canonical questions, attempts, sessions, scores, weakness state |
+| Raw evidence + provenance | `kb/raw/` | Immutable transcripts, source manifest (URL, checksum, authority) |
+| Authored knowledge | `kb/wiki/` | Summaries, concepts, index, optional question reviews |
+| Rendered wiki site | `kb/build/` (gitignored) / controller host | Disposable presentation only |
+
+See [kb/README.md](kb/README.md) for ownership boundaries, prerequisites, and
+maintenance; [kb/wiki/index.md](kb/wiki/index.md) is the navigation hub; and
+[kb/raw/source-manifest.jsonl](kb/raw/source-manifest.jsonl) records provenance.
+
+Rebuild the site from any clone:
+
+```bash
+./kb/rebuild.sh          # writes to gitignored kb/build/site-src/site
+```
+
+As of this writing the controller host serves the site at
+`https://hermes.tail377b2a.ts.net/sat-wiki/`; that URL is optional
+infrastructure, not a requirement for the trainer.
+
+**How an LLM should use the KB to explain an error** (documented contract):
+
+1. Start from the passage, question, answer choices, official rationale, and the
+   relevant SQLite tags.
+2. Classify the smallest observable reasoning error (unsupported strong word,
+   scope overreach, reversal, irrelevant truth, …) and cite exact question
+   evidence.
+3. Retrieve only relevant `kb/wiki/` pages, by frontmatter tags and wikilinks.
+4. Explain the exact failure: quote the word or relationship that invalidates
+   the student's answer, then give the correct evidence-based reasoning and
+   link the KB tactic that applies.
+5. Treat third-party strategy pages as medium-confidence guidance, never
+   College Board authority, and never invent a classification when the evidence
+   is insufficient.
+
+The stable explanation shape is: what was tested → why the wrong choice was
+tempting → exact failure → correct evidence-based reasoning → linked KB tactic.
+Authored postmortems follow the convention in
+[kb/wiki/review-templates/question-review.md](kb/wiki/review-templates/question-review.md) and
+are joined to SQLite by the stable question `id` without duplicating canonical
+data.
+
 ---
 
 # Original scraper docs
