@@ -24,8 +24,17 @@ from .training.weakness import compute_weakness
 from .training.weakness import cached_profile
 
 app = FastAPI(title="satprep", docs_url=None, redoc_url=None)
+# PR-43 review: guard the static mount so the module imports cleanly
+# in CI environments where artifacts/ has not been created yet. The
+# route is silently absent in that case; the server still serves
+# every other endpoint. Starlette's StaticFiles refuses to mount a
+# non-existent directory, so we create the directory on the fly if
+# it is missing - the figures route is read-only and an empty
+# directory is harmless.
+_figures_dir = config.REPO_ROOT / "artifacts" / "images"
+_figures_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(config.REPO_ROOT / "satprep" / "static")), name="static")
-app.mount("/figures", StaticFiles(directory=str(config.REPO_ROOT / "artifacts" / "images")), name="figures")
+app.mount("/figures", StaticFiles(directory=str(_figures_dir)), name="figures")
 templates = Jinja2Templates(directory=str(config.REPO_ROOT / "satprep" / "templates"))
 templates.env.filters["basename"] = lambda p: str(p).rsplit("/", 1)[-1]
 
