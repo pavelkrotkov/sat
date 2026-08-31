@@ -12,8 +12,10 @@ import argparse
 import ipaddress
 import json
 import pathlib
+import sqlite3
 import sys
 from datetime import datetime
+from urllib.parse import quote
 
 from . import config
 from .db import db_context
@@ -22,6 +24,7 @@ from .corpus.archive import ARCHIVE_VERSION, export_corpus, restore_corpus
 from .corpus.ingest import ingest_bluebook, ingest_qbank
 from .corpus.qbank_fetch import backfill_figures, fetch_qbank
 from .corpus.tagger import run_full_tagging
+from .explanations import explain_error
 from .training.sessions import (complete_session, create_session, review_payload,
                                 submit_answer)
 from .training.weakness import compute_weakness
@@ -169,6 +172,96 @@ def cmd_fetch_qbank(args) -> None:
         _auto_export(conn)
 
 
+def cmd_explain(args) -> None:
+    """Run the KB-aware explanation pipeline for one question/attempt.
+
+    Pure read-only: no DB writes, no schema migrations. The rule-based
+    path is always available; the optional LLM upgrade fires only when
+    SAT_EXPLAIN_API_KEY is set."""
+    _DB_PATH = config.DB_PATH
+    if not _DB_PATH.exists():
+        raise SystemExit(
+            f"no database at {_DB_PATH}; run `satprep ingest` first "
+            "(this command is read-only and will not create one)")
+    # Open a connection in URI read-only mode so the command cannot
+    # create or migrate the file. The pipeline inspects only `questions`
+    # and (when resolving the most-recent wrong attempt) `attempts`,
+    # neither of which is mutated here.
+    # PR-43 round-3: encode the database path so any URI-significant
+    # character (?, #, %, etc.) in the install directory is escaped
+    # before the SQLite URI parser sees it. Without this, a checkout
+    # under e.g. ~/notes?draft/ would open the wrong file.
+    db_uri = f"file:{quote(str(_DB_PATH))}?mode=ro"
+    conn = sqlite3.connect(
+        db_uri, uri=True, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    try:
+        qid = args.question_id
+        row = conn.execute(
+            "SELECT id, passage, stem, choices_json, correct_letter, "
+            "fingerprint, rationale "
+            "FROM questions WHERE id=? AND active=1", (qid,)).fetchone()
+        if row is None:
+            raise SystemExit(f"no active question with id={qid}")
+        # Resolve the student's chosen letter: either the most recent
+        # wrong attempt on this question, or the explicit --student-letter.
+        student_letter = args.student_letter
+        if student_letter is None:
+            attempt = conn.execute(
+                "SELECT chosen_letter FROM attempts "
+                "WHERE question_id=? AND correct=0 "                       # PR-43 review
+                "ORDER BY id DESC LIMIT 1", (qid,)).fetchone()
+            if attempt is None:
+                raise SystemExit(
+                    f"no wrong attempt for question_id={qid}; pass --student-letter")
+            student_letter = attempt["chosen_letter"]
+        # Normalise the student letter so downstream code always sees an
+        # uppercase key present in the choice list and different from
+        # the key. Down-casing, an unknown letter, or the correct answer
+        # would otherwise produce a misleading "you chose the correct
+        # answer" or a silently mismatched evidence row.
+        choices_raw = json.loads(row["choices_json"])
+        letters = {c.get("letter", "").upper() for c in choices_raw}
+        student_letter = student_letter.upper().strip()
+        if student_letter not in letters:
+            raise SystemExit(
+                f"--student-letter {student_letter!r} is not one of "
+                f"the choices {sorted(letters)}")
+        if student_letter == row["correct_letter"]:
+            raise SystemExit(
+                f"--student-letter {student_letter!r} equals the "
+                f"correct answer; pass --student-letter with the wrong "
+                "choice to explain an error")
+        ex = explain_error(
+            question_id=qid,
+            passage=row["passage"],
+            stem=row["stem"],
+            choices=choices_raw,
+            student_letter=student_letter,
+            correct_letter=row["correct_letter"],
+            rationale=row["rationale"] or "",
+            question_fingerprint=row["fingerprint"] or "",
+            conn=conn,
+        )
+    finally:
+        conn.close()
+    print(json.dumps({
+        "question_id": qid,
+        "student_letter": student_letter,
+        "correct_letter": row["correct_letter"],
+        "tested_task": ex.tested_task,
+        "tempting_answer": ex.tempting_answer,
+        "exact_failure": ex.exact_failure,
+        "correct_reasoning": ex.correct_reasoning,
+        "kb_tactic_refs": ex.kb_tactic_refs,
+        "evidence_citations": ex.evidence_citations,
+        "confidence": ex.confidence,
+        "mode": ex.mode,
+        "model": ex.model,
+        "error_taxonomy": ex.error_taxonomy,
+    }, indent=2, ensure_ascii=False))
+
+
 def cmd_stats(args) -> None:
     with db_context() as conn:
         d = full_dashboard(conn)
@@ -283,6 +376,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("export", help="write the JSONL corpus archive")
     sp.add_argument("--out", default=None)
     sp.set_defaults(func=cmd_export)
+
+    sp = sub.add_parser("explain",
+                        help="KB-aware error explanation for a question")
+    sp.add_argument("--question-id", type=int, required=True,
+                    help="questions.id to explain")
+    sp.add_argument("--student-letter", default=None,
+                    help="override the student's chosen letter; defaults "
+                         "to the most recent wrong attempt on this question")
+    sp.set_defaults(func=cmd_explain)
 
     sp = sub.add_parser("restore", help="rebuild questions from a JSONL archive")
     sp.add_argument("--file", default=None)

@@ -233,9 +233,16 @@ def test_orphaned_transcript_warns_only(tmp_vault):
     # the (separately tested) INDEX_STALE path.
     (tmp_vault / ".kb-index.json").unlink(missing_ok=True)
     r = _run_in(tmp_vault, "--check")
-    # warning, not error: lint still passes
-    assert r.returncode == 0
+    # warning, not error: lint still passes for the orphan itself; we
+    # pre-deleted the committed index so INDEX_MISSING would also fire
+    # and that path is tested separately. Avoid the false flag here.
     assert "TRANSCRIPT_ORPHAN" in r.stderr
+    if r.returncode != 0:
+        # INDEX_MISSING is the expected additional error; everything
+        # else should be a warning, not a hard error.
+        non_warnings = [l for l in r.stderr.splitlines()
+                        if l.startswith("ERROR") and "INDEX_MISSING" not in l]
+        assert not non_warnings, r.stderr
 
 
 def test_nav_sections_blocks(tmp_vault):
