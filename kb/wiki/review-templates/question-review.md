@@ -4,7 +4,7 @@ type: question-review
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 tags: [inference, evidence, scope-error]
-question_id: 000000
+question_fingerprint: 64-hex-sha256
 student_answer: B
 correct_answer: D
 confidence: high
@@ -12,11 +12,20 @@ confidence: high
 
 # <Mirror the frontmatter title>
 
-> Copy this template into `kb/wiki/reviews/<slug>.md` before writing. `question_id`
-> is the stable SQLite `questions.id` primary key — the **join key** to
-> `data/satprep.db`. Do **not** paste the canonical question, its choices, the
-> answer rationale, or any attempt record into this page; the database owns those.
+> Copy this template into `kb/wiki/reviews/<slug>.md` before writing. `question_fingerprint`
+> is the stable SHA-256 fingerprint stored on `questions.fingerprint` (see
+> `satprep/corpus/fingerprint.py`) — the **join key** to `data/satprep.db`. Do
+> **not** paste the canonical question, its choices, the answer rationale, or
+> any attempt record into this page; the database owns those.
 > Markdown may only add the *diagnosis*.
+
+## Why `question_fingerprint`, not `questions.id`?
+
+`questions.id` is a SQLite `INTEGER PRIMARY KEY` that is reassigned on every
+rebuild, import, or row-deletion. `questions.fingerprint` is the normalized
+hash of `passage + stem + choices` and is guaranteed unique (`UNIQUE` column
+constraint), so an authored review stays bound to the same question across
+ingest, backup/restore, and corpus re-exports.
 
 ## What was tested
 

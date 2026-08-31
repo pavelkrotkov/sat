@@ -22,5 +22,7 @@ training state.
 
 ## [2026-08-30] policy | question reviews
 - Added `review-templates/question-review.md` and the empty `reviews/` directory.
-- An authored review is an explanatory postmortem joined to SQLite by a stable
-  question `id`; it never duplicates canonical question or attempt records.
+- An authored review is an explanatory postmortem joined to SQLite by the
+  stable `questions.fingerprint` SHA-256 (the autoincrement `questions.id`
+  reassigns on rebuild and is **not** a stable join key); it never duplicates
+  canonical question or attempt records.

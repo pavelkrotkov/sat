@@ -212,8 +212,8 @@ The stable explanation shape is: what was tested → why the wrong choice was
 tempting → exact failure → correct evidence-based reasoning → linked KB tactic.
 Authored postmortems follow the convention in
 [kb/wiki/review-templates/question-review.md](kb/wiki/review-templates/question-review.md) and
-are joined to SQLite by the stable question `id` without duplicating canonical
-data.
+are joined to SQLite by the stable `questions.fingerprint` SHA-256 (not the
+autoincrement `id`) without duplicating canonical data.
 
 ---
 

@@ -14,7 +14,7 @@
 - [[summaries/settele-trap-answers]] — Eliminate choices with unsupported additions, reversals, scope errors, or wrong tasks.
 
 ## Templates & reviews
-- [[review-templates/question-review]] — Authoring convention for explanatory question postmortems (join to SQLite by stable question id).
+- [[review-templates/question-review]] — Authoring convention for explanatory question postmortems (join to SQLite by the stable `questions.fingerprint` SHA-256, not the autoincrement `id`).
 - [[reviews/README]] — How to author and where to place a reusable question review.
 
 ## Raw sources

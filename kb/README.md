@@ -82,11 +82,14 @@ nothing is written to `kb/wiki/` or tracked by Git.
 ## Question reviews
 
 A question review is an **explanatory postmortem** of one question, kept in
-`kb/wiki/reviews/<slug>.md`. It joins to SQLite by the stable question `id`
-(the `questions.id` primary key) — it does not copy the canonical question,
-answers, or attempt record. See `kb/wiki/review-templates/question-review.md` for the
-frontmatter schema and required sections. Write a review only when it captures a
-reusable diagnosis; the database remains authoritative on disagreement.
+`kb/wiki/reviews/<slug>.md`. It joins to SQLite by the stable
+`questions.fingerprint` SHA-256 (`satprep/corpus/fingerprint.py`) — it does
+not copy the canonical question, answers, or attempt record. The fingerprint
+is the only stable join key: `questions.id` is an autoincrement primary key
+that is reassigned on rebuild, ingest, or restore. See
+`kb/wiki/review-templates/question-review.md` for the frontmatter schema and
+required sections. Write a review only when it captures a reusable diagnosis;
+the database remains authoritative on disagreement.
 
 > **Why `review-templates/` and not `templates/`?** MkDocs reserves a
 > top-level `templates/` directory for custom theme overrides and excludes it
@@ -96,20 +99,26 @@ reusable diagnosis; the database remains authoritative on disagreement.
 
 ## Deployment (controller host)
 
-Optional hosting; the KB is fully usable as Markdown locally. On the controller:
+Optional hosting; the KB is fully usable as Markdown locally. On the controller
+the service serves from a document root that is **separate** from this
+checkout, so the rebuild must publish the freshly built site to that root
+before the service restart:
 
-1. `./kb/rebuild.sh` (or build in place on the host).
-2. Copy/publish the site to the service document root:
-   `systemctl --user restart sat-wiki.service`
-3. Verify:
-   ```bash
-   systemctl --user status sat-wiki.service
-   curl --fail http://127.0.0.1:8042/
-   curl --fail https://hermes.tail377b2a.ts.net/sat-wiki/
-   ```
+```bash
+# Build AND publish into the service document root:
+SAT_WIKI_DEPLOY=/home/pavel/services/sat-wiki/site-src/site ./kb/rebuild.sh
+
+# Restart the user service and verify:
+systemctl --user restart sat-wiki.service
+systemctl --user status sat-wiki.service
+curl --fail http://127.0.0.1:8042/
+curl --fail https://hermes.tail377b2a.ts.net/sat-wiki/
+```
 
 The systemd unit serves the built site with `python -m http.server 8042`
-(bound to loopback); the tailnet route exposes `/sat-wiki`. The service URL is
+(bound to loopback); the tailnet route exposes `/sat-wiki`. `SAT_WIKI_DEPLOY`
+defaults to empty (build only); on a hosted controller set it to the service
+document root so the rebuild always copies fresh output. The service URL is
 optional infrastructure, not a requirement for the trainer or local reading.
 
 ## Verification

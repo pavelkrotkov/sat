@@ -15,6 +15,7 @@
 # Usage:
 #   ./kb/rebuild.sh
 #   SAT_WIKI_BUILDER=/path/to/build_wiki.py SAT_WIKI_MKDOCS=/path/to/mkdocs ./kb/rebuild.sh
+#   SAT_WIKI_DEPLOY=/path/to/site/root ./kb/rebuild.sh   # also publishes
 #
 # The built site is a disposable presentation layer; kb/wiki/ is the source of
 # truth. See kb/README.md for deploy and verification commands.
@@ -28,6 +29,7 @@ SITE_SRC="$BUILD/site-src"
 
 BUILDER="${SAT_WIKI_BUILDER:-/home/pavel/research-fabric/tools/wiki/build_wiki.py}"
 MKDOCS="${SAT_WIKI_MKDOCS:-mkdocs}"
+DEPLOY="${SAT_WIKI_DEPLOY:-}"                 # optional publish target
 
 SITE_NAME="${SAT_WIKI_SITE_NAME:-SAT Prep KB}"
 SITE_DESC="${SAT_WIKI_SITE_DESC:-Evidence-backed SAT Reading and Writing strategy knowledge base}"
@@ -39,15 +41,23 @@ die() { echo "error: $*" >&2; exit 1; }
 command -v "$MKDOCS" >/dev/null 2>&1 || die "mkdocs not found on PATH (set SAT_WIKI_MKDOCS)"
 [[ -d "$VAULT" ]] || die "vault not found at '$VAULT'"
 
+# Constrain STAGE so a misconfigured $BUILD cannot redirect rm -rf elsewhere.
+case "$STAGE" in
+    "$BUILD"/*) ;;
+    *) die "refusing to use STAGE='$STAGE' (not under BUILD='$BUILD')" ;;
+esac
+
 # --- stage a clean vault copy ------------------------------------------------
-# Copy committed-authored pages only. Local generated lint reports and OpenKB
-# runtime state (kb/wiki/reports/, kb/.openkb/) must never reach the site.
+# Copy committed-authored pages only. -RL prevents following symlinks out of
+# the vault (no symlinks should be committed; this is defense-in-depth).
+# Local generated lint reports and OpenKB runtime state (kb/wiki/reports/,
+# kb/.openkb/) must never reach the site.
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
-# copy all of vault, then drop anything that is not authored content
-cp -R "$VAULT"/. "$STAGE"/
+cp -RL "$VAULT"/. "$STAGE"/
+# Drop excluded subtrees so they don't reach the site even if a future commit
+# slips one in. reports/ contains generated lint reports; .openkb/ is runtime.
 find "$STAGE" -type d \( -name reports -o -name '.openkb' \) -prune -exec rm -rf {} +
-find "$STAGE" -type f -name '*.md' -path '*/reports/*' -delete
 
 # --- build Markdown input + mkdocs.yml ---------------------------------------
 python3 "$BUILDER" \
@@ -56,17 +66,21 @@ python3 "$BUILDER" \
   --desc "$SITE_DESC" \
   --docs "$SITE_SRC/docs"
 
-# --- add Templates/Reviews to the site nav -----------------------------------
+# --- add Review-Templates/Reviews to the site nav ----------------------------
 # The shared builder only emits nav for Home/Summaries/Concepts/Entities/Sources.
 # Templates and reviews are project-specific authored content, so inject them
-# here so they render in the navigation (and are not left as orphans).
-python3 - "$SITE_SRC/mkdocs.yml" <<'PY'
+# here so they render in the navigation (and are not left as orphans). We use
+# MkDocs' own interpreter for the YAML edit so PyYAML availability follows
+# SAT_WIKI_MKDOCS, not the unrelated system python3.
+"$MKDOCS" --help >/dev/null  # warm; ensures the binary we just checked is still the one we run
+MKDOCS_PY="$(command -v "$MKDOCS")"
+"$(dirname "$MKDOCS_PY")/python3" - "$SITE_SRC/mkdocs.yml" <<'PY'
 import sys, yaml, pathlib
 
 cfg_path = pathlib.Path(sys.argv[1])
 cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
 nav = cfg.get("nav", [])
-existing = {next(iter(s)) for s in nav if isinstance(s, dict)}
+existing = {next(iter(s)) for s in nav if isinstance(s, dict) and s}
 proj = cfg_path.parent            # mkdocs project root (site-src)
 docs = proj / "docs"              # markdown pages live under the docs dir
 
@@ -93,3 +107,12 @@ cd "$SITE_SRC"
 "$MKDOCS" build --quiet
 echo "rebuilt: $SITE_SRC/site"
 echo "from vault: $VAULT"
+
+# --- optional publish step ---------------------------------------------------
+# SAT_WIKI_DEPLOY is the service document root (e.g. /home/pavel/services/sat-wiki/site-src/site).
+# When unset we only build; the caller decides whether to publish.
+if [[ -n "$DEPLOY" ]]; then
+    mkdir -p "$DEPLOY"
+    rsync -a --delete "$SITE_SRC/site/" "$DEPLOY/"
+    echo "published: $DEPLOY"
+fi
