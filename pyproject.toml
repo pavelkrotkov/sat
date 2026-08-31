@@ -15,7 +15,10 @@ dependencies = [
 satprep = "satprep.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = [
+    "pytest>=8",
+    "pyyaml>=6.0",     # KB lint script (scripts/check_kb.py) and rebuild.sh nav edit
+]
 
 [build-system]
 requires = ["hatchling"]
