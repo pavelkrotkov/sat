@@ -12,6 +12,7 @@ import argparse
 import ipaddress
 import json
 import pathlib
+import sqlite3                                                  # PR-43 review
 import sys
 from datetime import datetime
 
@@ -173,10 +174,23 @@ def cmd_fetch_qbank(args) -> None:
 def cmd_explain(args) -> None:
     """Run the KB-aware explanation pipeline for one question/attempt.
 
-    Pure read-only: no DB writes. The rule-based path is always
-    available; the optional LLM upgrade fires only when
+    Pure read-only: no DB writes, no schema migrations. The rule-based
+    path is always available; the optional LLM upgrade fires only when
     SAT_EXPLAIN_API_KEY is set."""
-    with db_context() as conn:
+    _DB_PATH = config.DB_PATH
+    if not _DB_PATH.exists():
+        raise SystemExit(
+            f"no database at {_DB_PATH}; run `satprep ingest` first "
+            "(this command is read-only and will not create one)")
+    # Open a connection in URI read-only mode so the command cannot
+    # create or migrate the file. The pipeline inspects only `questions`
+    # and (when resolving the most-recent wrong attempt) `attempts`,
+    # neither of which is mutated here.
+    conn = sqlite3.connect(
+        f"file:{_DB_PATH}?mode=ro", uri=True,
+        check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    try:
         qid = args.question_id
         row = conn.execute(
             "SELECT id, passage, stem, choices_json, correct_letter "
@@ -189,22 +203,40 @@ def cmd_explain(args) -> None:
         if student_letter is None:
             attempt = conn.execute(
                 "SELECT chosen_letter FROM attempts "
-                "WHERE question_id=? AND is_correct=0 "
+                "WHERE question_id=? AND correct=0 "                       # PR-43 review
                 "ORDER BY id DESC LIMIT 1", (qid,)).fetchone()
             if attempt is None:
                 raise SystemExit(
                     f"no wrong attempt for question_id={qid}; pass --student-letter")
             student_letter = attempt["chosen_letter"]
-        choices = json.loads(row["choices_json"])
+        # Normalise the student letter so downstream code always sees an
+        # uppercase key present in the choice list and different from
+        # the key. Down-casing, an unknown letter, or the correct answer
+        # would otherwise produce a misleading "you chose the correct
+        # answer" or a silently mismatched evidence row.
+        choices_raw = json.loads(row["choices_json"])
+        letters = {c.get("letter", "").upper() for c in choices_raw}
+        student_letter = student_letter.upper().strip()
+        if student_letter not in letters:
+            raise SystemExit(
+                f"--student-letter {student_letter!r} is not one of "
+                f"the choices {sorted(letters)}")
+        if student_letter == row["correct_letter"]:
+            raise SystemExit(
+                f"--student-letter {student_letter!r} equals the "
+                f"correct answer; pass --student-letter with the wrong "
+                "choice to explain an error")
         ex = explain_error(
             question_id=qid,
             passage=row["passage"],
             stem=row["stem"],
-            choices=choices,
+            choices=choices_raw,
             student_letter=student_letter,
             correct_letter=row["correct_letter"],
             conn=conn,
         )
+    finally:
+        conn.close()
     print(json.dumps({
         "question_id": qid,
         "student_letter": student_letter,

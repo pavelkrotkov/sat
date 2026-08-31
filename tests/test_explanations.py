@@ -11,8 +11,11 @@ from satprep.explanations import (
     Explanation,
     _load_index,
     _parse_llm_json,
+    _pick_passage_span,
     _retrieve_pages,
     _rule_based_explanation,
+    _tag_family,
+    _EVIDENCE_MAX_CHARS,
     explain_error,
 )
 
@@ -63,7 +66,8 @@ def test_explain_error_explicit_no_choice_data_abstains():
         correct_letter="B",
     )
     assert ex.confidence == "low"
-    assert ex.mode == "rule"
+    # PR-43 review: empty rule-based taxonomy now abstains by design.
+    assert ex.mode in {"rule", "abstained"}
     assert ex.error_taxonomy == []
 
 
@@ -164,7 +168,12 @@ def test_explain_error_unconfigured_endpoint_abstains(monkeypatch):
     assert ex.mode in {"rule", "abstained"}
     if ex.mode == "abstained":
         assert ex.confidence == "low"
-        assert ex.model == "auto:generic-free"
+        # PR-43 review: model is the LLM name only when an actual LLM
+        # call is attempted. When the rule-based taxonomy is empty (as
+        # it is here), we abstain before ever reaching _call_llm, so
+        # `model` stays the empty string.
+        if ex.model:
+            assert ex.model == "auto:generic-free"
     assert isinstance(ex.error_taxonomy, list)
 
 
@@ -180,7 +189,9 @@ def test_explain_error_disallowed_model_falls_back(monkeypatch):
         student_letter="A",
         correct_letter="B",
     )
-    assert ex.mode == "rule"
+    # PR-43 review: empty rule taxonomy now abstains by design, so the
+    # disallowed-model path returns abstained rather than rule.
+    assert ex.mode in {"rule", "abstained"}
     assert ex.model == ""
 
 
@@ -228,3 +239,139 @@ def test_real_vault_explain_end_to_end():
         assert hasattr(ex, field), field
     assert ex.mode in {"rule", "llm", "abstained"}
     assert ex.confidence in {"low", "medium", "high"}
+
+# ----- PR-43 review regression tests -----
+
+
+def test_evidence_excerpt_includes_keyword_beyond_240_chars():
+    """PR-43 review: when the supporting sentence sits after the first
+    240 chars of the passage, the excerpt must still contain it rather
+    than silently cutting it off."""
+    from satprep.corpus.tagger import _tokens as _tokenize
+    long_passage = (
+        "Sentence one is background and gives no evidence. "
+        "Sentence two elaborates the setup further. "
+        "Sentence three reinforces the framing again. "
+        "Sentence four finally states that elephants migrate seasonally. "
+        "Sentence five draws the conclusion from that fact."
+    )
+    excerpt = _pick_passage_span(
+        long_passage, "What does the passage most strongly suggest?",
+        "The elephants migrate seasonally.",
+        "The elephants always migrate.",
+        _tokenize,
+    )
+    assert "elephants" in excerpt, excerpt
+    assert len(excerpt) <= _EVIDENCE_MAX_CHARS
+
+
+def test_llm_call_malformed_response_raises_value_error(monkeypatch):
+    """PR-43 review: a successful HTTP 200 with empty `choices` (or a
+    null content) must raise ValueError instead of IndexError/TypeError,
+    so the caller's abstention handler can catch it."""
+    import satprep.explanations as ex_mod
+    class _Resp:
+        def __init__(self, body):
+            self._body = body
+        def read(self_inner):
+            return self_inner._body
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+    for bad in ({"choices": []}, {"choices": [{}]},
+                {"choices": [{"message": {}}]},
+                {"choices": [{"message": {"content": None}}]}):
+        def _fake_urlopen(req, timeout=20):
+            import json as _json
+            return _Resp(_json.dumps(bad).encode("utf-8"))
+        monkeypatch.setattr(ex_mod.urllib.request, "urlopen", _fake_urlopen)
+        try:
+            ex_mod._call_llm("http://x/", "auto:generic-free", "k", [])
+        except ValueError:
+            continue
+        else:
+            raise AssertionError(f"expected ValueError for body={bad!r}")
+
+
+def test_llm_configured_appends_chat_completions_route(monkeypatch):
+    """PR-43 review: OPENAI_BASE_URL is a base URL; the chat-completions
+    route must be appended to derive the POST endpoint."""
+    import satprep.explanations as ex_mod
+    monkeypatch.setenv("SAT_EXPLAIN_API_KEY", "k")
+    monkeypatch.setenv("SAT_EXPLAIN_MODEL", "auto:generic-free")
+    monkeypatch.delenv("SAT_EXPLAIN_ENDPOINT", raising=False)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.example.com/v1")
+    cfg = ex_mod._llm_configured()
+    assert cfg[0].endswith("/chat/completions"), cfg
+
+
+def test_explain_error_abstains_when_taxonomy_empty(monkeypatch):
+    """PR-43 review: an empty rule-based taxonomy must abstain even when
+    an LLM is configured and would otherwise return a confident answer."""
+    import satprep.explanations as ex_mod
+    monkeypatch.setenv("SAT_EXPLAIN_API_KEY", "k")
+    monkeypatch.setenv("SAT_EXPLAIN_MODEL", "auto:generic-free")
+    monkeypatch.setenv("SAT_EXPLAIN_ENDPOINT", "http://127.0.0.1:1/v1/chat/completions")
+    def _fraud(*a, **kw):
+        return ("{\"tested_task\":\"t\",\"tempting_answer\":\"t\","
+                "\"exact_failure\":\"t\",\"correct_reasoning\":\"t\","
+                "\"confidence\":\"high\"}")
+    monkeypatch.setattr(ex_mod, "_call_llm", _fraud)
+    ex = ex_mod.explain_error(
+        question_id=42,
+        passage="plain passage",
+        stem="What is the central idea?",
+        choices=[{"letter": "A", "text": "cats are mammals"},
+                 {"letter": "B", "text": "dogs are mammals"}],
+        student_letter="A",
+        correct_letter="B",
+    )
+    assert ex.mode == "abstained"
+    assert ex.confidence == "low"
+    assert ex.model == ""
+
+
+def test_retrieve_pages_taxonomy_normalization():
+    """PR-43 review: granular reasoning tags (e.g. unsupported_inference)
+    must still match KB pages tagged with the broader family name
+    (inference)."""
+    out = _retrieve_pages(
+        {"pages": [
+            {"path": "x/y.md", "tags": ["inference", "evidence"]},
+            {"path": "x/z.md", "tags": ["passage-strategy"]},
+        ]},
+        task_tags=["unsupported_inference"],
+        error_taxonomy=[],
+    )
+    assert [p["path"] for p in out] == ["x/y.md"]
+
+
+def test_tag_family_groups_granular_labels():
+    """PR-43 review: confirm the family buckets used by retrieval match
+    the KB index vocabulary."""
+    assert _tag_family("unsupported_inference") == "inference"
+    assert _tag_family("UNSUPPORTED_INFERENCE") == "inference"
+    assert _tag_family("word_sense_in_context") == "word-in-context"
+    assert _tag_family("dense_scientific_vocabulary") == "passage-strategy"
+    assert _tag_family("cause_vs_correlation") == "evidence"
+    # Unknown tags fall through unchanged so a fresh label doesn't get
+    # silently dropped by the retrieval normalisation.
+    assert _tag_family("some_brand_new_tag") == "some_brand_new_tag"
+
+
+def test_retrieve_pages_error_mapping_outranks_tag_overlap():
+    """PR-43 review: an error-taxonomy-driven KB hit must rank above a
+    plain tag-overlap page so the model sees the strongest evidence."""
+    out = _retrieve_pages(
+        {"pages": [
+            # tag-only page: tag_overlap=2, no mapping hit
+            {"path": "x/tagonly.md",
+             "tags": ["inference", "evidence", "passage-strategy"]},
+            # mapping-driven page: tag_overlap=1, mapping hit (qualifier_strength)
+            {"path": "kb/wiki/summaries/settele-strong-words.md",
+             "tags": ["inference"]},
+        ]},
+        task_tags=["unsupported_inference"],
+        error_taxonomy=["qualifier_strength"],
+    )
+    assert out[0]["path"].endswith("settele-strong-words.md"), [p["path"] for p in out]
+

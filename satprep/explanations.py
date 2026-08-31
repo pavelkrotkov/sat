@@ -37,6 +37,7 @@ from typing import Any
 
 from .corpus.tagger import diagnose_error, reasoning_tags
 from .corpus.tags import effective_tags
+from .corpus.tagger import _tokens as _tokenize_for_evidence  # PR-43 review
 
 log = logging.getLogger(__name__)
 
@@ -149,33 +150,98 @@ def _retrieve_pages(index: dict, *, task_tags: list[str],
     """
     if not index or not index.get("pages"):
         return []
-    tagset = set(task_tags or [])
+    # PR-43 review: the task tags from `reasoning_tags` and `effective_tags`
+    # use granular labels (e.g. "unsupported_inference") while the KB
+    # index tags use the broader family name ("inference"). Exact-set
+    # intersection therefore scores every relevant page as zero for many
+    # ordinary questions. Normalise both sides to the same family
+    # vocabulary so the frontmatter-tag signal actually fires.
+    tagset = {_tag_family(t) for t in (task_tags or [])}
     errset = set(error_taxonomy or [])
     errset_lower = {t.lower() for t in errset}
     scored: list[tuple[int, int, str, dict]] = []
     for page in index["pages"]:
-        page_tags = set(page.get("tags") or [])
+        page_tags = {_tag_family(t)
+                     for t in (page.get("tags") or [])}
         path = page.get("path", "")
         tag_overlap = len(tagset & page_tags)
         mapping_hits = _error_to_kb_hits(errset_lower, path)
         if tag_overlap <= 0 and mapping_hits <= 0:
             continue
-        scored.append((tag_overlap + mapping_hits, tag_overlap + mapping_hits,
+        # PR-43 review: error-taxonomy hits rank above pure tag overlap,
+        # so pack mapping_hits first and total score second for a useful
+        # tie-breaker.
+        scored.append((mapping_hits, tag_overlap + mapping_hits,
                        path, page))
+    # Sort by mapping hits (error taxonomy matches rank higher), then
+    # total, then path for deterministic tie-breaking.
     scored.sort(key=lambda t: (-t[0], -t[1], t[2]))
     return [p for _, _, _, p in scored[:max_pages]]
+
+
+def _tag_family(tag: str) -> str:
+    """Map granular `reasoning_tags` labels to the broader families
+    that the KB index uses (e.g. "unsupported_inference" ->
+    "inference"). Without this normalisation the retrieval step scores
+    zero for almost every ordinary question and only the explicit
+    error-taxonomy mapping lights up."""
+    if not tag:
+        return ""
+    t = tag.strip().lower()
+    if t in {"unsupported_inference", "over_inference", "irrelevant_detail",
+             "evidence_relevance", "evidence_strength", "claim_vs_evidence",
+             "main_claim_vs_detail", "true_but_not_supported",
+             "abstract_relationship_extraction"}:
+        return "inference"
+    if t in {"cause_vs_correlation", "hypothesis_vs_result",
+             "direction_reversal", "comparison_relationship",
+             "scope_shift", "wrong_reference_group",
+             "chronology"}:
+        return "evidence"
+    if t in {"paraphrase_precision", "near_synonym_distinction",
+             "word_sense_in_context", "qualifier_strength",
+             "absolute_vs_tentative_language", "tone_or_stance",
+             "degree_or_intensity", "author_purpose",
+             "contrast_concession", "logical_connector",
+             "quantifier_mismatch"}:
+        return "word-in-context"
+    if t in {"cross_text_agreement", "cross_text_disagreement",
+             "same_topic_wrong_relationship", "dense_scientific_vocabulary",
+             "scientific_noun_overload"}:
+        return "passage-strategy"
+    if t in {"pacing", "pacing-strategy", "pacing_strategy"}:
+        return "pacing-strategy"
+    return t
 
 
 # ---------------------------------------------------------------------------
 # Evidence extraction
 # ---------------------------------------------------------------------------
 
+def _tokenize_for_evidence(text: str) -> set[str]:
+    """Public re-export of `_tokens` from corpus.tagger. Imported at
+    module top so the corpus/explanations seam stays one-way and the
+    module-boundary test sees no hidden imports."""
+    return _tokenize_for_evidence(text)
+
+
 def _extract_evidence(passage: str, stem: str, choices: list[dict],
                       student_letter: str, correct_letter: str) -> list[dict]:
     """Collect the smallest set of {role, text} dicts that any
     explanation must rest on: the question stem, the student's chosen
-    choice, the correct choice, and the smallest relevant passage span
-    (first 240 chars)."""
+    choice, the correct choice, and the smallest relevant passage span.
+
+    The passage span is a single sentence window around the most
+    relevant sentence we can find (cheap heuristic), capped at a hard
+    ceiling so the LLM prompt stays bounded. If the heuristic cannot
+    find a sentence (the passage is too short or has no sentence
+    boundary), we fall back to the first sentence boundary or the whole
+    passage. The window is widened with the next sentence if the next
+    one shares a key noun/verb with the first, since choice evidence
+    often straddles a sentence break."""
+    # NB: the tokenizer is fetched via the `_tokenize_for_evidence`
+    # helper above so this module does not depend on `_tokens`
+    # disappearing at import time.
     out: list[dict] = []
     if stem:
         out.append({"role": "stem", "text": stem})
@@ -187,9 +253,67 @@ def _extract_evidence(passage: str, stem: str, choices: list[dict],
         out.append({"role": "correct_choice", "letter": correct_letter,
                     "text": cmap[correct_letter]})
     if passage:
-        trimmed = passage if len(passage) <= 240 else passage[:240] + "…"
-        out.append({"role": "passage_excerpt", "text": trimmed})
+        excerpt = _pick_passage_span(passage, stem,
+                                     cmap.get(correct_letter, ""),
+                                     cmap.get(student_letter, ""),
+                                     _tokenize_for_evidence)
+        out.append({"role": "passage_excerpt", "text": excerpt})
     return out
+
+
+# PR-43 review: split the passage selector out so we can unit-test it
+# without going through the full pipeline.
+_EVIDENCE_MAX_CHARS = 480
+
+
+def _pick_passage_span(passage: str, stem: str, correct_text: str,
+                       student_text: str, tokenize) -> str:
+    """Pick a bounded passage excerpt that still contains the cited
+    support when the answer evidence is more than 240 chars into the
+    text. Returns at most _EVIDENCE_MAX_CHARS characters."""
+    if not passage:
+        return ""
+    if len(passage) <= _EVIDENCE_MAX_CHARS:
+        return passage
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", passage)
+                 if s.strip()]
+    if not sentences:
+        # No sentence boundary - hard cap to keep the prompt bounded.
+        return passage[:_EVIDENCE_MAX_CHARS]
+    # Find the sentence sharing the most key tokens with the stem or
+    # the answer choices; break ties by earliest occurrence so the
+    # excerpt is deterministic.
+    target = " ".join([stem, correct_text, student_text]).lower()
+    if not target.strip():
+        target = sentences[0].lower()
+    scored: list[tuple[int, int, int, str]] = []
+    for i, s in enumerate(sentences):
+        toks = tokenize(s)
+        hit = sum(1 for t in toks if t in target)
+        scored.append((hit, -i, i, s))
+    if not scored or scored[0][0] == 0:
+        # Nothing matched; take the longest sentence we can still fit.
+        scored.sort(key=lambda t: (-len(t[3]), t[1]))
+        for _, _, _, s in scored:
+            if len(s) <= _EVIDENCE_MAX_CHARS:
+                return s
+        return sentences[0][:_EVIDENCE_MAX_CHARS]
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    primary = scored[0][3]
+    # Optionally widen with the next sentence if it shares tokens with
+    # the primary (citations often straddle a sentence break).
+    parts = [primary]
+    size = len(primary)
+    prim_toks = set(tokenize(primary))
+    for _, _, _, s in scored[1:]:
+        if size + len(s) > _EVIDENCE_MAX_CHARS:
+            break
+        overlap = sum(1 for t in tokenize(s) if t in prim_toks)
+        if overlap == 0:
+            continue
+        parts.append(s)
+        size += len(s)
+    return " ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -268,10 +392,23 @@ def _rule_based_explanation(
 def _llm_configured() -> tuple[str, str, str] | None:
     """Return (endpoint, model, api_key) if a usable config exists, else
     None. The model must be on the allowlist so a stray
-    OPENAI_API_KEY cannot route to an expensive model by accident."""
-    endpoint = os.environ.get("SAT_EXPLAIN_ENDPOINT",
-                              os.environ.get("OPENAI_BASE_URL",
-                                             _DEFAULT_ENDPOINT))
+    OPENAI_API_KEY cannot route to an expensive model by accident.
+
+    PR-43 review: SAT_EXPLAIN_ENDPOINT is treated as a full endpoint
+    (i.e. /v1/chat/completions). The OPENAI_BASE_URL fallback is a
+    base URL ("https://host/v1") that needs the chat-completions route
+    appended."""
+    endpoint = os.environ.get("SAT_EXPLAIN_ENDPOINT")
+    if not endpoint:
+        base = os.environ.get("OPENAI_BASE_URL")
+        # OPENAI_BASE_URL is a base URL; only append the chat-completions
+        # route if the caller did not already include it. Treat the base
+        # as already-complete if it ends with the standard paths so a
+        # caller-supplied "https://host/v1/" still resolves to
+        # "…/v1/chat/completions" rather than "…/v1/chat/completions/chat/completions".
+        if not base:
+            base = _DEFAULT_ENDPOINT
+        endpoint = _normalize_openai_endpoint(base)
     api_key = os.environ.get("SAT_EXPLAIN_API_KEY",
                              os.environ.get("OPENAI_API_KEY", ""))
     model = os.environ.get("SAT_EXPLAIN_MODEL", _DEFAULT_MODEL)
@@ -284,9 +421,30 @@ def _llm_configured() -> tuple[str, str, str] | None:
     return endpoint.rstrip("/"), model, api_key
 
 
+_CHAT_COMPLETIONS_PATH = "/chat/completions"
+
+
+def _normalize_openai_endpoint(base: str) -> str:
+    """Given an OpenAI-style base URL (no chat-completions path), return
+    a full /v1/chat/completions URL. Idempotent if the path is already
+    present."""
+    base = base.rstrip("/")
+    if base.endswith(_CHAT_COMPLETIONS_PATH):
+        return base
+    if base.endswith("/v1"):
+        return base + _CHAT_COMPLETIONS_PATH
+    return base + "/v1" + _CHAT_COMPLETIONS_PATH
+
+
 def _call_llm(endpoint: str, model: str, api_key: str, messages: list[dict],
               *, max_tokens: int = 700) -> str:
-    """POST to an OpenAI-compatible /v1/chat/completions endpoint."""
+    """POST to an OpenAI-compatible /v1/chat/completions endpoint.
+
+    PR-43 review: rather than assume the response has the canonical
+    `choices[0]["message"]["content"]` shape (which crashes with
+    KeyError / IndexError / TypeError on malformed-but-successful
+    responses), raise ValueError on any structural mismatch so the
+    caller's abstention handler can catch a uniform error class."""
     payload = {"model": model, "messages": messages,
                "max_tokens": max_tokens, "temperature": 0.2}
     req = urllib.request.Request(
@@ -298,7 +456,21 @@ def _call_llm(endpoint: str, model: str, api_key: str, messages: list[dict],
     )
     with urllib.request.urlopen(req, timeout=20) as resp:
         body = json.loads(resp.read().decode("utf-8"))
-    return body["choices"][0]["message"]["content"]
+    # Canonical OpenAI shape: body["choices"][0]["message"]["content"].
+    # Anything else is a malformed successful response and should fall
+    # back to abstention rather than crash.
+    try:
+        choices = body["choices"]
+        content = choices[0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as e:
+        raise ValueError(
+            f"malformed OpenAI-compatible response: {e!r} "
+            "(expected choices[0].message.content)") from None
+    if not isinstance(content, str):
+        raise ValueError(
+            f"malformed OpenAI-compatible response: content is "
+            f"{type(content).__name__}, not str")
+    return content
 
 
 _SYSTEM_PROMPT = (
@@ -406,6 +578,12 @@ def explain_error(
         kb_pages=kb_pages,
     )
 
+    # PR-43 review: the rule-based taxonomy is the contract the LLM is
+    # constrained to. If it is empty there is nothing to cite and the
+    # LLM path should not be allowed to invent a failure mode.
+    if not error_taxonomy:
+        return dataclasses.replace(base, mode="abstained", confidence="low",
+                                   model="")
     # 4. Optional LLM upgrade.
     cfg = _llm_configured()
     if cfg is None:
@@ -415,7 +593,8 @@ def explain_error(
         content = _call_llm(endpoint, model, api_key,
                               _prompt_messages(base, kb_pages))
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
-            KeyError, json.JSONDecodeError) as e:
+            KeyError, IndexError, TypeError,
+            json.JSONDecodeError, ValueError) as e:
         log.warning("LLM explanation call failed: %s; abstaining", e)
         return dataclasses.replace(base, mode="abstained", confidence="low",
                                    model=model)
