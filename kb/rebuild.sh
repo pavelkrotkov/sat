@@ -63,9 +63,29 @@ done < <(find "$VAULT" -type l -print0)
 # citations, nav sections, and the retrieval index. A failure here blocks
 # the build so a broken KB cannot reach the rendered site. The index is
 # regenerated as a side effect (see kb/README.md for the version policy).
+#
+# PR-43 review: invoke the lint with the MkDocs venv's interpreter so
+# imports like PyYAML always resolve, even when the system python3
+# doesn't carry MkDocs' transitive deps. SAT_WIKI_MKDOCS points at the
+# same `mkdocs` binary we run below for `mkdocs build`, so by the time
+# we get here we have already confirmed it exists and is executable.
 LINT="$REPO/scripts/check_kb.py"
 [[ -f "$LINT" ]] || die "KB lint script not found at '$LINT' (expected scripts/check_kb.py)"
-if ! python3 "$LINT"; then
+# Prefer the python that ships with the mkdocs venv (the same one used
+# a few lines down to edit mkdocs.yml with PyYAML); fall back to the
+# system interpreter when mkdocs is not in a venv (e.g. a package
+# install on PATH).
+MKDOCS_BIN="$(command -v "$MKDOCS" 2>/dev/null || true)"
+MKDOCS_LINT_PY=""
+if [[ -n "$MKDOCS_BIN" && -x "$(dirname "$MKDOCS_BIN")/python3" ]]; then
+    MKDOCS_LINT_PY="$(dirname "$MKDOCS_BIN")/python3"
+fi
+if [[ -n "$MKDOCS_LINT_PY" ]]; then
+    LINT_PY=("$MKDOCS_LINT_PY")
+else
+    LINT_PY=(python3)
+fi
+if ! "${LINT_PY[@]}" "$LINT"; then
     die "KB lint failed; fix the findings above and re-run"
 fi
 

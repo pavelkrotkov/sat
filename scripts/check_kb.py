@@ -38,7 +38,6 @@ import os
 import pathlib
 import re
 import sys
-
 try:
     import yaml
 except ImportError:                                  # pragma: no cover
@@ -75,13 +74,36 @@ REQUIRED_BY_TYPE: dict[str, list[str]] = {
 }
 ALLOWED_TYPES = set(REQUIRED_BY_TYPE) | {"log", "index", "readme"}
 
-WIKILINK_RE = re.compile(r"\[\[([^\]\|#]+)(?:\|[^\]]+)?\]\]")
+# PR-43 round-3: accept (and discard) an optional `#fragment` after the
+# target, so a link such as [[concepts#Procedure]] matches this regex
+# and is validated against its page target.
+WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 # Bare `index.md` is the nav hub and intentionally has no frontmatter; it is
 # still a "page" we include in the index. `README.md` is also allowed (used
 # in `reviews/` to host the authoring convention).
 BARE_FILES = {"index.md", "README.md", "log.md"}
+# PR-43 review: scope the "bare pages are exempt from frontmatter"
+# exemption to the vault-relative paths where the convention is
+# actually intended. Originally the exemption was based only on the
+# basename, so any authored page named README.md / index.md / log.md
+# anywhere under the vault silently bypassed the required-frontmatter
+# gate. Compare vault-relative paths only.
+_BARE_FILE_PATHS: set[str] = {
+    # nav hub
+    "kb/wiki/index.md",
+    # top-level log
+    "kb/wiki/log.md",
+}
+# A handful of topical README files are also bare by convention. Add
+# them explicitly here rather than letting the basename rule exempt
+# every matching filename under any directory.
+_BARE_FILE_PATHS.update({
+    f.as_posix() for f in [
+        pathlib.Path("kb/wiki/reviews/README.md"),
+    ] if f.exists() or True  # declared; rely on file presence to swallow
+})
 # The review-templates directory contains the authoring convention itself.
 # Linting its frontmatter is misleading: the placeholder values (literal
 # `64-hex-sha256`, `YYYY-MM-DD`, example tags) are intentional teaching
@@ -142,8 +164,12 @@ def check_frontmatter(rel: pathlib.Path, text: str) -> tuple[dict, list[Finding]
     means the frontmatter could not be parsed; callers should treat the
     empty dict as 'no FM' and continue with shape checks suppressed."""
     findings: list[Finding] = []
-    if rel.name in BARE_FILES:
-        return {}, findings                          # bare hub files have no FM
+    # PR-43 review: exempt only the vault-relative paths that are
+    # actually intended to be bare (the nav hub and a few topical
+    # README files), not every file whose basename happens to match.
+    rel_str = rel.as_posix()
+    if rel_str in _BARE_FILE_PATHS:
+        return {}, findings
     fm, err = parse_frontmatter(text)
     if err:
         findings.append(Finding("error", rel.as_posix(), "FM_MISSING", err))
@@ -214,6 +240,17 @@ def check_manifest(findings: list[Finding]) -> list[dict]:
                                     "MANIFEST_JSON",
                                     f"line {lineno}: {e}"))
             continue
+        # PR-43 review: validate that each decoded row is a mapping
+        # before accessing fields. Valid JSON scalars (null / []) used
+        # to raise AttributeError here, producing a traceback instead
+        # of a structured finding and breaking `--json` for consumers.
+        if not isinstance(row, dict):
+            findings.append(Finding("error", "kb/raw/source-manifest.jsonl",
+                                    "MANIFEST_ROW_SHAPE",
+                                    f"line {lineno}: each manifest row "
+                                    f"must be a JSON object, got "
+                                    f"{type(row).__name__}"))
+            continue
         sid = row.get("source_id", "")
         if not sid:
             findings.append(Finding("error", "kb/raw/source-manifest.jsonl",
@@ -282,13 +319,35 @@ def check_manifest(findings: list[Finding]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def discover_md(root: pathlib.Path) -> list[pathlib.Path]:
+    """Pages to validate and include in the retrieval index.
+
+    Excludes any file under a generated (reports/) or template
+    (review-templates/) subtree at any depth. The previous check
+    compared the *complete* parent-parts tuple for equality, so it
+    skipped `reports/foo.md` but not `reports/2026/foo.md`. The
+    PR-43 fix: test the first relative path component instead.
+    """
     pages = sorted(root.rglob("*.md"))
-    return [p for p in pages
-            if tuple(pathlib.Path(p).relative_to(root).parts[:-1]) not in TEMPLATE_DIRS]
+    out = []
+    for p in pages:
+        rel = pathlib.Path(p).relative_to(root)
+        if rel.parts and rel.parts[0] in {"reports", "review-templates"}:
+            continue
+        out.append(p)
+    return out
+
+
+def _all_markdown_for_link_resolution(root: pathlib.Path) -> list[pathlib.Path]:
+    """Every .md under the vault, including templates and generated
+    reports. Wikilinks can resolve to any of these; we just don't put
+    them in the retrieval index or run frontmatter checks on them.
+    """
+    return sorted(root.rglob("*.md"))
 
 
 def check_links_and_refs(
     pages: list[pathlib.Path],
+    all_pages: list[pathlib.Path],
     manifest_rows: list[dict],
     findings: list[Finding],
 ) -> tuple[set[str], set[str]]:
@@ -297,28 +356,45 @@ def check_links_and_refs(
       - all `sources` entries reference committed transcripts
       - no duplicate question_fingerprint across question-review pages
       - no orphaned authored page (a page referenced from index/nav only)
-    Returns (wikilink_targets, page_paths_rel)."""
-    all_pages = {p.relative_to(REPO_ROOT).as_posix() for p in pages}
+    Returns (wikilink_targets, page_paths_rel).
+
+    `pages` is the authored/retrieval-index set; `all_pages` is the
+    full set (including templates and generated reports) used
+    purely for wikilink target resolution. Frontmatter + sources
+    checks are still only run on `pages`.
+    """
     # Wikilink resolution: a [[foo/bar]] inside the vault resolves to
     # <vault>/foo/bar.md (MkDocs-style). The bare directory also resolves
-    # to <vault>/foo/index.md (we don't currently use directory indexes, so
-    # this is for forward-compatibility). The bare string resolves to
-    # <vault>/foo.md. Targets are stored as posix strings relative to the
-    # vault root (which is what the wikilink syntax is relative to).
+    # to <vault>/foo/index.md - ONLY when that file actually exists in
+    # the vault; today we don't ship index files in the standard
+    # directories, so a bare "foo" target is rejected for any directory
+    # that has no index.md.
+    # The bare string resolves to <vault>/foo.md. Targets are stored as
+    # posix strings relative to the vault root (which is what the
+    # wikilink syntax is relative to).
     targets: set[str] = set()
-    for p in pages:
+    pages_by_path: dict[str, pathlib.Path] = {}
+    # Build the wikilink target set from the full vault (including
+    # templates), so [[review-templates/question-review]] resolves.
+    for p in all_pages:
         rel_to_vault = p.relative_to(VAULT).as_posix()
         rel_to_repo = p.relative_to(REPO_ROOT).as_posix()
+        pages_by_path[rel_to_vault] = p
         # 'foo/bar.md' resolves from the bare wikilink 'foo/bar'
         targets.add(pathlib.PurePosixPath(rel_to_vault).with_suffix("").as_posix())
         # 'foo/bar.md' also resolves from 'foo/bar' (same as above, but
         # explicit for clarity).
         targets.add(rel_to_vault)
-        # and from 'foo' (as the directory index)
-        if p.name != "index.md":
-            parent = pathlib.PurePosixPath(rel_to_vault).parent.as_posix()
-            if parent:
-                targets.add(parent)
+        # and from 'foo' (as the directory index) - ONLY when the
+        # directory's index.md actually exists. The original logic
+        # registered every parent directory as a valid target, which
+        # made [[concepts]] pass merely because concepts/ contains any
+        # markdown file; the rendered site then 404s on the link. The
+        # PR-43 fix: require <dir>/index.md before adding the parent.
+        if p.name == "index.md":
+            parent_dir = pathlib.PurePosixPath(rel_to_vault).parent.as_posix()
+            if parent_dir and parent_dir != ".":
+                targets.add(parent_dir)
         # ... and as a relative-from-repo path, for callers that pass full
         # paths in the wikilink (defensive).
         targets.add(rel_to_repo)
@@ -334,7 +410,7 @@ def check_links_and_refs(
         findings.extend(fm_findings)
         # FM findings were already pushed; skip wikilink/sources/fingerprint
         # checks if FM is broken (empty dict returned alongside a finding).
-        if not fm and rel.lstrip("kb/wiki/") not in BARE_FILES:
+        if not fm and rel not in _BARE_FILE_PATHS:
             continue
         for m in WIKILINK_RE.finditer(text):
             target = m.group(1).strip()
@@ -356,7 +432,15 @@ def check_links_and_refs(
                                     f"{type(sources).__name__}"))
         else:
             for s in sources:
-                if not s:
+                # PR-43 round-3: validate every element is a non-empty
+                # string before string operations. A list element
+                # like `123` would otherwise crash on `s.startswith`
+                # with AttributeError.
+                if not isinstance(s, str) or not s:
+                    findings.append(Finding("error", rel, "SOURCE_NON_STRING",
+                                            f"sources must be a list of "
+                                            f"non-empty strings; got "
+                                            f"{type(s).__name__}={s!r}"))
                     continue
                 if s.startswith("raw/"):
                     candidate = (RAW / s[len("raw/"):]).resolve()
@@ -398,7 +482,10 @@ def check_links_and_refs(
         if not isinstance(fm.get("sources"), list):
             continue
         for s in fm["sources"]:
-            if not s:
+            # PR-43 round-3: skip non-string elements silently here; the
+            # source-list validation in `check_links_and_refs` already
+            # surfaces SOURCE_NON_STRING as a finding.
+            if not isinstance(s, str) or not s:
                 continue
             if s.startswith("raw/"):
                 candidate = (RAW / s[len("raw/"):]).resolve()
@@ -447,11 +534,24 @@ def check_nav_sections(findings: list[Finding]) -> list[str]:
             findings.append(Finding("error", "kb/wiki/index.md", "NAV_SECTION",
                                     f"missing required section: {req}"))
     # Review Templates + Reviews: either each present individually, or a
-    # combined heading that mentions both.
+    # combined heading that mentions both. PR-43 review: previously the
+    # 'combined' predicate reused the templates heuristic
+    # ("review template" in s.lower()), so a heading like "## Review
+    # Templates" would satisfy both requirements even when there was no
+    # separate Reviews section at all. Require the combined heading to
+    # denote both - e.g. "Review Templates & Reviews" - by looking for
+    # the words "template" and "review" in distinct forms.
     has_rt = any("review template" in s.lower() for s in sections)
     has_rv = any(s.lower() == "reviews" for s in sections)
-    combined = any(("review" in s.lower() and "template" in s.lower())
-                   for s in sections)
+    # A truly combined heading must mention both words and not be just
+    # the templates heading. Match "templates" AND either "review"
+    # (template-and-review form) or the plural "reviews".
+    combined = any(
+        ("template" in s.lower())
+        and ("review" in s.lower() or "reviews" in s.lower())
+        and s.lower().strip() != "review templates"
+        for s in sections
+    )
     if not (combined or (has_rt and has_rv)):
         findings.append(Finding("error", "kb/wiki/index.md", "NAV_SECTION",
                                 "missing Review Templates and Reviews sections "
@@ -532,19 +632,22 @@ def main() -> int:
     findings: list[Finding] = []
     manifest_rows = check_manifest(findings)
     pages = discover_md(VAULT)
-    targets, all_pages = check_links_and_refs(pages, manifest_rows, findings)
+    # PR-43 round-3: walk the full vault (including templates/reports)
+    # for wikilink target resolution. Templates are reachable by
+    # [[wikilink]] but excluded from frontmatter checks and the
+    # retrieval index.
+    all_pages = _all_markdown_for_link_resolution(VAULT)
+    targets, _ = check_links_and_refs(pages, all_pages, manifest_rows, findings)
     sections = check_nav_sections(findings)
 
     errors = [f for f in findings if f.level == "error"]
     warnings = [f for f in findings if f.level == "warning"]
 
-    if args.json:
-        print(json.dumps(
-            [dataclasses.asdict(f) for f in findings],
-            sort_keys=True, indent=2))
-    elif not args.quiet:
-        for f in findings:
-            print(f.render(), file=sys.stderr)
+    # PR-43 review: in --check mode, defer emitting findings-as-JSON
+    # until after the regenerated index has been compared against the
+    # committed one. The original ordering could return [] with exit
+    # status 1 when the only problem was a stale index, leaving
+    # downstream JSON consumers unable to tell what failed.
 
     if not args.check:
         idx = build_retrieval_index(pages, manifest_rows, sections)
@@ -552,37 +655,78 @@ def main() -> int:
                           ensure_ascii=False) + "\n"
         args.index_out.parent.mkdir(parents=True, exist_ok=True)
         args.index_out.write_text(text, encoding="utf-8")
-        if not args.quiet and not args.json:
-            print(f"wrote {args.index_out.relative_to(REPO_ROOT)} "
-                  f"({len(idx['pages'])} pages, "
+        if args.json:
+            print(json.dumps(
+                [dataclasses.asdict(f) for f in findings],
+                sort_keys=True, indent=2))
+        elif not args.quiet:
+            for f in findings:
+                print(f.render(), file=sys.stderr)
+            try:
+                rel_path = args.index_out.relative_to(REPO_ROOT)
+            except ValueError:
+                # PR-43 review: --index-out can point outside the repo
+                # (e.g. /tmp/index.json). In the default
+                # human-readable branch we want to print an absolute
+                # path rather than crash in `relative_to`. --json and
+                # --quiet already skip this branch entirely.
+                rel_path = args.index_out.resolve()
+            print(f"wrote {rel_path} ({len(idx['pages'])} pages, "
                   f"{len(idx['sources'])} sources)",
                   file=sys.stderr)
     else:
         # --check: validate only. If the committed index would be regenerated
         # to something different, the vault metadata has drifted and the
         # committed index is stale; surface that as an error so CI fails
-        # before the build can publish a stale lookup index. Also re-print
-        # the findings (the new INDEX_STALE wasn't in the pre-build print).
+        # before the build can publish a stale lookup index.
         idx = build_retrieval_index(pages, manifest_rows, sections)
         regenerated = json.dumps(idx, sort_keys=True, indent=2,
                                  ensure_ascii=False) + "\n"
-        if args.index_out.is_file():
+        # PR-43 review: a missing committed index was being silently
+        # accepted. Treat absent kb/.kb-index.json as an INDEX_MISSING
+        # error in --check mode so a deleted/untracked index fails the
+        # check instead of letting the explanation pipeline ship with
+        # no KB references.
+        if not args.index_out.is_file():
+            findings.append(Finding(
+                "error",
+                args.index_out.resolve().as_posix(),
+                "INDEX_MISSING",
+                "committed retrieval index is missing; run "
+                "scripts/check_kb.py (without --check) to "
+                "(re)generate it, then commit the result"))
+        else:
             committed = args.index_out.read_text(encoding="utf-8")
             if committed != regenerated:
+                try:
+                    stale_path = args.index_out.relative_to(REPO_ROOT).as_posix()
+                except ValueError:
+                    # PR-43 review: --index-out can point outside the
+                    # repo (e.g. /tmp/index.json). Report the absolute
+                    # path so the operator can find the stale file.
+                    stale_path = args.index_out.resolve().as_posix()
                 findings.append(Finding(
                     "error",
-                    args.index_out.relative_to(REPO_ROOT).as_posix(),
+                    stale_path,
                     "INDEX_STALE",
                     "committed retrieval index is stale relative to the "
                     "vault; run scripts/check_kb.py (without --check) to "
                     "regenerate, then commit the result"))
-        if not args.quiet and not args.json:
+        # Emit findings AFTER the index comparison so stale/missing
+        # entries survive into both the JSON output and the human-readable
+        # summary. Re-read `errors`/`warnings` because the findings list
+        # has been extended above.
+        errors = [f for f in findings if f.level == "error"]
+        warnings = [f for f in findings if f.level == "warning"]
+        if args.json:
+            print(json.dumps(
+                [dataclasses.asdict(f) for f in findings],
+                sort_keys=True, indent=2))
+        elif not args.quiet:
             for f in findings:
                 print(f.render(), file=sys.stderr)
 
-    errors = [f for f in findings if f.level == "error"]
-    warnings = [f for f in findings if f.level == "warning"]
-    if not args.quiet and not args.json:
+    if not args.json and not args.quiet:
         print(f"KB lint: {len(errors)} error(s), {len(warnings)} warning(s), "
               f"{len(pages)} page(s) scanned",
               file=sys.stderr)
