@@ -372,8 +372,16 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
 
 
 def known_external_ids(conn) -> set[str]:
+    """External_ids already represented by an ACTIVE row.
+
+    Deactivated (active=0) rows are kept as audit history but must not block
+    a re-fetch: the live fetch path uses this set as its skip-list, so
+    excluding inactive rows lets a deactivated item be re-imported fresh.
+    """
     ids = set()
-    for r in conn.execute("SELECT source_question_number, provenance_json FROM questions"):
+    for r in conn.execute(
+        "SELECT source_question_number, provenance_json FROM questions WHERE active=1"
+    ):
         try:
             ext = json.loads(r["provenance_json"] or "{}").get("external_id")
         except json.JSONDecodeError:
