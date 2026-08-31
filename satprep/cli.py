@@ -22,6 +22,7 @@ from .corpus.archive import ARCHIVE_VERSION, export_corpus, restore_corpus
 from .corpus.ingest import ingest_bluebook, ingest_qbank
 from .corpus.qbank_fetch import backfill_figures, fetch_qbank
 from .corpus.tagger import run_full_tagging
+from .explanations import explain_error
 from .training.sessions import (complete_session, create_session, review_payload,
                                 submit_answer)
 from .training.weakness import compute_weakness
@@ -169,6 +170,58 @@ def cmd_fetch_qbank(args) -> None:
         _auto_export(conn)
 
 
+def cmd_explain(args) -> None:
+    """Run the KB-aware explanation pipeline for one question/attempt.
+
+    Pure read-only: no DB writes. The rule-based path is always
+    available; the optional LLM upgrade fires only when
+    SAT_EXPLAIN_API_KEY is set."""
+    with db_context() as conn:
+        qid = args.question_id
+        row = conn.execute(
+            "SELECT id, passage, stem, choices_json, correct_letter "
+            "FROM questions WHERE id=? AND active=1", (qid,)).fetchone()
+        if row is None:
+            raise SystemExit(f"no active question with id={qid}")
+        # Resolve the student's chosen letter: either the most recent
+        # wrong attempt on this question, or the explicit --student-letter.
+        student_letter = args.student_letter
+        if student_letter is None:
+            attempt = conn.execute(
+                "SELECT chosen_letter FROM attempts "
+                "WHERE question_id=? AND is_correct=0 "
+                "ORDER BY id DESC LIMIT 1", (qid,)).fetchone()
+            if attempt is None:
+                raise SystemExit(
+                    f"no wrong attempt for question_id={qid}; pass --student-letter")
+            student_letter = attempt["chosen_letter"]
+        choices = json.loads(row["choices_json"])
+        ex = explain_error(
+            question_id=qid,
+            passage=row["passage"],
+            stem=row["stem"],
+            choices=choices,
+            student_letter=student_letter,
+            correct_letter=row["correct_letter"],
+            conn=conn,
+        )
+    print(json.dumps({
+        "question_id": qid,
+        "student_letter": student_letter,
+        "correct_letter": row["correct_letter"],
+        "tested_task": ex.tested_task,
+        "tempting_answer": ex.tempting_answer,
+        "exact_failure": ex.exact_failure,
+        "correct_reasoning": ex.correct_reasoning,
+        "kb_tactic_refs": ex.kb_tactic_refs,
+        "evidence_citations": ex.evidence_citations,
+        "confidence": ex.confidence,
+        "mode": ex.mode,
+        "model": ex.model,
+        "error_taxonomy": ex.error_taxonomy,
+    }, indent=2, ensure_ascii=False))
+
+
 def cmd_stats(args) -> None:
     with db_context() as conn:
         d = full_dashboard(conn)
@@ -283,6 +336,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("export", help="write the JSONL corpus archive")
     sp.add_argument("--out", default=None)
     sp.set_defaults(func=cmd_export)
+
+    sp = sub.add_parser("explain",
+                        help="KB-aware error explanation for a question")
+    sp.add_argument("--question-id", type=int, required=True,
+                    help="questions.id to explain")
+    sp.add_argument("--student-letter", default=None,
+                    help="override the student's chosen letter; defaults "
+                         "to the most recent wrong attempt on this question")
+    sp.set_defaults(func=cmd_explain)
 
     sp = sub.add_parser("restore", help="rebuild questions from a JSONL archive")
     sp.add_argument("--file", default=None)
