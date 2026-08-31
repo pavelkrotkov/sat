@@ -12,9 +12,10 @@ import argparse
 import ipaddress
 import json
 import pathlib
-import sqlite3                                                  # PR-43 review
+import sqlite3
 import sys
 from datetime import datetime
+from urllib.parse import quote
 
 from . import config
 from .db import db_context
@@ -186,14 +187,19 @@ def cmd_explain(args) -> None:
     # create or migrate the file. The pipeline inspects only `questions`
     # and (when resolving the most-recent wrong attempt) `attempts`,
     # neither of which is mutated here.
+    # PR-43 round-3: encode the database path so any URI-significant
+    # character (?, #, %, etc.) in the install directory is escaped
+    # before the SQLite URI parser sees it. Without this, a checkout
+    # under e.g. ~/notes?draft/ would open the wrong file.
+    db_uri = f"file:{quote(str(_DB_PATH))}?mode=ro"
     conn = sqlite3.connect(
-        f"file:{_DB_PATH}?mode=ro", uri=True,
-        check_same_thread=False)
+        db_uri, uri=True, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     try:
         qid = args.question_id
         row = conn.execute(
-            "SELECT id, passage, stem, choices_json, correct_letter "
+            "SELECT id, passage, stem, choices_json, correct_letter, "
+            "fingerprint, rationale "
             "FROM questions WHERE id=? AND active=1", (qid,)).fetchone()
         if row is None:
             raise SystemExit(f"no active question with id={qid}")
@@ -233,6 +239,8 @@ def cmd_explain(args) -> None:
             choices=choices_raw,
             student_letter=student_letter,
             correct_letter=row["correct_letter"],
+            rationale=row["rationale"] or "",
+            question_fingerprint=row["fingerprint"] or "",
             conn=conn,
         )
     finally:

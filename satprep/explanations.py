@@ -36,8 +36,8 @@ import urllib.request
 from typing import Any
 
 from .corpus.tagger import diagnose_error, reasoning_tags
+from .corpus.tagger import _tokens as _corpus_tokens
 from .corpus.tags import effective_tags
-from .corpus.tagger import _tokens as _tokenize_for_evidence  # PR-43 review
 
 log = logging.getLogger(__name__)
 
@@ -102,10 +102,15 @@ def _load_index(repo: pathlib.Path) -> dict:
     explanation with kb_tactic_refs=[])."""
     p = repo / "kb" / ".kb-index.json"
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        data = json.loads(p.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError) as e:
         log.warning("could not load KB retrieval index from %s: %s", p, e)
         return {}
+    if not isinstance(data, dict) or not isinstance(data.get("pages"), list):
+        log.warning("KB retrieval index has unexpected shape: top-level=%r",
+                    type(data).__name__)
+        return {}
+    return data
 
 
 def _error_to_kb_hits(errset_lower: set[str], page_path: str) -> int:
@@ -119,7 +124,7 @@ def _error_to_kb_hits(errset_lower: set[str], page_path: str) -> int:
               "over_inference"}
     trap = {"true_but_not_supported", "same_topic_wrong_relationship"}
     inference = {"unsupported_inference"}
-    confusion = {"reversal_direction", "paraphrase_precision",
+    confusion = {"direction_reversal", "paraphrase_precision",
                  "near_synonym_distinction"}
     causal = {"cause_vs_correlation", "hypothesis_vs_result"}
     explicit = {
@@ -137,16 +142,24 @@ def _error_to_kb_hits(errset_lower: set[str], page_path: str) -> int:
 
 def _retrieve_pages(index: dict, *, task_tags: list[str],
                     error_taxonomy: list[str] | None = None,
+                    question_fingerprint: str = "",
                     max_pages: int = 3) -> list[dict]:
     """Pick the smallest relevant subset of KB pages.
 
-    Relevance is the union of two signals:
+    Relevance is the union of three signals:
       1. frontmatter tag intersection with the question's task tags
          (e.g. "evidence", "inference")
       2. an explicit rule-based-error -> KB-page mapping for the
          smallest-observable-reasoning-error pattern.
+      3. a question_fingerprint match: if a question-review page's
+         `question_fingerprint` frontmatter equals the current
+         question's fingerprint, that page is a strong match and
+         ranked above generic tag overlap.
 
-    Ties broken by total overlap, then by page path for determinism.
+    A non-matching question-review page (a review for a different
+    question) is dropped to prevent it from crowding out more
+    relevant tactics. Ties broken by total overlap, then by page path
+    for determinism.
     """
     if not index or not index.get("pages"):
         return []
@@ -161,11 +174,25 @@ def _retrieve_pages(index: dict, *, task_tags: list[str],
     errset_lower = {t.lower() for t in errset}
     scored: list[tuple[int, int, str, dict]] = []
     for page in index["pages"]:
+        path = page.get("path", "")
+        # Exclude non-matching question-review pages: they are
+        # authoritative for one specific question, not as KB tactics
+        # for arbitrary others.
+        if page.get("type") == "question-review":
+            pf = page.get("question_fingerprint") or ""
+            if question_fingerprint and pf and pf != question_fingerprint:
+                continue
         page_tags = {_tag_family(t)
                      for t in (page.get("tags") or [])}
-        path = page.get("path", "")
         tag_overlap = len(tagset & page_tags)
         mapping_hits = _error_to_kb_hits(errset_lower, path)
+        # If the review page matches our question's fingerprint, add
+        # 3 to mapping_hits so it ranks above pure tag-overlap
+        # matches. A non-matching review was filtered out above.
+        if (page.get("type") == "question-review"
+                and question_fingerprint
+                and (page.get("question_fingerprint") or "") == question_fingerprint):
+            mapping_hits += 3
         if tag_overlap <= 0 and mapping_hits <= 0:
             continue
         # PR-43 review: error-taxonomy hits rank above pure tag overlap,
@@ -219,10 +246,12 @@ def _tag_family(tag: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _tokenize_for_evidence(text: str) -> set[str]:
-    """Public re-export of `_tokens` from corpus.tagger. Imported at
-    module top so the corpus/explanations seam stays one-way and the
-    module-boundary test sees no hidden imports."""
-    return _tokenize_for_evidence(text)
+    """Thin wrapper over the corpus tokenizer, kept under this name so
+    `_pick_passage_span` and tests can pass a tokenizer without
+    re-importing the corpus internals. Avoid naming this the same as
+    the imported module-level alias (which would shadow it and recurse
+    — see PR-43 round-3 review)."""
+    return _corpus_tokens(text)
 
 
 def _extract_evidence(passage: str, stem: str, choices: list[dict],
@@ -291,6 +320,10 @@ def _pick_passage_span(passage: str, stem: str, correct_text: str,
         toks = tokenize(s)
         hit = sum(1 for t in toks if t in target)
         scored.append((hit, -i, i, s))
+    # PR-43 round-3: sort once up front, then check the best scorer.
+    # The previous code branched on the unsorted first tuple, which
+    # could be 0 even when a later sentence scored > 0.
+    scored.sort(key=lambda t: (-t[0], t[1]))
     if not scored or scored[0][0] == 0:
         # Nothing matched; take the longest sentence we can still fit.
         scored.sort(key=lambda t: (-len(t[3]), t[1]))
@@ -298,7 +331,6 @@ def _pick_passage_span(passage: str, stem: str, correct_text: str,
             if len(s) <= _EVIDENCE_MAX_CHARS:
                 return s
         return sentences[0][:_EVIDENCE_MAX_CHARS]
-    scored.sort(key=lambda t: (-t[0], t[1]))
     primary = scored[0][3]
     # Optionally widen with the next sentence if it shares tokens with
     # the primary (citations often straddle a sentence break).
@@ -492,12 +524,44 @@ _SYSTEM_PROMPT = (
 )
 
 
+def _kb_body_excerpt(path: str, max_chars: int = 1200) -> str:
+    """Load a bounded Markdown excerpt of a KB page so the LLM has the
+    actual procedure, not just the title. Returns "" if the file is
+    missing or unreadable; the prompt degrades gracefully."""
+    if not path:
+        return ""
+    full = (REPO_ROOT_FOR_BODY / path).resolve()
+    try:
+        if not full.is_file():
+            return ""
+        text = full.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    # Strip YAML frontmatter so the model sees the body, not the metadata.
+    if text.startswith("---"):
+        end = text.find("\n---\n", 4)
+        if end != -1:
+            text = text[end + 5:]
+    return text if len(text) <= max_chars else text[:max_chars] + "…"
+
+
+# REPO_ROOT for body loading: same lookup as the retrieval index.
+REPO_ROOT_FOR_BODY = _repo_root()
+
+
 def _prompt_messages(rule_explanation: Explanation,
-                     kb_pages: list[dict]) -> list[dict]:
+                     kb_pages: list[dict],
+                     rationale: str = "") -> list[dict]:
+    """Build the chat messages. The user message carries the structured
+    inputs as JSON so the LLM doesn't have to parse them out of prose.
+    The KB body excerpts (PR-43 round-3) give the model the actual
+    tactics, not just the page title; the rationale (PR-43 round-3) is
+    the most authoritative grounding source for College Board items."""
     kb_brief = [{"path": p.get("path", ""),
                  "title": p.get("title", ""),
                  "tags": p.get("tags", []),
-                 "description": p.get("description", "")}
+                 "description": p.get("description", ""),
+                 "body_excerpt": _kb_body_excerpt(p.get("path", ""))}
                 for p in kb_pages]
     user_payload = {
         "tested_task": rule_explanation.tested_task,
@@ -506,6 +570,7 @@ def _prompt_messages(rule_explanation: Explanation,
         "kb_pages": kb_brief,
         "rule_based_tempting_answer": rule_explanation.tempting_answer,
         "rule_based_exact_failure": rule_explanation.exact_failure,
+        "official_rationale": rationale,
     }
     return [
         {"role": "system", "content": _SYSTEM_PROMPT},
@@ -545,6 +610,7 @@ def explain_error(
     student_letter: str,
     correct_letter: str,
     rationale: str = "",
+    question_fingerprint: str = "",
     conn: Any | None = None,
 ) -> Explanation:
     """Classify a student's wrong SAT R&W answer and return a structured
@@ -556,19 +622,26 @@ def explain_error(
     cmap = {c.get("letter", ""): c.get("text", "") for c in choices or []}
     error_taxonomy = diagnose_error(
         cmap.get(correct_letter, ""), cmap.get(student_letter, ""))
-    effective = list(task_tags)
+    # PR-43 round-3: prefer the persisted effective_tags (admin
+    # suppressions and manual corrections) over the raw rule inference
+    # when a connection is available. The raw inference still informs
+    # the explanation's tested_task label.
     if conn is not None:
         try:
-            for t in effective_tags(conn, question_id):
-                if t not in effective:
-                    effective.append(t)
+            effective = list(effective_tags(conn, question_id))
         except Exception as e:
             log.debug("effective_tags unavailable: %s", e)
+            effective = list(task_tags)
+    else:
+        effective = list(task_tags)
 
-    # 2. Retrieval.
+    # 2. Retrieval. Pass question_fingerprint so non-matching question-review
+    # pages are excluded from the retrieved set; a review for a different
+    # question would otherwise crowd out the more relevant tactic pages.
     index = _load_index(_repo_root())
-    kb_pages = _retrieve_pages(index, task_tags=task_tags,
-                                error_taxonomy=error_taxonomy)
+    kb_pages = _retrieve_pages(index, task_tags=effective,
+                                error_taxonomy=error_taxonomy,
+                                question_fingerprint=question_fingerprint)
 
     # 3. Deterministic base.
     base = _rule_based_explanation(
@@ -591,7 +664,8 @@ def explain_error(
     endpoint, model, api_key = cfg
     try:
         content = _call_llm(endpoint, model, api_key,
-                              _prompt_messages(base, kb_pages))
+                              _prompt_messages(base, kb_pages,
+                                                rationale=rationale))
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
             KeyError, IndexError, TypeError,
             json.JSONDecodeError, ValueError) as e:

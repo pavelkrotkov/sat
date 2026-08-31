@@ -74,7 +74,10 @@ REQUIRED_BY_TYPE: dict[str, list[str]] = {
 }
 ALLOWED_TYPES = set(REQUIRED_BY_TYPE) | {"log", "index", "readme"}
 
-WIKILINK_RE = re.compile(r"\[\[([^\]\|#]+)(?:\|[^\]]+)?\]\]")
+# PR-43 round-3: accept (and discard) an optional `#fragment` after the
+# target, so a link such as [[concepts#Procedure]] matches this regex
+# and is validated against its page target.
+WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 # Bare `index.md` is the nav hub and intentionally has no frontmatter; it is
@@ -316,13 +319,35 @@ def check_manifest(findings: list[Finding]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def discover_md(root: pathlib.Path) -> list[pathlib.Path]:
+    """Pages to validate and include in the retrieval index.
+
+    Excludes any file under a generated (reports/) or template
+    (review-templates/) subtree at any depth. The previous check
+    compared the *complete* parent-parts tuple for equality, so it
+    skipped `reports/foo.md` but not `reports/2026/foo.md`. The
+    PR-43 fix: test the first relative path component instead.
+    """
     pages = sorted(root.rglob("*.md"))
-    return [p for p in pages
-            if tuple(pathlib.Path(p).relative_to(root).parts[:-1]) not in TEMPLATE_DIRS]
+    out = []
+    for p in pages:
+        rel = pathlib.Path(p).relative_to(root)
+        if rel.parts and rel.parts[0] in {"reports", "review-templates"}:
+            continue
+        out.append(p)
+    return out
+
+
+def _all_markdown_for_link_resolution(root: pathlib.Path) -> list[pathlib.Path]:
+    """Every .md under the vault, including templates and generated
+    reports. Wikilinks can resolve to any of these; we just don't put
+    them in the retrieval index or run frontmatter checks on them.
+    """
+    return sorted(root.rglob("*.md"))
 
 
 def check_links_and_refs(
     pages: list[pathlib.Path],
+    all_pages: list[pathlib.Path],
     manifest_rows: list[dict],
     findings: list[Finding],
 ) -> tuple[set[str], set[str]]:
@@ -331,8 +356,13 @@ def check_links_and_refs(
       - all `sources` entries reference committed transcripts
       - no duplicate question_fingerprint across question-review pages
       - no orphaned authored page (a page referenced from index/nav only)
-    Returns (wikilink_targets, page_paths_rel)."""
-    all_pages = {p.relative_to(REPO_ROOT).as_posix() for p in pages}
+    Returns (wikilink_targets, page_paths_rel).
+
+    `pages` is the authored/retrieval-index set; `all_pages` is the
+    full set (including templates and generated reports) used
+    purely for wikilink target resolution. Frontmatter + sources
+    checks are still only run on `pages`.
+    """
     # Wikilink resolution: a [[foo/bar]] inside the vault resolves to
     # <vault>/foo/bar.md (MkDocs-style). The bare directory also resolves
     # to <vault>/foo/index.md - ONLY when that file actually exists in
@@ -344,7 +374,9 @@ def check_links_and_refs(
     # wikilink syntax is relative to).
     targets: set[str] = set()
     pages_by_path: dict[str, pathlib.Path] = {}
-    for p in pages:
+    # Build the wikilink target set from the full vault (including
+    # templates), so [[review-templates/question-review]] resolves.
+    for p in all_pages:
         rel_to_vault = p.relative_to(VAULT).as_posix()
         rel_to_repo = p.relative_to(REPO_ROOT).as_posix()
         pages_by_path[rel_to_vault] = p
@@ -378,7 +410,7 @@ def check_links_and_refs(
         findings.extend(fm_findings)
         # FM findings were already pushed; skip wikilink/sources/fingerprint
         # checks if FM is broken (empty dict returned alongside a finding).
-        if not fm and rel.lstrip("kb/wiki/") not in BARE_FILES:
+        if not fm and rel not in _BARE_FILE_PATHS:
             continue
         for m in WIKILINK_RE.finditer(text):
             target = m.group(1).strip()
@@ -400,7 +432,15 @@ def check_links_and_refs(
                                     f"{type(sources).__name__}"))
         else:
             for s in sources:
-                if not s:
+                # PR-43 round-3: validate every element is a non-empty
+                # string before string operations. A list element
+                # like `123` would otherwise crash on `s.startswith`
+                # with AttributeError.
+                if not isinstance(s, str) or not s:
+                    findings.append(Finding("error", rel, "SOURCE_NON_STRING",
+                                            f"sources must be a list of "
+                                            f"non-empty strings; got "
+                                            f"{type(s).__name__}={s!r}"))
                     continue
                 if s.startswith("raw/"):
                     candidate = (RAW / s[len("raw/"):]).resolve()
@@ -442,7 +482,10 @@ def check_links_and_refs(
         if not isinstance(fm.get("sources"), list):
             continue
         for s in fm["sources"]:
-            if not s:
+            # PR-43 round-3: skip non-string elements silently here; the
+            # source-list validation in `check_links_and_refs` already
+            # surfaces SOURCE_NON_STRING as a finding.
+            if not isinstance(s, str) or not s:
                 continue
             if s.startswith("raw/"):
                 candidate = (RAW / s[len("raw/"):]).resolve()
@@ -589,7 +632,12 @@ def main() -> int:
     findings: list[Finding] = []
     manifest_rows = check_manifest(findings)
     pages = discover_md(VAULT)
-    targets, all_pages = check_links_and_refs(pages, manifest_rows, findings)
+    # PR-43 round-3: walk the full vault (including templates/reports)
+    # for wikilink target resolution. Templates are reachable by
+    # [[wikilink]] but excluded from frontmatter checks and the
+    # retrieval index.
+    all_pages = _all_markdown_for_link_resolution(VAULT)
+    targets, _ = check_links_and_refs(pages, all_pages, manifest_rows, findings)
     sections = check_nav_sections(findings)
 
     errors = [f for f in findings if f.level == "error"]
@@ -650,9 +698,16 @@ def main() -> int:
         else:
             committed = args.index_out.read_text(encoding="utf-8")
             if committed != regenerated:
+                try:
+                    stale_path = args.index_out.relative_to(REPO_ROOT).as_posix()
+                except ValueError:
+                    # PR-43 review: --index-out can point outside the
+                    # repo (e.g. /tmp/index.json). Report the absolute
+                    # path so the operator can find the stale file.
+                    stale_path = args.index_out.resolve().as_posix()
                 findings.append(Finding(
                     "error",
-                    args.index_out.relative_to(REPO_ROOT).as_posix(),
+                    stale_path,
                     "INDEX_STALE",
                     "committed retrieval index is stale relative to the "
                     "vault; run scripts/check_kb.py (without --check) to "
