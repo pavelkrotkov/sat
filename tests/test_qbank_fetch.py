@@ -2,7 +2,6 @@ from satprep.corpus.qbank_fetch import _normalize, insert_qbank_row
 from conftest import add_question
 
 import json
-import sqlite3
 
 import pytest
 
@@ -281,10 +280,13 @@ def test_figure_with_caption_keeps_caption_text(fig_dirs):
 
 
 def test_external_identity_reconciles_on_reimport(db, fig_dirs):
-    """Figure extraction changes the stored passage/stem text, so a re-import
-    of a known bank item can miss the content fingerprint. The external_id
-    is canonical: matching on it must reconcile (duplicate) instead of
-    inserting a second, fresh-pool copy of the same question."""
+    """The content-fingerprint path handles byte-identical re-imports. This test
+    exercises the external_identity path for its real purpose: server-side
+    content drift (College Board rephrasing a question between fetches) keyed
+    on the canonical external_id — the stored row has a passage that does NOT
+    fingerprint-match the new ingest, but the external_id still reconciles it
+    instead of inserting a fresh duplicate (which could land in protected
+    benchmark)."""
     from satprep.corpus.fingerprint import fingerprint
 
     conn, path = db
@@ -311,6 +313,130 @@ def test_external_identity_reconciles_on_reimport(db, fig_dirs):
     r = conn.execute("SELECT images_json FROM questions WHERE fingerprint='legacy'").fetchone()
     assert json.loads(r["images_json"]) == row["images"], \
         "re-import by external identity did not backfill the figures"
+
+
+def test_external_identity_skips_inactive_row(db, fig_dirs):
+    """A deactivated (active=0) row sharing the same external_id must NOT be
+    picked as the reconciliation target; if the only matching row is inactive,
+    the function must fall through to insert a new question. The new row then
+    stays eligible for the normal fingerprint/loose-reconcile paths on a later
+    re-import, while the deactivated row stays untouched (audit history)."""
+    from satprep.corpus.fingerprint import fingerprint
+
+    conn, path = db
+    # deactivated row with the same external_id we will re-import
+    conn.execute(
+        """INSERT INTO questions (fingerprint, source, source_test, source_question_number,
+             module, passage, stem, choices_json, correct_letter, rationale, images_json,
+             official_domain, official_skill, skill_source, difficulty, pool,
+             seen_benchmark, is_new_bank, import_batch, imported_at, provenance_json, active)
+           VALUES ('legacy', 'college_board_question_bank', 'ext-fig', '', '',
+             'old passage', 'old stem', '["a","b","c","d"]', 'A', '', '[]',
+             '', 'Inferences', 'metadata', 'hard', 'fresh_training',
+             0, 1, 'old', '2026-01-01', '{"external_id":"ext-fig"}', 0)"""
+    )
+    # new ingest with the same external_id but different content
+    row = _normalize(DETAIL_FIG, FIG_META)
+    outcome = insert_qbank_row(conn, row, batch="reimport")
+
+    # The deactivated row is not a valid reconciliation target. The new ingest
+    # does not fingerprint-match the deactivated row's passage/stem, so the
+    # external-identity pass must skip it and a fresh row is inserted.
+    assert outcome == "added"
+    assert conn.execute("SELECT COUNT(*) FROM questions").fetchone()[0] == 2
+    # the deactivated row is left untouched (still active=0, still old passage)
+    dead = conn.execute(
+        "SELECT active, passage FROM questions WHERE fingerprint='legacy'").fetchone()
+    assert dead["active"] == 0
+    assert dead["passage"] == "old passage"
+    # the new row is active=1 and carries the new content
+    live = conn.execute(
+        "SELECT active, images_json FROM questions WHERE active=1"
+    ).fetchone()
+    assert live["active"] == 1
+    assert json.loads(live["images_json"]) == row["images"]
+
+
+def test_external_identity_picks_most_recently_ingested_on_duplicate(db, fig_dirs):
+    """When two active rows somehow share an external_id (data anomaly; the
+    loose-reconcile and content-fingerprint paths should usually prevent this),
+    the external-identity pass must deterministically pick the most recently
+    ingested row (ORDER BY id DESC) — the older row stays untouched."""
+    from satprep.corpus.fingerprint import fingerprint
+
+    conn, path = db
+    # Two legacy active rows for the same external_id: older (id=1) and newer (id=2).
+    for n, passage in [(1, "older passage"), (2, "newer passage")]:
+        conn.execute(
+            """INSERT INTO questions (fingerprint, source, source_test, source_question_number,
+                 module, passage, stem, choices_json, correct_letter, rationale, images_json,
+                 official_domain, official_skill, skill_source, difficulty, pool,
+                 seen_benchmark, is_new_bank, import_batch, imported_at, provenance_json)
+               VALUES (?, 'college_board_question_bank', 'ext-fig', '', '',
+                 ?, 'stem text here', '["a","b","c","d"]', 'A', '', '[]',
+                 '', 'Inferences', 'metadata', 'hard', 'fresh_training',
+                 0, 1, 'old', '2026-01-01', '{"external_id":"ext-fig"}')""",
+            (f"legacy-{n}", passage),
+        )
+    # new ingest: external_id matches both legacy rows; most recent (id=2) wins.
+    row = _normalize(DETAIL_FIG, FIG_META)
+    outcome = insert_qbank_row(conn, row, batch="reimport")
+
+    assert outcome == "duplicate"
+    assert conn.execute("SELECT COUNT(*) FROM questions").fetchone()[0] == 2
+    # The newer legacy row gained the figure; the older one is untouched.
+    older = conn.execute(
+        "SELECT images_json FROM questions WHERE id=1").fetchone()
+    newer = conn.execute(
+        "SELECT images_json FROM questions WHERE id=2").fetchone()
+    assert older["images_json"] == "[]"
+    assert json.loads(newer["images_json"]) == row["images"]
+
+
+def test_duplicate_reconcile_preserves_existing_figures(db, fig_dirs):
+    """Re-import must not overwrite an already-figure-bearing row. _backfill_images
+    short-circuits when the stored images_json is non-empty; a regression that
+    overwrites good figures with a different list from a later fetch must fail
+    this test."""
+    from satprep.corpus.fingerprint import fingerprint
+    from satprep.corpus import qbank_fetch
+
+    conn, path = db
+    # pre-seed a row that already has a figure list (different from what
+    # _normalize would extract from DETAIL_FIG), so a regression that overwrites
+    # would surface as a list change.
+    existing_figs = ["original-a.svg", "original-b.svg"]
+    fp = fingerprint(
+        "The scatterplot shows yield versus rainfall.",
+        "Which choice most effectively uses data from the graph to complete the text?",
+        ["opt A", "opt B", "opt C", "opt D"],
+    )
+    conn.execute(
+        """INSERT INTO questions (fingerprint, source, source_test, source_question_number,
+             module, passage, stem, choices_json, correct_letter, rationale, images_json,
+             official_domain, official_skill, skill_source, difficulty, pool,
+             seen_benchmark, is_new_bank, import_batch, imported_at, provenance_json)
+           VALUES (?, 'college_board_question_bank', 'ext-fig', '', '',
+             'The scatterplot shows yield versus rainfall.',
+             'Which choice most effectively uses data from the graph to complete the text?',
+             '["opt A","opt B","opt C","opt D"]', 'C', '', ?,
+             '', 'Inferences', 'metadata', 'hard', 'fresh_training',
+             0, 1, 'old', '2026-01-01', '{"external_id":"ext-fig"}')""",
+        (fp, json.dumps(existing_figs)),
+    )
+    conn.commit()
+
+    # Re-import the same external_id; the freshly extracted figure list is
+    # different from the original. The dedup path must short-circuit and
+    # leave the existing list intact.
+    row = _normalize(DETAIL_FIG, FIG_META)
+    assert row["images"] != existing_figs, "test fixture must produce a different figure list"
+    outcome = insert_qbank_row(conn, row, batch="reimport")
+    assert outcome == "duplicate"
+
+    r = conn.execute("SELECT images_json FROM questions WHERE provenance_json LIKE '%ext-fig%'").fetchone()
+    assert json.loads(r["images_json"]) == existing_figs, \
+        "re-import overwrote an already-figure-bearing row's images_json"
 
 
 def test_insert_persists_figures_into_images_json(db, fig_dirs):
@@ -401,3 +527,90 @@ def test_backfill_figures_attaches_figures_to_imageless_rows(db, fig_dirs, monke
     plain = conn.execute(
         "SELECT images_json FROM questions WHERE provenance_json LIKE '%ext-plain%'").fetchone()
     assert plain["images_json"] == "[]"
+
+
+def test_backfill_figures_hint_only_targets_stems_naming_assets(db, fig_dirs, monkeypatch):
+    """`figure_hint=True` is the default and the only mode run by the CLI without
+    --full-sweep. It limits the sweep to rows whose stem mentions a figure
+    (graph/figure/diagram/table/chart/scatterplot/map/illustration/plot). Two
+    imageless rows: one stem names a scatterplot, one says nothing. With the
+    hint on, the sweep fetches only the named-assets row."""
+    from satprep.corpus import qbank_fetch
+
+    conn, path = db
+    # named-assets row: figure-less in storage, stem mentions a "scatterplot"
+    figrow = _normalize(DETAIL_FIG, FIG_META)
+    insert_qbank_row(conn, figrow, batch="bfill-hint")
+    conn.execute("UPDATE questions SET images_json='[]' WHERE provenance_json LIKE '%ext-fig%'")
+    # plain row: no asset-language in stem, no figures
+    conn.execute("""INSERT INTO questions (fingerprint, source, source_test, source_question_number,
+                     module, passage, stem, choices_json, correct_letter, rationale, images_json,
+                     official_domain, official_skill, skill_source, difficulty, pool,
+                     seen_benchmark, is_new_bank, import_batch, imported_at, provenance_json)
+                   VALUES ('plain-hint', 'college_board_question_bank', 'ext-plain', '', '',
+                     'A plain prompt.', 'Which completes the text?', '["one","two","three","four"]',
+                     'A', '', '[]', '', 'Inferences', 'metadata', 'medium', 'fresh_training',
+                     0, 1, 'old', '2026-01-01', '{"external_id":"ext-plain"}')""")
+    conn.commit()
+
+    def fake_fetch(ext):
+        if str(ext) == "ext-fig":
+            return DETAIL_FIG
+        return DETAIL   # ext-plain: no figure (would also be skipped by the hint)
+
+    monkeypatch.setattr(qbank_fetch, "fetch_question", fake_fetch)
+
+    stats = qbank_fetch.backfill_figures(conn, figure_hint=True, sleep_s=0)
+
+    # Only one candidate, and the plain row was excluded by the hint SQL.
+    assert stats["candidate"] == 1
+    assert stats["now_images"] == 1
+    # the named-assets row gained its figure
+    figur = conn.execute(
+        "SELECT images_json FROM questions WHERE provenance_json LIKE '%ext-fig%'").fetchone()
+    assert json.loads(figur["images_json"]) == figrow["images"]
+    # the plain row was never fetched and stayed empty
+    plain = conn.execute(
+        "SELECT images_json FROM questions WHERE provenance_json LIKE '%ext-plain%'").fetchone()
+    assert plain["images_json"] == "[]"
+
+
+def test_backfill_figures_respects_limit(db, fig_dirs, monkeypatch):
+    """`--limit N` caps the backfill to N candidates even when more match. This
+    pins the documented limit interaction: a fetch_qbank run with --limit 10
+    also caps the backfill at 10 rows, and the limit slices the ORDER BY id
+    ordering (not the SQL query), so the lowest-id candidates run first."""
+    from satprep.corpus import qbank_fetch
+
+    conn, path = db
+    # three figure-bearing rows stored imageless, with distinct external_ids and
+    # distinct passages so each inserts a fresh row (same content dedupes).
+    for n, ext in enumerate(["ext-fig-a", "ext-fig-b", "ext-fig-c"], 1):
+        meta = {"external_id": ext, "primary_class_cd_desc": "Information and Ideas",
+                "skill_desc": "Inferences", "difficulty": "H"}
+        detail = dict(DETAIL_FIG)
+        detail["stimulus"] = f"<p>The scatterplot shows yield versus rainfall. Variant {n}.</p>"
+        row = _normalize(detail, meta)
+        insert_qbank_row(conn, row, batch="bfill-lim")
+    conn.execute(
+        "UPDATE questions SET images_json='[]' "
+        "WHERE source='college_board_question_bank'")
+    conn.commit()
+
+    fetched = []
+    def fake_fetch(ext):
+        fetched.append(str(ext))
+        return DETAIL_FIG
+
+    monkeypatch.setattr(qbank_fetch, "fetch_question", fake_fetch)
+
+    stats = qbank_fetch.backfill_figures(conn, figure_hint=True, limit=2, sleep_s=0)
+
+    # 2 candidates were processed (sliced from ORDER BY id), 1 was not.
+    assert stats["candidate"] == 2
+    assert stats["now_images"] == 2
+    assert len(fetched) == 2
+    # the untouched row still has no figures
+    rows_with_imgs = conn.execute(
+        "SELECT provenance_json FROM questions WHERE images_json != '[]'").fetchall()
+    assert len(rows_with_imgs) == 2

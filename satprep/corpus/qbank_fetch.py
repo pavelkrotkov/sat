@@ -44,7 +44,6 @@ _IMG_DATA_RE = re.compile(
     r"<img\b[^>]*?\bsrc=(['\"])(data:image/(?:png|jpe?g|gif|webp|svg\+xml);base64,[^'\"]+)\1",
     re.IGNORECASE | re.DOTALL,
 )
-_FIGURE_BLOCK_RE = re.compile(r"<figure\b.*?</figure>", re.IGNORECASE | re.DOTALL)
 # One document-order pass over all three figure shapes. Group 1 holds the
 # data-URI payload, set only by the <img> branch (an <img> inside a <figure>
 # is consumed by the figure branch first, at the earlier offset).
@@ -297,12 +296,12 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
         _backfill_images(exists["id"], exists["images_json"] or "")
         return "duplicate"
 
-    # External-identity pass: figure extraction changed the normalized
-    # passage/stem text (SVG labels and captions now survive into it), so a
-    # re-import of an existing bank item can miss the content fingerprint.
-    # The stored external_id is the canonical identity — match on it so a
-    # known item reconciles instead of inserting a fresh duplicate (which
-    # could land in the protected benchmark pool).
+    # External-identity pass: the content fingerprint path above already handled
+    # identical re-imports. This pass guards against server-side content drift —
+    # College Board rephrasing a question between fetches — keyed on the canonical
+    # external_id. Matching on external_id means a known item reconciles instead
+    # of inserting a fresh duplicate (which could land in the protected
+    # benchmark pool).
     ext = row.get("ext_id", "")
     if ext:
         # (no content-fingerprint match — that path returned 'duplicate'
@@ -310,9 +309,11 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
         ext_row = conn.execute(
             """SELECT id, choices_json, images_json, official_skill, difficulty, pool
                FROM questions
-               WHERE source='college_board_question_bank'
+               WHERE active=1
+                 AND source='college_board_question_bank'
                  AND json_valid(provenance_json)
-                 AND json_extract(provenance_json, '$.external_id')=?""",
+                 AND json_extract(provenance_json, '$.external_id')=?
+               ORDER BY id DESC""",
             (ext,),
         ).fetchone()
         if ext_row is not None:
@@ -371,8 +372,16 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
 
 
 def known_external_ids(conn) -> set[str]:
+    """External_ids already represented by an ACTIVE row.
+
+    Deactivated (active=0) rows are kept as audit history but must not block
+    a re-fetch: the live fetch path uses this set as its skip-list, so
+    excluding inactive rows lets a deactivated item be re-imported fresh.
+    """
     ids = set()
-    for r in conn.execute("SELECT source_question_number, provenance_json FROM questions"):
+    for r in conn.execute(
+        "SELECT source_question_number, provenance_json FROM questions WHERE active=1"
+    ):
         try:
             ext = json.loads(r["provenance_json"] or "{}").get("external_id")
         except json.JSONDecodeError:

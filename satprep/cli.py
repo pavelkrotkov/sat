@@ -151,6 +151,10 @@ def cmd_benchmark(args) -> None:
 def cmd_fetch_qbank(args) -> None:
     domains = [d.strip().upper() for d in args.domains.split(",") if d.strip()] or None
     with db_context() as conn:
+        # NB: args.limit caps BOTH the fetch and the backfill. A `--limit 10`
+        # fetch therefore caps the subsequent backfill at the same 10 rows
+        # (in addition to any figure_hint filter). Pass --full-sweep + a larger
+        # --limit if you need a separate backfill scope.
         stats = fetch_qbank(conn, hard_only=args.hard_only, domains=domains,
                             limit=args.limit, sleep_s=args.sleep)
         print("done:", json.dumps(stats))
