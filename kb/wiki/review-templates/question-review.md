@@ -53,7 +53,8 @@ strategy pages as medium-confidence guidance, not College Board authority.
 ## Links
 
 - Related KB tactic pages: `[[concepts/sat-hard-reading-strategy-stack]]`,
-  `[[summaries/...]]` that bears on this error type.
+  and the summary page that bears on this error type (e.g.
+  `[[summaries/settele-trap-answers]]`).
 - Raw transcript or manifest source if the diagnosis traces to a strategy video.
 
 ---

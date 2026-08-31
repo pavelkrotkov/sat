@@ -1,0 +1,266 @@
+"""Tests for the deterministic KB lint script (issue #39)."""
+from __future__ import annotations
+
+import dataclasses
+import json
+import pathlib
+import subprocess
+import sys
+
+import pytest
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+SCRIPT = REPO_ROOT / "scripts" / "check_kb.py"
+
+
+def _run(*args: str, cwd: pathlib.Path | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *args],
+        capture_output=True, text=True, cwd=cwd or REPO_ROOT,
+    )
+
+
+# ---------------------------------------------------------------------------
+# End-to-end against the real repo: must be clean (this is the gate).
+# ---------------------------------------------------------------------------
+
+def test_real_vault_lints_clean():
+    r = _run("--check")
+    assert r.returncode == 0, (
+        "scripts/check_kb.py --check must pass against the committed KB.\n"
+        f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
+    )
+
+
+def test_real_vault_writes_deterministic_index():
+    r1 = _run()
+    assert r1.returncode == 0
+    idx1 = (REPO_ROOT / "kb" / ".kb-index.json").read_bytes()
+    r2 = _run()
+    assert r2.returncode == 0
+    idx2 = (REPO_ROOT / "kb" / ".kb-index.json").read_bytes()
+    assert idx1 == idx2, "index output must be deterministic across runs"
+
+
+def test_index_has_required_shape():
+    r = _run()
+    assert r.returncode == 0
+    idx = json.loads((REPO_ROOT / "kb" / ".kb-index.json").read_text())
+    assert idx["schema_version"] == 1
+    assert idx["vault"] == "kb/wiki"
+    assert isinstance(idx["sources"], list) and len(idx["sources"]) == 6
+    # 7 indexed pages: 1 concept + 6 summaries. The lint script intentionally
+    # excludes review-templates/ and reports/ (see TEMPLATE_DIRS), and
+    # reviews/README.md has no frontmatter so it lands in the bare-file
+    # branch and is not indexed either (the index is for retrieval by type).
+    assert isinstance(idx["pages"], list) and len(idx["pages"]) == 7
+    types = {p["type"] for p in idx["pages"]}
+    assert types == {"concept", "summary"}
+    for p in idx["pages"]:
+        for k in ("path", "type", "title", "tags", "sources", "wikilinks",
+                  "question_fingerprint"):
+            assert k in p, f"missing key {k} in {p.get('path')}"
+
+
+# ---------------------------------------------------------------------------
+# Negative cases: run the script in a temp copy of the vault and verify each
+# finding class surfaces an error and a non-zero exit.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def tmp_vault(tmp_path) -> pathlib.Path:
+    """Copy the real vault into a tempdir so we can break it without touching
+    the working tree. We deliberately keep the .openkb/ runtime directory and
+    kb/build/ out of the copy — neither is required for linting."""
+    import shutil
+    src = REPO_ROOT / "kb"
+    dst = tmp_path / "kb"
+    shutil.copytree(src, dst, ignore=shutil.ignore_patterns(
+        "build", ".openkb", "wiki" + os.sep + "reports"))
+    # check_kb.py resolves the repo root from a sentinel (kb/wiki/index.md).
+    # tmp_path/kb/wiki/index.md exists, so the script will treat tmp_path as
+    # the repo root. Good.
+    return dst
+
+
+def _run_in(vault_root: pathlib.Path, *args: str) -> subprocess.CompletedProcess:
+    # Run the script with SAT_KB_ROOT pointed at the temp vault so the
+    # script's find_repo_root() uses the broken copy, not the real repo.
+    import os
+    env = {**os.environ, "SAT_KB_ROOT": str(vault_root.parent)}
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *args],
+        capture_output=True, text=True, cwd=vault_root.parent, env=env,
+    )
+
+
+def test_missing_required_frontmatter_blocks(tmp_vault):
+    p = tmp_vault / "wiki" / "summaries" / "broken-summary.md"
+    p.write_text(
+        "---\n"
+        "title: Broken\n"
+        "type: summary\n"
+        "created: 2026-01-01\n"
+        "updated: 2026-01-01\n"
+        # missing tags, sources, confidence
+        "---\n\nbody\n"
+    )
+    r = _run_in(tmp_vault, "--check")
+    assert r.returncode == 1
+    assert "FM_REQUIRED" in r.stderr
+    assert "tags" in r.stderr and "sources" in r.stderr and "confidence" in r.stderr
+
+
+def test_unknown_type_blocks(tmp_vault):
+    p = tmp_vault / "wiki" / "summaries" / "weird-type.md"
+    p.write_text(
+        "---\n"
+        "title: Weird\n"
+        "type: not-a-real-type\n"
+        "created: 2026-01-01\n"
+        "updated: 2026-01-01\n"
+        "tags: [t]\n"
+        "sources: [raw/transcripts/youtube-HlkBuNW-VHE.txt]\n"
+        "confidence: low\n"
+        "---\n\nbody\n"
+    )
+    r = _run_in(tmp_vault, "--check")
+    assert r.returncode == 1
+    assert "FM_TYPE_UNKNOWN" in r.stderr
+
+
+def test_invalid_question_fingerprint_blocks(tmp_vault):
+    p = tmp_vault / "wiki" / "reviews" / "broken-review.md"
+    p.write_text(
+        "---\n"
+        "title: Bad FP\n"
+        "type: question-review\n"
+        "created: 2026-01-01\n"
+        "updated: 2026-01-01\n"
+        "tags: [t]\n"
+        "question_fingerprint: not-a-sha\n"
+        "student_answer: A\n"
+        "correct_answer: B\n"
+        "confidence: high\n"
+        "---\n\nbody\n"
+    )
+    r = _run_in(tmp_vault, "--check")
+    assert r.returncode == 1
+    assert "FM_FINGERPRINT" in r.stderr
+
+
+def test_broken_wikilink_blocks(tmp_vault):
+    p = tmp_vault / "wiki" / "summaries" / "broken-links.md"
+    p.write_text(
+        "---\n"
+        "title: Broken links\n"
+        "type: summary\n"
+        "created: 2026-01-01\n"
+        "updated: 2026-01-01\n"
+        "tags: [t]\n"
+        "sources: [transcripts/youtube-HlkBuNW-VHE.txt]\n"
+        "confidence: low\n"
+        "---\n\nSee [[nope/this-page-doesnt-exist]].\n"
+    )
+    r = _run_in(tmp_vault, "--check")
+    assert r.returncode == 1
+    assert "WIKILINK" in r.stderr
+    assert "nope/this-page-doesnt-exist" in r.stderr
+
+
+def test_manifest_sha_mismatch_blocks(tmp_vault):
+    manifest = tmp_vault / "raw" / "source-manifest.jsonl"
+    rows = [json.loads(line) for line in manifest.read_text().splitlines() if line.strip()]
+    # Corrupt the sha of the first row.
+    rows[0]["sha256"] = "0" * 64
+    manifest.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    r = _run_in(tmp_vault, "--check")
+    assert r.returncode == 1
+    assert "MANIFEST_SHA" in r.stderr
+
+
+def test_manifest_missing_trailing_newline_blocks(tmp_vault):
+    manifest = tmp_vault / "raw" / "source-manifest.jsonl"
+    text = manifest.read_text()
+    if text.endswith("\n"):
+        manifest.write_text(text[:-1])
+    r = _run_in(tmp_vault, "--check")
+    assert r.returncode == 1
+    assert "MANIFEST_NEWLINE" in r.stderr
+
+
+def test_duplicate_question_fingerprint_blocks(tmp_vault):
+    fp = "a" * 64
+    # Pre-seed two reviews with the same fingerprint.
+    for i, name in enumerate(["review-1.md", "review-2.md"]):
+        p = tmp_vault / "wiki" / "reviews" / name
+        p.write_text(
+            f"---\n"
+            f"title: R{i}\n"
+            f"type: question-review\n"
+            f"created: 2026-01-01\n"
+            f"updated: 2026-01-01\n"
+            f"tags: [t]\n"
+            f"question_fingerprint: {fp}\n"
+            f"student_answer: A\n"
+            f"correct_answer: B\n"
+            f"confidence: high\n"
+            f"---\n\nbody {i}\n"
+        )
+    r = _run_in(tmp_vault, "--check")
+    assert r.returncode == 1
+    assert "REVIEW_DUP" in r.stderr
+
+
+def test_orphaned_transcript_warns_only(tmp_vault):
+    # Add a manifest row whose transcript is not cited by any page.
+    transcript = tmp_vault / "raw" / "transcripts" / "youtube-orphan.txt"
+    transcript.write_text("orphan content\n")
+    manifest = tmp_vault / "raw" / "source-manifest.jsonl"
+    extra = json.dumps({
+        "source_id": "s-orphan",
+        "title": "Orphan",
+        "url": "https://example.com/orphan",
+        "retrieved_at": "2026-01-01T00:00:00+00:00",
+        "content_type": "text/plain",
+        "sha256": hashlib_sha256(b"orphan content\n"),
+        "bytes": 15,
+        "authority": "unofficial",
+        "transcript": "transcripts/youtube-orphan.txt",
+    })
+    manifest.write_text(manifest.read_text() + extra + "\n")
+    r = _run_in(tmp_vault, "--check")
+    # warning, not error: lint still passes
+    assert r.returncode == 0
+    assert "TRANSCRIPT_ORPHAN" in r.stderr
+
+
+def test_nav_sections_blocks(tmp_vault):
+    # Replace index.md with one that drops the "Summaries" section.
+    (tmp_vault / "wiki" / "index.md").write_text(
+        "# Empty\n\n## Concepts\n- nothing\n"
+    )
+    r = _run_in(tmp_vault, "--check")
+    assert r.returncode == 1
+    assert "NAV_SECTION" in r.stderr
+
+
+def test_json_output_is_well_formed():
+    r = _run("--json")
+    assert r.returncode == 0
+    findings = json.loads(r.stdout)
+    assert isinstance(findings, list)
+    for f in findings:
+        assert set(f.keys()) == {"level", "path", "code", "message"}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+import hashlib
+import os
+
+
+def hashlib_sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()

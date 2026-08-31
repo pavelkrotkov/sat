@@ -1,0 +1,202 @@
+{
+  "nav_sections": [
+    "Concepts",
+    "Raw sources",
+    "Summaries",
+    "Templates & reviews"
+  ],
+  "pages": [
+    {
+      "description": "Integrated high-score workflow for simplifying, predicting, proving, and diagnosing SAT Reading answers.",
+      "path": "kb/wiki/concepts/sat-hard-reading-strategy-stack.md",
+      "question_fingerprint": "",
+      "sources": [
+        "raw/transcripts/youtube-2t_5SltNgGc.txt",
+        "raw/transcripts/youtube-7NIdVmnqOBY.txt",
+        "raw/transcripts/youtube-HlkBuNW-VHE.txt",
+        "raw/transcripts/youtube-L_ZBWTXu1zg.txt",
+        "raw/transcripts/youtube-f5TJdtQ3ZMg.txt",
+        "raw/transcripts/youtube-nttLoAmYFks.txt"
+      ],
+      "tags": [
+        "evidence",
+        "inference",
+        "pacing-strategy",
+        "passage-strategy",
+        "word-in-context"
+      ],
+      "title": "SAT Hard-Question Strategy Stack",
+      "type": "concept",
+      "wikilinks": [
+        "summaries/penguin-reading-hacks",
+        "summaries/penguin-unfamiliar-words",
+        "summaries/settele-confusing-passages",
+        "summaries/settele-dumb-summaries",
+        "summaries/settele-strong-words",
+        "summaries/settele-trap-answers"
+      ]
+    },
+    {
+      "description": "Apply an Analyze-Predict-Eliminate loop across the main SAT Reading question types.",
+      "path": "kb/wiki/summaries/penguin-reading-hacks.md",
+      "question_fingerprint": "",
+      "sources": [
+        "raw/transcripts/youtube-f5TJdtQ3ZMg.txt"
+      ],
+      "tags": [
+        "evidence",
+        "inference",
+        "pacing-strategy",
+        "passage-strategy"
+      ],
+      "title": "Penguin Test Prep — SAT Reading Hacks",
+      "type": "summary",
+      "wikilinks": [
+        "concepts/sat-hard-reading-strategy-stack",
+        "summaries/settele-dumb-summaries"
+      ]
+    },
+    {
+      "description": "Solve unfamiliar vocabulary choices by predicting sentence meaning from context.",
+      "path": "kb/wiki/summaries/penguin-unfamiliar-words.md",
+      "question_fingerprint": "",
+      "sources": [
+        "raw/transcripts/youtube-7NIdVmnqOBY.txt"
+      ],
+      "tags": [
+        "inference",
+        "passage-strategy",
+        "word-in-context"
+      ],
+      "title": "Penguin Test Prep — Unfamiliar Words on the SAT",
+      "type": "summary",
+      "wikilinks": [
+        "concepts/sat-hard-reading-strategy-stack",
+        "summaries/penguin-reading-hacks"
+      ]
+    },
+    {
+      "description": "Replace rereading of confusing passages with targeted relationship mapping.",
+      "path": "kb/wiki/summaries/settele-confusing-passages.md",
+      "question_fingerprint": "",
+      "sources": [
+        "raw/transcripts/youtube-L_ZBWTXu1zg.txt"
+      ],
+      "tags": [
+        "evidence",
+        "inference",
+        "passage-strategy"
+      ],
+      "title": "Settele Tutoring — Can’t Understand Reading Passages",
+      "type": "summary",
+      "wikilinks": [
+        "concepts/sat-hard-reading-strategy-stack",
+        "summaries/settele-dumb-summaries"
+      ]
+    },
+    {
+      "description": "Compress dense passages and choices into their essential logical skeleton.",
+      "path": "kb/wiki/summaries/settele-dumb-summaries.md",
+      "question_fingerprint": "",
+      "sources": [
+        "raw/transcripts/youtube-HlkBuNW-VHE.txt"
+      ],
+      "tags": [
+        "evidence",
+        "inference",
+        "passage-strategy"
+      ],
+      "title": "Settele Tutoring — Dumb Summaries",
+      "type": "summary",
+      "wikilinks": [
+        "concepts/sat-hard-reading-strategy-stack",
+        "summaries/settele-strong-words"
+      ]
+    },
+    {
+      "description": "Detect answer-choice wording that makes a claim stronger than the evidence supports.",
+      "path": "kb/wiki/summaries/settele-strong-words.md",
+      "question_fingerprint": "",
+      "sources": [
+        "raw/transcripts/youtube-2t_5SltNgGc.txt"
+      ],
+      "tags": [
+        "evidence",
+        "inference",
+        "passage-strategy"
+      ],
+      "title": "Settele Tutoring — Strong Words",
+      "type": "summary",
+      "wikilinks": [
+        "concepts/sat-hard-reading-strategy-stack",
+        "summaries/settele-dumb-summaries",
+        "summaries/settele-trap-answers"
+      ]
+    },
+    {
+      "description": "Classify plausible SAT wrong answers by their precise logical mismatch.",
+      "path": "kb/wiki/summaries/settele-trap-answers.md",
+      "question_fingerprint": "",
+      "sources": [
+        "raw/transcripts/youtube-nttLoAmYFks.txt"
+      ],
+      "tags": [
+        "evidence",
+        "inference",
+        "passage-strategy"
+      ],
+      "title": "Settele Tutoring — Trap Answers",
+      "type": "summary",
+      "wikilinks": [
+        "concepts/sat-hard-reading-strategy-stack",
+        "summaries/settele-strong-words"
+      ]
+    }
+  ],
+  "schema_version": 1,
+  "sources": [
+    {
+      "source_id": "s-sat-13",
+      "tags": [],
+      "title": "Settele Tutoring — Dumb Summaries",
+      "transcript": "transcripts/youtube-HlkBuNW-VHE.txt",
+      "url": "https://www.youtube.com/watch?v=HlkBuNW-VHE"
+    },
+    {
+      "source_id": "s-sat-14",
+      "tags": [],
+      "title": "Settele Tutoring — Strong Words",
+      "transcript": "transcripts/youtube-2t_5SltNgGc.txt",
+      "url": "https://www.youtube.com/watch?v=2t_5SltNgGc"
+    },
+    {
+      "source_id": "s-sat-15",
+      "tags": [],
+      "title": "Settele Tutoring — Trap Answers",
+      "transcript": "transcripts/youtube-nttLoAmYFks.txt",
+      "url": "https://www.youtube.com/watch?v=nttLoAmYFks"
+    },
+    {
+      "source_id": "s-sat-16",
+      "tags": [],
+      "title": "Settele Tutoring — Can’t Understand Reading Passages",
+      "transcript": "transcripts/youtube-L_ZBWTXu1zg.txt",
+      "url": "https://www.youtube.com/watch?v=L_ZBWTXu1zg"
+    },
+    {
+      "source_id": "s-sat-17",
+      "tags": [],
+      "title": "Penguin Test Prep — SAT Reading Hacks",
+      "transcript": "transcripts/youtube-f5TJdtQ3ZMg.txt",
+      "url": "https://www.youtube.com/watch?v=f5TJdtQ3ZMg"
+    },
+    {
+      "source_id": "s-sat-18",
+      "tags": [],
+      "title": "Penguin Test Prep — Unfamiliar Words on the SAT",
+      "transcript": "transcripts/youtube-7NIdVmnqOBY.txt",
+      "url": "https://www.youtube.com/watch?v=7NIdVmnqOBY"
+    }
+  ],
+  "vault": "kb/wiki"
+}

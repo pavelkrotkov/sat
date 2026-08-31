@@ -30,7 +30,6 @@ SITE_SRC="$BUILD/site-src"
 BUILDER="${SAT_WIKI_BUILDER:-/home/pavel/research-fabric/tools/wiki/build_wiki.py}"
 MKDOCS="${SAT_WIKI_MKDOCS:-mkdocs}"
 DEPLOY="${SAT_WIKI_DEPLOY:-}"                 # optional publish target
-
 SITE_NAME="${SAT_WIKI_SITE_NAME:-SAT Prep KB}"
 SITE_DESC="${SAT_WIKI_SITE_DESC:-Evidence-backed SAT Reading and Writing strategy knowledge base}"
 
@@ -40,6 +39,18 @@ die() { echo "error: $*" >&2; exit 1; }
 [[ -f "$BUILDER" ]] || die "shared builder not found at '$BUILDER' (set SAT_WIKI_BUILDER)"
 command -v "$MKDOCS" >/dev/null 2>&1 || die "mkdocs not found on PATH (set SAT_WIKI_MKDOCS)"
 [[ -d "$VAULT" ]] || die "vault not found at '$VAULT'"
+
+# --- validate the KB before building ---------------------------------------
+# scripts/check_kb.py is the deterministic validator from issue #39. It
+# checks required frontmatter, manifest provenance, wikilinks, transcript
+# citations, nav sections, and the retrieval index. A failure here blocks
+# the build so a broken KB cannot reach the rendered site. The index is
+# regenerated as a side effect (see kb/README.md for the version policy).
+LINT="$REPO/scripts/check_kb.py"
+[[ -f "$LINT" ]] || die "KB lint script not found at '$LINT' (expected scripts/check_kb.py)"
+if ! python3 "$LINT"; then
+    die "KB lint failed; fix the findings above and re-run"
+fi
 
 # Constrain STAGE so a misconfigured $BUILD cannot redirect rm -rf elsewhere.
 case "$STAGE" in
