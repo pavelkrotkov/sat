@@ -124,12 +124,34 @@ optional infrastructure, not a requirement for the trainer or local reading.
 ## Verification
 
 ```bash
-./kb/rebuild.sh                                  # builds; fails loudly on missing prereqs
+./kb/rebuild.sh                                  # builds; fails loudly on missing prereqs OR KB lint failure
 git status                                       # no kb/build, kb/.openkb, or kb/wiki/reports changes
 uv run pytest -q                                 # trainer behaviour unchanged
+scripts/check_kb.py                              # KB lint: frontmatter, manifest, wikilinks, index
 ```
 
 Additive checks before merging changes: every `sources` entry must resolve to a
 committed transcript, every `[[wikilink]]` must resolve, and
 `kb/raw/source-manifest.jsonl` must keep all six source URLs, retrieval
-timestamps, and checksums.
+timestamps, and checksums. CI runs `scripts/check_kb.py` on every PR; a
+broken link, missing source, invalid required frontmatter, duplicate review
+reference, or build failure blocks the PR with the same actionable message.
+
+## Retrieval index (`kb/.kb-index.json`)
+
+The lint script emits a deterministic JSON index of every authored page and
+raw source, used by the KB-aware error-explanation pipeline (issue #36) for
+retrieval instead of re-walking the vault at every call. The index is
+**deliberately versioned** (not gitignored) for two reasons:
+
+1. Diffability: a PR that changes vault metadata is a real change, and the
+   reviewer should see the index move in lockstep.
+2. LLM pipeline stability: issue #36 reads the committed index instead of
+   re-running the lint on every call. A versioned index means a stale read
+   is at least a known-stale read.
+
+`scripts/check_kb.py` always regenerates `kb/.kb-index.json` and the build
+rejects a missing or stale index. If the lint pass produces a different
+index than the committed one, the lint output still says "wrote …" — to
+fail the build on a stale committed index, run `scripts/check_kb.py --check`
+(in CI) rather than the default mode.

@@ -21,7 +21,14 @@
 # truth. See kb/README.md for deploy and verification commands.
 set -euo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# SAT_KB_ROOT re-roots the script for tests and unusual layouts (e.g. a
+# hermetic CI run that copies kb/ to a tempdir). The script's default
+# behaviour is to derive REPO from its own location.
+if [[ -n "${SAT_KB_ROOT:-}" ]]; then
+    REPO="$(cd "$SAT_KB_ROOT" && pwd)"
+else
+    REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fi
 VAULT="$REPO/kb/wiki"
 BUILD="$REPO/kb/build"                        # gitignored: staging vault + site
 STAGE="$BUILD/stage"                          # clean vault copy (no runtime junk)
@@ -30,7 +37,6 @@ SITE_SRC="$BUILD/site-src"
 BUILDER="${SAT_WIKI_BUILDER:-/home/pavel/research-fabric/tools/wiki/build_wiki.py}"
 MKDOCS="${SAT_WIKI_MKDOCS:-mkdocs}"
 DEPLOY="${SAT_WIKI_DEPLOY:-}"                 # optional publish target
-
 SITE_NAME="${SAT_WIKI_SITE_NAME:-SAT Prep KB}"
 SITE_DESC="${SAT_WIKI_SITE_DESC:-Evidence-backed SAT Reading and Writing strategy knowledge base}"
 
@@ -40,6 +46,28 @@ die() { echo "error: $*" >&2; exit 1; }
 [[ -f "$BUILDER" ]] || die "shared builder not found at '$BUILDER' (set SAT_WIKI_BUILDER)"
 command -v "$MKDOCS" >/dev/null 2>&1 || die "mkdocs not found on PATH (set SAT_WIKI_MKDOCS)"
 [[ -d "$VAULT" ]] || die "vault not found at '$VAULT'"
+
+# Reject any symlink in the vault BEFORE running the lint or staging. A
+# symlink whose target is outside the vault (e.g. /home/pavel/.ssh/id_rsa)
+# would otherwise be expanded by `cp -R` into the staged site and published.
+# This is a hard pre-flight gate; even a "harmless" symlink to a real file
+# inside the vault is rejected because the vault is content, not a graph
+# of links.
+while IFS= read -r -d '' link; do
+    die "refusing to stage vault: symlink at ${link#"$VAULT"/}"
+done < <(find "$VAULT" -type l -print0)
+
+# --- validate the KB before building ---------------------------------------
+# scripts/check_kb.py is the deterministic validator from issue #39. It
+# checks required frontmatter, manifest provenance, wikilinks, transcript
+# citations, nav sections, and the retrieval index. A failure here blocks
+# the build so a broken KB cannot reach the rendered site. The index is
+# regenerated as a side effect (see kb/README.md for the version policy).
+LINT="$REPO/scripts/check_kb.py"
+[[ -f "$LINT" ]] || die "KB lint script not found at '$LINT' (expected scripts/check_kb.py)"
+if ! python3 "$LINT"; then
+    die "KB lint failed; fix the findings above and re-run"
+fi
 
 # Constrain STAGE so a misconfigured $BUILD cannot redirect rm -rf elsewhere.
 case "$STAGE" in
@@ -54,7 +82,7 @@ esac
 # kb/.openkb/) must never reach the site.
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
-cp -RL "$VAULT"/. "$STAGE"/
+cp -R "$VAULT"/. "$STAGE"/
 # Drop excluded subtrees so they don't reach the site even if a future commit
 # slips one in. reports/ contains generated lint reports; .openkb/ is runtime.
 find "$STAGE" -type d \( -name reports -o -name '.openkb' \) -prune -exec rm -rf {} +
