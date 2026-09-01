@@ -192,7 +192,12 @@ def sanitize_table(html: str, id_prefix: str = "eqb") -> str | None:
             # unwrap harmless formatting tags (keep their text); drop
             # anything else not represented (img, unknown blocks)
             if tag.name in _TABLE_UNWRAP_TAGS:
-                tag.unwrap()
+                # round-4 finding: <br> must become a space, not nothing, so
+                # <td>1<br>2</td> stays "1 2" instead of collapsing to "12".
+                if tag.name == "br":
+                    tag.replace_with(" ")
+                else:
+                    tag.unwrap()
             else:
                 # img with alt text: keep the alt, drop the tag. Everything
                 # else unknown (and any URL/script carrier) is removed.
@@ -276,10 +281,11 @@ def _extract_visuals(
     index = start_index
     tseq = table_seq
 
-    def _payload(match: re.Match) -> tuple[str, bytes, str] | None:
-        """(kind, content, suffix) for one match, or None to skip (keep text)."""
+    def _payload(match: re.Match) -> list[tuple[str, bytes, str]]:
+        """(kind, content, suffix) records for one match (may be several)."""
         nonlocal tseq
         block = match.group(0)
+        records: list[tuple[str, bytes, str]] = []
         data = match.group(1)  # set only by the bare data-URI <img> branch
         if data is None:
             # Round-3 (finding 7): a <figure class="table"> containing an
@@ -288,19 +294,27 @@ def _extract_visuals(
             # with NO table but an SVG/photo is a figure.
             table = _TABLE_RE.search(block)
             if table:
-                sanitized = sanitize_table(table.group(0), id_prefix=f"eqb-t{tseq}")
+                sanitized = sanitize_table(table.group(0), id_prefix=f"eqb-{ext_id}-t{tseq}")
                 if sanitized is not None:
                     tseq += 1
-                    return "table", sanitized.encode("utf-8"), "html"
+                    return [("table", sanitized.encode("utf-8"), "html")]
                 # sanitize failed (e.g. no cells): fall through to svg/img
             svg = _SVG_RE.search(block)
             if svg:
-                return "image", svg.group(0).encode("utf-8"), "svg"
-            inner = _IMG_DATA_RE.search(block)  # <figure><img data:...></figure>
-            if inner:
-                data = inner.group(2)
-            else:
-                return None  # <figure> with no savable asset: keep its text
+                return [("image", svg.group(0).encode("utf-8"), "svg")]
+            # Round-4 (finding 5): a <figure> may hold MORE than one data-URI
+            # <img>; search() would save only the first. Iterate every one in
+            # document order.
+            for inner in _IMG_DATA_RE.finditer(block):  # <figure><img...></figure>
+                one = _payload_img_data(inner.group(2))
+                if one is not None:
+                    records.append(one)
+            return records
+        one = _payload_img_data(data)
+        return [one] if one is not None else []
+
+    def _payload_img_data(data: str) -> tuple[str, bytes, str] | None:
+        """Decode one data-URI <img> payload, or None to skip (keep text)."""
         if "," not in data:  # malformed data URI: skip, keep as text
             return None
         # Long payloads commonly serialize with newlines every ~76 chars;
@@ -321,8 +335,7 @@ def _extract_visuals(
 
     def _repl(match: re.Match) -> str:
         nonlocal index
-        got = _payload(match)
-        if got is not None:
+        for got in _payload(match):
             kind, content, suffix = got
             if kind == "table":
                 visuals.append({"kind": "table", "html": content.decode("utf-8")})
@@ -404,7 +417,10 @@ def _normalize(detail: dict, meta: dict, image_dir: Path | None = None) -> dict 
         start_index=nxt,
         table_seq=stem_tseq,
     )
-    visuals = stem_visuals + stim_visuals
+    # Round-4 finding: the page renders the passage/stimulus, then the stem,
+    # so stimulus visuals precede stem visuals in the display list — the
+    # reverse would pair a stem reference with the wrong picture.
+    visuals = stim_visuals + stem_visuals
     images = [v["file"] for v in visuals if v.get("kind") == "image"]
     return {
         "passage": _clean_html(stim_html),

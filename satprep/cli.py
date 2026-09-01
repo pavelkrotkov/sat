@@ -21,7 +21,12 @@ from bs4 import BeautifulSoup
 
 from . import config
 from .analytics import full_dashboard
-from .corpus.archive import ARCHIVE_VERSION, export_corpus, restore_corpus
+from .corpus.archive import (
+    ARCHIVE_VERSION,
+    LEGACY_ARCHIVE_VERSIONS,
+    export_corpus,
+    restore_corpus,
+)
 from .corpus.ingest import ingest_bluebook, ingest_qbank
 from .corpus.qbank_fetch import backfill_visuals, fetch_qbank
 from .corpus.tagger import run_full_tagging
@@ -108,11 +113,19 @@ def cmd_restore(args) -> None:
     # Resolved and checked before db_context, which would otherwise create an
     # empty database on the way to reporting a missing archive - and that
     # empty database then satisfies cmd_export's guard.
-    archive = (
-        pathlib.Path(args.file)
-        if args.file
-        else config.REPO_ROOT / "exports" / f"corpus-v{ARCHIVE_VERSION}.jsonl"
-    )
+    explicit = pathlib.Path(args.file) if args.file else None
+    if explicit is not None:
+        archive = explicit
+    else:
+        archive = config.REPO_ROOT / "exports" / f"corpus-v{ARCHIVE_VERSION}.jsonl"
+        # Round-3 (finding 2) + round-4: the bumped default is v2, but an
+        # upgraded host has only the pre-visuals v1 file. Fall back to it for
+        # the DEFAULT path only — an explicit --file is never silently
+        # redirected to a different snapshot.
+        if not archive.exists():
+            legacy = config.REPO_ROOT / "exports" / f"corpus-v{min(LEGACY_ARCHIVE_VERSIONS)}.jsonl"
+            if legacy.exists():
+                archive = legacy
     if not archive.exists():
         raise SystemExit(f"No archive at {archive}")
     with db_context() as conn:
