@@ -59,8 +59,7 @@ def audit_bluebook(conn) -> dict:
     ).fetchall()
     report["occurrences_total"] = len(occ_rows)
     occ_by_uid = {r["bluebook_uid"]: r for r in occ_rows}
-    report["occurrences_with_question"] = sum(
-        1 for r in occ_rows if r["question_id"] is not None)
+    report["occurrences_with_question"] = sum(1 for r in occ_rows if r["question_id"] is not None)
 
     # ---- every source occurrence must be present ----------------------
     sources = _source_records()
@@ -68,31 +67,39 @@ def audit_bluebook(conn) -> dict:
     seen_placements: dict[tuple, list[str]] = {}
     for rec in sources:
         uid = rec.get("uid") or ""
-        placement = (rec.get("test_name") or "", rec.get("module") or "",
-                     str(rec.get("question_number") or ""))
+        placement = (
+            rec.get("test_name") or "",
+            rec.get("module") or "",
+            str(rec.get("question_number") or ""),
+        )
         seen_placements.setdefault(placement, []).append(uid)
         if uid not in occ_by_uid:
-            report["missing_occurrences"].append({
-                "bluebook_uid": uid,
-                "placement": list(placement),
-            })
+            report["missing_occurrences"].append(
+                {
+                    "bluebook_uid": uid,
+                    "placement": list(placement),
+                }
+            )
 
     # ---- duplicate placements (intentional double-scrapes) ------------
     for placement, uids in sorted(seen_placements.items()):
         if len(uids) > 1:
-            report["duplicate_placements"].append({
-                "test": placement[0], "module": placement[1],
-                "question": placement[2], "count": len(uids),
-                "uids": uids,
-            })
+            report["duplicate_placements"].append(
+                {
+                    "test": placement[0],
+                    "module": placement[1],
+                    "question": placement[2],
+                    "count": len(uids),
+                    "uids": uids,
+                }
+            )
 
     # ---- per-question field gaps --------------------------------------
     qids = {r["question_id"] for r in occ_rows if r["question_id"] is not None}
     for qid in sorted(qids):
         row = conn.execute("SELECT * FROM questions WHERE id=?", (qid,)).fetchone()
         if row is None:
-            report["question_gaps"].append({"question_id": qid,
-                                            "missing": ["question row"]})
+            report["question_gaps"].append({"question_id": qid, "missing": ["question row"]})
             continue
         q = Question.from_row(row)
         missing = []
@@ -118,10 +125,10 @@ def audit_bluebook(conn) -> dict:
     if report["missing_occurrences"]:
         report["failures"].append(
             f"{len(report['missing_occurrences'])} source occurrence(s) have no "
-            "bluebook_occurrences row")
+            "bluebook_occurrences row"
+        )
     if report["question_gaps"]:
-        report["failures"].append(
-            f"{len(report['question_gaps'])} question(s) have missing fields")
+        report["failures"].append(f"{len(report['question_gaps'])} question(s) have missing fields")
     if report["occurrences_with_question"] < report["occurrences_total"]:
         report["failures"].append("some occurrences resolve to no question")
     return report

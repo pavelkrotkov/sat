@@ -244,8 +244,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 UNIQUE(bluebook_uid)
             )"""
         )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_bb_occ_fp ON bluebook_occurrences(fingerprint)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_bb_occ_placement ON bluebook_occurrences(test_name, module, question_number)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_bb_occ_fp ON bluebook_occurrences(fingerprint)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_bb_occ_placement ON bluebook_occurrences(test_name, module, question_number)"
+        )
 
 
 @contextmanager

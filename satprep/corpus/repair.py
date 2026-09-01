@@ -48,7 +48,7 @@ from pathlib import Path
 from .. import config
 from ..clock import utc_now
 from . import fingerprint as fpmod
-from .parse_snapshot import parse_snapshot, ParsedQuestion
+from .parse_snapshot import ParsedQuestion, parse_snapshot
 from .tagger import diagnose_attempt
 
 LOG = logging.getLogger("satprep.repair")
@@ -68,7 +68,11 @@ def _letter(value: str | None) -> str:
 def _status_of(rec: dict) -> tuple[str, str]:
     """Return (student_letter, correct_letter) preferring snapshot data."""
     my = rec.get("my_answer") or ""
-    student = _letter(my.split(";")[0]) if ";" in my else (_letter(my) if "correct" not in my.lower() else "")
+    student = (
+        _letter(my.split(";")[0])
+        if ";" in my
+        else (_letter(my) if "correct" not in my.lower() else "")
+    )
     correct = _letter(rec.get("correct_answer"))
     return student, correct
 
@@ -197,7 +201,7 @@ def repair_bluebook(conn) -> dict:
             try:
                 parsed = parse_snapshot(snap_file.read_text(errors="ignore"))
                 stats["snapshots_parsed"] += 1
-            except Exception:  # noqa: BLE001 - one bad snapshot must not abort the sweep
+            except Exception:
                 LOG.warning("parse failed for %s", uid)
                 parsed = None
         else:
@@ -291,15 +295,24 @@ def _insert_question(conn, rec: dict, merged: dict, fp: str, uid: str, snap_path
             pool, seen_benchmark, is_new_bank, import_batch, imported_at, provenance_json)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,'',?,?)""",
         (
-            fp, "bluebook_test", rec.get("test_name") or "", str(rec.get("question_number") or ""),
+            fp,
+            "bluebook_test",
+            rec.get("test_name") or "",
+            str(rec.get("question_number") or ""),
             rec.get("module") or "",
-            merged["passage"], merged["stem"], json.dumps(merged["choices"]), merged["correct_letter"],
+            merged["passage"],
+            merged["stem"],
+            json.dumps(merged["choices"]),
+            merged["correct_letter"],
             merged["rationale"],
             json.dumps(merged["images"]),
-            rec.get("domain") or "", rec.get("skill") or "",
+            rec.get("domain") or "",
+            rec.get("skill") or "",
             "metadata" if rec.get("skill") else "unknown",
             "",  # difficulty unknown for bluebook history
-            "historical", utc_now(), json.dumps(provenance),
+            "historical",
+            utc_now(),
+            json.dumps(provenance),
         ),
     )
     conn.execute("INSERT INTO question_state (question_id) VALUES (?)", (cur.lastrowid,))
@@ -354,7 +367,10 @@ def _ensure_historical_attempt(conn, qid: int, rec: dict, merged: dict) -> None:
                                      confidence, time_ms, mode, attempted_at)
                VALUES (?,?,?,?,0,0,'historical',?)""",
             (
-                session_key, qid, merged["student_letter"], correctness,
+                session_key,
+                qid,
+                merged["student_letter"],
+                correctness,
                 rec.get("scraped_at") or utc_now(),
             ),
         )
@@ -364,8 +380,9 @@ def _ensure_historical_attempt(conn, qid: int, rec: dict, merged: dict) -> None:
             (qid,),
         )
         if correctness == 0 and merged["student_letter"] and merged["choices"]:
-            diagnose_attempt(conn, qid, merged["choices"], merged["correct_letter"],
-                             merged["student_letter"])
+            diagnose_attempt(
+                conn, qid, merged["choices"], merged["correct_letter"], merged["student_letter"]
+            )
 
 
 def _historical_correctness(rec: dict) -> int | None:
