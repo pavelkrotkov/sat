@@ -7,12 +7,13 @@ traces).
 
 import json
 
-from fastapi import Depends, FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import config
+from . import reports as reports_mod
 from .analytics import corpus_summary, full_dashboard, recent_session_scores, session_comparison
 from .config import REASONING_TAGS
 from .corpus.questions import load as load_question
@@ -434,3 +435,37 @@ def admin_tags_save(
     compute_weakness(conn)
     _commit(conn)
     return RedirectResponse(f"/admin/tags/{qid}", status_code=303)
+
+
+# ----------------------------------------------------------------- reports ----
+# The periodic wrong-answer review is a student-facing section. For now it is a
+# static link to the newest generated report (the analysis runs offline); the
+# self-serve flow (student triggers a fresh review covering mistakes since the
+# last report) is tracked as future work in the GitHub issues.
+
+
+@app.get("/reports", response_class=HTMLResponse)
+def reports_index(request: Request):
+    return templates.TemplateResponse(
+        request,
+        "reports.html",
+        {
+            "report": reports_mod.report_meta(),
+            "nav": "reports",
+        },
+    )
+
+
+@app.get("/reports/{name}")
+def reports_serve(request: Request, name: str):
+    # Serve only generated report HTML from the reports directory (guards
+    # directory traversal and exposure of anything else under data/).
+    base = reports_mod.REPORTS_DIR.resolve()
+    if "/" in name or "\\" in name or not name.endswith(".html"):
+        raise HTTPException(status_code=404)
+    path = (base / name).resolve()
+    # Exact parent match: a symlink or mount point under data/ that resolves
+    # outside the reports dir fails the equality check (startswith would pass it).
+    if path.parent != base or not path.is_file():
+        raise HTTPException(status_code=404)
+    return FileResponse(path)
