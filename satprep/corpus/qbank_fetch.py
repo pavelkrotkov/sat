@@ -163,6 +163,13 @@ def sanitize_table(html: str) -> str | None:
                 else:
                     del tag["headers"]
                 continue
+            if tag.name == "th" and attr == "scope":
+                # enumerated attribute: anything outside the four spec
+                # values is junk (round-1 finding: arbitrary values were
+                # passing the alphanumeric check)
+                if value.lower() not in {"row", "col", "rowgroup", "colgroup"}:
+                    del tag["scope"]
+                continue
             if attr not in _TABLE_ALLOWED_ATTRS.get(tag.name, set()):
                 del tag[attr]
                 continue
@@ -216,10 +223,13 @@ def _extract_visuals(ext_id: str, html: str, image_dir: Path,
             else:
                 # College Board renders data tables as <figure class="table">
                 # wrapping a real <table>; the <figure> regex branch consumes
-                # the whole wrapper, so the table must be found INSIDE it
-                # (a bare <table> is matched by its own regex alternative and
-                # arrives here through the same search).
-                table = _TABLE_RE.search(html)
+                # the whole wrapper (up to the wrapper's </figure>, which
+                # closes AFTER the table's </table>), so the table is found
+                # INSIDE this match's region — `block`, not the whole html —
+                # preserving document order when several tables exist.
+                # A bare <table> (its own regex alternative) is found the
+                # same way.
+                table = _TABLE_RE.search(block)
                 if table:
                     sanitized = sanitize_table(table.group(0))
                     if sanitized is None:
@@ -629,11 +639,10 @@ def backfill_visuals(conn, hint: bool = True, limit: int = 0,
         # from disk (acceptance criterion: no silently dropped visuals).
         if not visuals:
             stats["still_empty"] += 1
+            stats["unsupported_markup"] += 1
         for v in visuals:
             if v.get("kind") == "image" and not (config.IMAGES_DIR / v["file"]).exists():
                 stats["missing_files"] += 1
-        if not images:
-            stats["unsupported_markup"] += 1
         if audit_only:
             if i % 50 == 0:
                 print(f"  audit {i}/{len(rows)} … {stats}")

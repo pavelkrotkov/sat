@@ -121,6 +121,19 @@ def test_sanitize_table_keeps_only_table_structure():
             assert attr in {"scope", "colspan", "rowspan", "headers", "id", "span"}
 
 
+def test_sanitize_table_scope_is_an_enum():
+    """Round-1 finding: arbitrary scope values passed the alphanumeric
+    check. scope must be one of the four spec values or it is dropped."""
+    out = sanitize_table(
+        "<table><thead><tr><th scope='col'>H</th><th scope='xss' onmouseover='a'>J</th></tr></thead>"
+        "<tbody><tr><td>v</td><td>w</td></tr></tbody></table>"
+    )
+    assert out is not None
+    assert 'scope="col"' in out or "scope='col'" in out
+    # the bogus scope and event attr are gone
+    assert "xss" not in out and "onmouseover" not in out
+
+
 def test_sanitize_table_rewrites_header_ids():
     """headers="..." references must resolve to ids INSIDE the persisted
     table; a source id that would collide or escape is rewritten."""
@@ -167,6 +180,30 @@ def test_normalize_mixed_visuals_in_document_order(fig_dirs):
     assert [f.rsplit(".", 1)[1] for f in files] == ["svg", "png"]
     assert row["images"] == files
     assert all((fig_dirs / f).exists() for f in files)
+
+
+def test_multiple_tables_preserve_document_order(fig_dirs):
+    """Two figure-wrapped tables in one field must each be extracted, in
+    source order. Regression for the round-1 finding where the table search
+    used the whole document instead of the current match, duplicating the
+    FIRST table for every figure."""
+    t2 = (
+        "<figure class='table'><table><caption>Table B. Rainfall</caption>"
+        "<thead><tr><th id='b1' scope='col'>Month</th></tr></thead>"
+        "<tbody><tr><td headers='b1'>March</td></tr></tbody></table></figure>"
+    )
+    detail = {
+        **DETAIL,
+        "stimulus": f"<p>Two tables.</p>{TABLE_HTML}{t2}",
+        "externalid": "ext-2tables",
+    }
+    row = _normalize(detail, dict(META, external_id="ext-2tables"))
+
+    tables = [v for v in row["visuals"] if v.get("kind") == "table"]
+    assert len(tables) == 2
+    assert "Table 1. Yield by season" in tables[0]["html"]
+    assert "Table B. Rainfall" in tables[1]["html"]
+    assert "March" in tables[1]["html"] and "Spring" in tables[0]["html"]
 
 
 def test_insert_persists_visuals_json(db, fig_dirs):
