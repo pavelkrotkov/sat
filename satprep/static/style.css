@@ -460,12 +460,38 @@ form button[type=submit] { margin-top: var(--s-3); }
 .pos { color: var(--accent); } .neg { color: var(--bad); }
 tr.ok td:nth-child(6) { color: var(--accent); }
 
-.figures img {
+.figures img,
+.visuals img {
   max-width: 100%;
   height: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-s);
   margin: var(--s-2) 0;
+  background: var(--raised);
+}
+
+/* Persisted data tables (issue #46) render as real <table>; keep them
+   inside the page and legible on a 46rem / mobile viewport. */
+.visuals table {
+  max-width: 100%;
+  border-collapse: collapse;
+  margin: var(--s-2) 0;
+  overflow-x: auto;
+  font-size: 0.95rem;
+}
+.visuals caption {
+  font-weight: 600;
+  text-align: left;
+  margin-bottom: var(--s-2);
+}
+.visuals th,
+.visuals td {
+  border: 1px solid var(--line);
+  padding: var(--s-2) var(--s-3);
+  text-align: left;
+  vertical-align: top;
+}
+.visuals thead th {
   background: var(--raised);
 }
 

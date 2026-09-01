@@ -53,9 +53,19 @@ from .training.weakness import compute_weakness
 
 
 def _cell_text(table_html: str) -> list[str]:
-    """Visible cell texts of a sanitized table, for the terminal drill."""
+    """Visible cell texts of a sanitized table, for the terminal drill.
+
+    Round-2 finding: the [:8] truncation silently hid cells past the eighth,
+    so a big table could ask about a value never shown. Render every cell
+    row-by-row so a wide table stays complete (the row→cell shape is what
+    makes column relationships recoverable)."""
     soup = BeautifulSoup(table_html, "html.parser")
-    return [c.get_text(strip=True) for c in soup.find_all(["th", "td"])][:8]
+    out = []
+    for tag in soup.find_all("tr"):
+        cells = [c.get_text(" ", strip=True) for c in tag.find_all(["th", "td"])]
+        if cells:
+            out.append(" | ".join(cells))
+    return out
 
 
 def _auto_export(conn) -> None:
@@ -189,6 +199,22 @@ def cmd_benchmark(args) -> None:
 def cmd_fetch_qbank(args) -> None:
     domains = [d.strip().upper() for d in args.domains.split(",") if d.strip()] or None
     with db_context() as conn:
+        # Round-2 (finding 3): --audit-visuals must be PURELY read-only. The
+        # normal path also runs a fresh fetch (which can INSERT new bank
+        # questions), tagging, and an archive rewrite; an audit that promised
+        # "no rows are written" but still mutated the DB and archive would be
+        # a lie. In audit mode we skip every mutating stage and only run the
+        # read-only sweep that reports what WOULD change (issue #46 audit).
+        if args.audit_visuals:
+            bstats = backfill_visuals(
+                conn,
+                hint=not args.full_sweep,
+                limit=args.limit,
+                sleep_s=args.sleep,
+                audit_only=True,
+            )
+            print("audit:", json.dumps(bstats))
+            return
         # NB: args.limit caps BOTH the fetch and the backfill. A `--limit 10`
         # fetch therefore caps the subsequent backfill at the same 10 rows
         # (in addition to any hint filter). Pass --full-sweep + a larger
@@ -200,16 +226,14 @@ def cmd_fetch_qbank(args) -> None:
         # Repair rows whose visuals were dropped before extraction existed:
         # re-fetch the stored imageless/visual-less bank questions and attach
         # them. Default is the stem-hint sweep; --full-sweep checks every one.
-        # --audit-visuals runs the same sweep read-only and reports what WOULD
-        # change (issue #46 acceptance audit) instead of writing.
         bstats = backfill_visuals(
             conn,
             hint=not args.full_sweep,
             limit=args.limit,
             sleep_s=args.sleep,
-            audit_only=args.audit_visuals,
+            audit_only=False,
         )
-        print(("audit" if args.audit_visuals else "backfill") + ":", json.dumps(bstats))
+        print("backfill:", json.dumps(bstats))
         # tag BEFORE snapshotting so the archive never stores tag-less rows
         print(f"tagging: {run_full_tagging(conn)}")
         _auto_export(conn)

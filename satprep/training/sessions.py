@@ -139,6 +139,7 @@ def answer_feedback(conn, session_id: str, question_id: int) -> dict | None:
         "why_key_works": _why_key_works(question.rationale),
         "official_skill": question.official_skill,
         "visuals": [dict(v) for v in question.visuals],
+        "images": list(question.images),
         "streak": current_streak(conn, session_id),
     }
 
@@ -224,6 +225,7 @@ def review_payload(conn, session_id: str) -> list[dict]:
                 "rationale_is_official": bool(question.rationale),
                 "passage_skeleton": skeleton,
                 "visuals": [dict(v) for v in question.visuals],
+                "images": list(question.images),
                 "lesson": lesson,
                 "lesson_source": "derived rule" if lesson else "",
             }

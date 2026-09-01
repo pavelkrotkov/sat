@@ -14,7 +14,7 @@ from . import config
 #: Bumped whenever SCHEMA or _migrate changes. Stamped into PRAGMA
 #: user_version so a database swapped in underneath a running process is
 #: detected by more than the presence of one table.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 #: Join target for tag reads. Defined in SCHEMA; the semantics live in
 #: satprep.corpus.tags, which re-exports this name.

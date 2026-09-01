@@ -460,7 +460,7 @@ def test_extract_visuals_table_text_fallback_preserves_fingerprint(db, fig_dirs)
     from satprep.corpus.fingerprint import fingerprint
 
     html = f"<p>The table shows yields.</p>{TABLE_HTML}"
-    remaining, visuals, _ = _extract_visuals("ext-fp", html, fig_dirs)
+    remaining, visuals, _, _ = _extract_visuals("ext-fp", html, fig_dirs)
     assert len(visuals) == 1
     # all table markup gone; flattened text present
     assert "<table" not in remaining and "<caption" not in remaining

@@ -14,7 +14,13 @@ from ..clock import utc_now
 from .questions import Question
 from .tags import all_tags_with_origin, restore_tag
 
-ARCHIVE_VERSION = 1
+ARCHIVE_VERSION = 2
+#: Old snapshots (pre-visuals) carry _v: 1 and have no `visuals` field.
+#: Restores must accept them: their questions simply read with empty
+#: visuals, and a later visual backfill can attach records. The version
+#: guard exists to refuse FUTURE/incompatible snapshots, not historical
+#: ones that are a strict subset.
+LEGACY_ARCHIVE_VERSIONS = {1}
 
 
 def _question_line(conn, question: Question) -> dict:
@@ -105,7 +111,7 @@ def _restore_lines(conn, archive_path: Path, stats: dict) -> None:
     )
     if head:
         v = json.loads(head).get("_v")
-        if v != ARCHIVE_VERSION:
+        if v not in (ARCHIVE_VERSION, *LEGACY_ARCHIVE_VERSIONS):
             raise ValueError(
                 f"Archive schema v{v} unsupported by this build (expects v{ARCHIVE_VERSION}); "
                 f"upgrade satprep or use the matching release."

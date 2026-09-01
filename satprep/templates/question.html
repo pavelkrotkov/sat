@@ -13,7 +13,7 @@
   <input type="hidden" name="question_id" value="{{ q.id }}">
   <input type="hidden" name="elapsed_ms" id="elapsed_ms" value="0">
   {% if q.passage %}<div class="passage">{% for p in q.passage.split('\n') %}<p>{{ p }}</p>{% endfor %}</div>{% endif %}
-  {{ vx.visuals_block(q.visuals) }}
+  {{ vx.visuals_block(q.visuals, q.images) }}
   <p class="stem">{{ q.stem }}</p>
   <div class="choices">
   {% for c in q.choices %}

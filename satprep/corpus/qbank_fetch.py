@@ -77,10 +77,31 @@ _TABLE_ALLOWED_TAGS = {
     "colgroup",
 }
 _TABLE_ALLOWED_ATTRS = {
-    "th": {"scope"},
+    "th": {"scope", "colspan", "rowspan"},
     "td": {"colspan", "rowspan", "headers"},
     "col": {"span"},
 }
+#: Inline formatting the EQB wraps around cell values. These are unwrapped —
+#: the tag is removed but its text is kept, so a cell written as
+#: <td><p>3.1</p></td> or <td><strong>3.1</strong></td> still yields "3.1".
+#: Only content-bearing dangerous tags (script/style) are decomposed whole.
+_TABLE_UNWRAP_TAGS = {
+    "p",
+    "div",
+    "span",
+    "em",
+    "strong",
+    "b",
+    "i",
+    "u",
+    "sub",
+    "sup",
+    "br",
+    "ul",
+    "ol",
+    "li",
+}
+_TABLE_DANGEROUS_TAGS = {"script", "style"}
 
 
 def _post(url: str, payload: dict, retries: int = 3) -> object:
@@ -110,16 +131,24 @@ def _clean_html(html: str | None) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+#: Global write guard for figure files. Cleared by the audit-only backfill so
+#: `_normalize` can report what WOULD be written without recreating files on
+#: disk (round-2 finding: the missing-file audit was always zero because
+#: normalization re-saved every figure before the existence check ran).
+_WRITE_FIGURES = True
+
+
 def _save_figure(ext_id: str, index: int, content: bytes, suffix: str, image_dir: Path) -> str:
     """Write one figure into image_dir; returns the bare filename stored in
     images_json (the template renders /figures/<name> via the basename filter)."""
-    image_dir.mkdir(parents=True, exist_ok=True)
     name = f"eqb-{ext_id}-figure-{index}.{suffix}"
-    (image_dir / name).write_bytes(content)
+    if _WRITE_FIGURES:
+        image_dir.mkdir(parents=True, exist_ok=True)
+        (image_dir / name).write_bytes(content)
     return name
 
 
-def sanitize_table(html: str) -> str | None:
+def sanitize_table(html: str, id_prefix: str = "eqb") -> str | None:
     """Reduce arbitrary `<table>` markup to a safe, accessible subset.
 
     Issue #46: the EQB embeds data tables as real `<figure class="table">`
@@ -128,6 +157,12 @@ def sanitize_table(html: str) -> str | None:
     point: only table-structure tags survive, every attribute except the
     layout ones below is dropped, and no script/style/event/URL content
     (or nested markup) can ride along.
+
+    Cell values wrapped in harmless inline markup (`<p>`, `<strong>`,
+    `<sup>`…) are unwrapped so their text survives; only dangerous
+    content-bearing tags (`script`/`style`) are decomposed whole.
+    `id_prefix` distinguishes the header ids of one table from another so
+    several tables in a question never collide on duplicate DOM ids.
 
     Returns a normalized `<table>…</table>` string with cells' visible text,
     or None when the markup contains no table at all.
@@ -146,10 +181,29 @@ def sanitize_table(html: str) -> str | None:
     for i, th in enumerate(table.find_all("th"), 1):
         src = th.get("id")
         if isinstance(src, str) and src:
-            id_map[src] = f"eqb-th-{i}"
-    for tag in table.find_all(True):
-        if tag.name not in _TABLE_ALLOWED_TAGS:
+            id_map[src] = f"{id_prefix}-th-{i}"
+    # Process the root <table> element together with its descendants: the
+    # root carries its own attributes that the descendant pass would miss.
+    for tag in [table, *table.find_all(True)]:
+        if tag.name in _TABLE_DANGEROUS_TAGS:
             tag.decompose()
+            continue
+        if tag.name not in _TABLE_ALLOWED_TAGS:
+            # unwrap harmless formatting tags (keep their text); drop
+            # anything else not represented (img, unknown blocks)
+            if tag.name in _TABLE_UNWRAP_TAGS:
+                tag.unwrap()
+            else:
+                # img with alt text: keep the alt, drop the tag. Everything
+                # else unknown (and any URL/script carrier) is removed.
+                if tag.name == "img":
+                    alt = tag.get("alt")
+                    if isinstance(alt, str) and alt:
+                        tag.replace_with(alt)
+                    else:
+                        tag.decompose()
+                else:
+                    tag.decompose()
             continue
         for attr in list(tag.attrs):
             raw = tag.get(attr)
@@ -193,11 +247,11 @@ def sanitize_table(html: str) -> str | None:
 
 
 def _extract_visuals(
-    ext_id: str, html: str, image_dir: Path, start_index: int = 1
-) -> tuple[str, list[dict], int]:
+    ext_id: str, html: str, image_dir: Path, start_index: int = 1, table_seq: int = 1
+) -> tuple[str, list[dict], int, int]:
     """Pull inline visuals (figures AND data tables) out of EQB HTML.
 
-    Returns (remaining_html, visual_records, next_index). One
+    Returns (remaining_html, visual_records, next_index, next_table_seq). One
     document-order pass over <figure> blocks, bare inline <svg>, data-URI
     <img> tags, and <table> blocks.
 
@@ -215,13 +269,16 @@ def _extract_visuals(
     keeps legacy fingerprints (computed from the fully stripped text) stable
     across re-imports. `start_index`/`next_index` let callers share one
     numbering across multiple HTML fields (stem + stimulus) so filenames stay
-    unique in document order.
+    unique in document order; `table_seq`/`next_table_seq` do the same so
+    header id prefixes stay unique across every table in one question.
     """
     visuals: list[dict] = []
     index = start_index
+    tseq = table_seq
 
     def _payload(match: re.Match) -> tuple[str, bytes, str] | None:
         """(kind, content, suffix) for one match, or None to skip (keep text)."""
+        nonlocal tseq
         block = match.group(0)
         data = match.group(1)  # set only by the bare data-URI <img> branch
         if data is None:
@@ -242,9 +299,10 @@ def _extract_visuals(
                 # same way.
                 table = _TABLE_RE.search(block)
                 if table:
-                    sanitized = sanitize_table(table.group(0))
+                    sanitized = sanitize_table(table.group(0), id_prefix=f"eqb-t{tseq}")
                     if sanitized is None:
                         return None
+                    tseq += 1
                     return "table", sanitized.encode("utf-8"), "html"
                 return None  # <figure> with no savable asset: keep its text
         if "," not in data:  # malformed data URI: skip, keep as text
@@ -280,7 +338,7 @@ def _extract_visuals(
         return _clean_html(match.group(0)) or " "
 
     remaining = _ANY_FIGURE_RE.sub(_repl, html)
-    return remaining, visuals, index
+    return remaining, visuals, index, tseq
 
 
 def list_questions(
@@ -339,10 +397,16 @@ def _normalize(detail: dict, meta: dict, image_dir: Path | None = None) -> dict 
     image_dir = image_dir if image_dir is not None else FIGURE_DIR
     ext_id = str(meta.get("external_id") or detail.get("externalid") or "")
     # One numbering across both fields so stem+stimulus visuals never
-    # collide on a filename, in document order within each field.
-    stem_html, stem_visuals, nxt = _extract_visuals(ext_id, detail.get("stem") or "", image_dir)
-    stim_html, stim_visuals, _ = _extract_visuals(
-        ext_id, detail.get("stimulus") or "", image_dir, start_index=nxt
+    # collide on a filename or header id, in document order within each field.
+    stem_html, stem_visuals, nxt, stem_tseq = _extract_visuals(
+        ext_id, detail.get("stem") or "", image_dir
+    )
+    stim_html, stim_visuals, _, _ = _extract_visuals(
+        ext_id,
+        detail.get("stimulus") or "",
+        image_dir,
+        start_index=nxt,
+        table_seq=stem_tseq,
     )
     visuals = stem_visuals + stim_visuals
     images = [v["file"] for v in visuals if v.get("kind") == "image"]
@@ -691,61 +755,88 @@ def backfill_visuals(
         "unsupported_markup": 0,
         "missing_files": 0,
     }
-    for i, r in enumerate(rows, 1):
-        stats["candidate"] += 1
-        try:
-            ext = (
-                json.loads(r["provenance_json"] or "{}").get("external_id")
-                or r["source_question_number"]
+    # Round-2 (finding 4): the missing-file audit inspects PERSISTED refs —
+    # including rows the sweep would not touch — BEFORE any extraction that
+    # re-saves figures. This is the only way a genuinely deleted file is
+    # reported rather than silently recreated by normalization.
+    for r in conn.execute(
+        "SELECT images_json, visuals_json FROM questions"
+        " WHERE source='college_board_question_bank' AND active=1"
+    ).fetchall():
+        for blob in (r["images_json"] or "[]", r["visuals_json"] or "[]"):
+            try:
+                refs = json.loads(blob) if blob else []
+            except (ValueError, TypeError):
+                continue
+            for ref in refs or []:
+                fname = ref if isinstance(ref, str) else (ref or {}).get("file", "")
+                if fname and not (config.IMAGES_DIR / fname).exists():
+                    stats["missing_files"] += 1
+    if audit_only:
+        # Round-2 (finding 3/4): audit must be purely read-only — do not
+        # write figures to disk while re-normalizing (the audit reports what
+        # WOULD be written, it does not write).
+        global _WRITE_FIGURES
+        _WRITE_FIGURES = False
+    try:
+        for i, r in enumerate(rows, 1):
+            stats["candidate"] += 1
+            try:
+                ext = (
+                    json.loads(r["provenance_json"] or "{}").get("external_id")
+                    or r["source_question_number"]
+                )
+            except json.JSONDecodeError:
+                ext = r["source_question_number"]
+            if not ext:
+                stats["failed"] += 1
+                continue
+            detail = fetch_question(str(ext))
+            if detail is None:
+                stats["failed"] += 1
+                continue
+            stats["fetched"] += 1
+            # Round-2 (finding 7): unsupported markup is counted only when the
+            # SOURCE actually carried a visual element that extraction failed
+            # to preserve — a plain text-only question is not "unsupported".
+            source = f"{detail.get('stem') or ''} {detail.get('stimulus') or ''}"
+            had_markup = bool(re.search(r"<(figure|table|svg|img)\b", source, re.I))
+            # Reuse the full normalization so figure numbering/ordering matches
+            # the normal ingest path (shared across stem and stimulus).
+            row = _normalize(detail, {"external_id": str(ext)})
+            visuals = row["visuals"] if row else []
+            images = [v["file"] for v in visuals if v.get("kind") == "image"]
+            if not visuals:
+                stats["still_empty"] += 1
+                if had_markup:
+                    stats["unsupported_markup"] += 1
+            if audit_only:
+                if i % 50 == 0:
+                    print(f"  audit {i}/{len(rows)} … {stats}")
+                time.sleep(sleep_s)
+                continue
+            if not visuals:
+                # Checkpoint even when this candidate gained nothing, so an
+                # interrupted run resumes where it left off (resumable sweep).
+                if i % 50 == 0:
+                    conn.commit()
+                    print(f"  backfill {i}/{len(rows)} … {stats}")
+                time.sleep(sleep_s)
+                continue
+            conn.execute(
+                "UPDATE questions SET images_json=?, visuals_json=? WHERE id=?",
+                (json.dumps(images), json.dumps(visuals), r["id"]),
             )
-        except json.JSONDecodeError:
-            ext = r["source_question_number"]
-        if not ext:
-            stats["failed"] += 1
-            continue
-        detail = fetch_question(str(ext))
-        if detail is None:
-            stats["failed"] += 1
-            continue
-        stats["fetched"] += 1
-        # Reuse the full normalization so figure numbering/ordering matches
-        # the normal ingest path (shared across stem and stimulus).
-        row = _normalize(detail, {"external_id": str(ext)})
-        visuals = row["visuals"] if row else []
-        images = [v["file"] for v in visuals if v.get("kind") == "image"]
-        # The audit reports visuals found in the live record but unsupported
-        # by the extractor, plus any persisted image whose file is missing
-        # from disk (acceptance criterion: no silently dropped visuals).
-        if not visuals:
-            stats["still_empty"] += 1
-            stats["unsupported_markup"] += 1
-        for v in visuals:
-            if v.get("kind") == "image" and not (config.IMAGES_DIR / v["file"]).exists():
-                stats["missing_files"] += 1
-        if audit_only:
-            if i % 50 == 0:
-                print(f"  audit {i}/{len(rows)} … {stats}")
-            time.sleep(sleep_s)
-            continue
-        if not visuals:
-            # Checkpoint even when this candidate gained nothing, so an
-            # interrupted run resumes where it left off (resumable sweep).
+            stats["now_visuals"] += 1
+            stats["now_images"] += len(images)
+            stats["now_tables"] += sum(1 for v in visuals if v.get("kind") == "table")
             if i % 50 == 0:
                 conn.commit()
                 print(f"  backfill {i}/{len(rows)} … {stats}")
             time.sleep(sleep_s)
-            continue
-        conn.execute(
-            "UPDATE questions SET images_json=?, visuals_json=? WHERE id=?",
-            (json.dumps(images), json.dumps(visuals), r["id"]),
-        )
-        stats["now_visuals"] += 1
-        stats["now_images"] += len(images)
-        stats["now_tables"] += sum(1 for v in visuals if v.get("kind") == "table")
-        if i % 50 == 0:
-            conn.commit()
-            print(f"  backfill {i}/{len(rows)} … {stats}")
-        time.sleep(sleep_s)
+    finally:
+        if audit_only:
+            _WRITE_FIGURES = True
     conn.commit()
     return stats
 
