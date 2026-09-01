@@ -85,6 +85,46 @@ def submit_answer(conn, session_id: str, question_id: int, chosen_letter: str,
     return {"correct": bool(correct), "key": q.correct_letter, "error_tags": error_tags}
 
 
+def _question_context(question) -> dict:
+    """Canonical question content for the shared `_question_context.html`
+    partial (issue #47).
+
+    The review and feedback surfaces used to receive only the chosen/key
+    snippets, so the student was asked to interpret the explanation without
+    the question that motivated it. This is the one view model both surfaces
+    (and the drill) render: the full passage, stem, every choice with its
+    selected/key state, the stored visuals, and the source placement for
+    debugging. Never reveals the correct choice before submission:
+    `key_letter` is only set by the caller once the student has committed
+    an answer.
+    """
+    choices = []
+    for c in question.choices:
+        choices.append({
+            "letter": c.letter,
+            "text": c.text,
+            "is_correct": c.is_correct,
+        })
+    source_parts = [p for p in (
+        question.source_test,
+        question.source_question_number,
+        question.module,
+    ) if p]
+    return {
+        "question_id": question.id,
+        "passage": question.passage,
+        "stem": question.stem,
+        "choices": choices,
+        "images": list(question.images),
+        "correct_letter": question.correct_letter,
+        "source_test": question.source_test,
+        "source_question_number": question.source_question_number,
+        "module": question.module,
+        "official_skill": question.official_skill,
+        "source_label": " · ".join(source_parts) if source_parts else "",
+    }
+
+
 def answer_feedback(conn, session_id: str, question_id: int) -> dict | None:
     """What to show in the moment right after one answer.
 
@@ -108,7 +148,11 @@ def answer_feedback(conn, session_id: str, question_id: int) -> dict | None:
     question = load(conn, question_id)
     if question is None:
         return None
+    ctx = _question_context(question)
+    ctx["chosen_letter"] = row["chosen_letter"]
+    ctx["key_letter"] = question.correct_letter
     return {
+        "question": ctx,
         "question_id": question_id,
         "correct": bool(row["correct"]),
         "confidence": row["confidence"],
@@ -185,7 +229,11 @@ def review_payload(conn, session_id: str) -> list[dict]:
         trap_tags = errs_by_q.get(r["question_id"], []) or _infer_trap(tags)
         lesson = next((config.TAG_LESSONS[t] for t in trap_tags if t in config.TAG_LESSONS), "")
         skeleton = _logical_skeleton(question.passage)
+        ctx = _question_context(question)
+        ctx["chosen_letter"] = r["chosen_letter"]
+        ctx["key_letter"] = question.correct_letter
         out.append({
+            "question": ctx,
             "question_id": r["question_id"],
             "chosen_letter": r["chosen_letter"],
             "chosen_text": question.text_of(r["chosen_letter"]),

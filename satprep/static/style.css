@@ -275,6 +275,57 @@ button[disabled], .btn[disabled] { opacity: .5; cursor: not-allowed; }
 }
 .choice:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+/* ------------------------------------------------- question context (issue #47) -- */
+
+/* The shared partial wraps the whole original question so the review and
+   feedback surfaces can show what the student actually answered. */
+.question-context {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--s-4);
+  margin: var(--s-4) 0;
+  background: var(--raised);
+}
+
+/* Read-only choice rows (review/feedback): same row shape as the drill's
+   interactive choices, minus the pointer cursor and press animation. */
+.choice-list {
+  display: grid;
+  gap: var(--s-2);
+  margin: var(--s-4) 0 var(--s-5);
+  padding: 0;
+  list-style: none;
+}
+.choice-list .choice {
+  cursor: default;
+  align-items: flex-start;
+}
+.choice-list .choice:hover { border-color: var(--line); }
+.choice-list .choice:active { transform: none; }
+.choice-list .choice.chosen {
+  border-color: var(--bad);
+  background: var(--bad-wash);
+  box-shadow: inset 0 0 0 1px var(--bad);
+}
+.choice-list .choice.key {
+  border-color: var(--accent);
+  background: var(--accent-wash);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.choice-list .state {
+  margin-left: auto;
+  flex: none;
+  font-size: var(--step--1);
+  font-weight: 600;
+  color: var(--bad);
+}
+.choice-list .state.key { color: var(--accent); }
+/* A correct answer makes the chosen row the key too: the "your answer"
+   label must read as success, not as the wrong-answer red. (PR #51
+   round-1 Codex P2 — verified on the correct immediate-feedback page.) */
+.choice-list .choice.chosen.key .state:not(.key) { color: var(--accent); }
+.source-line { margin-top: var(--s-2); }
+
 /* Confidence: three large buttons, each of which submits. Two taps total,
  * no scroll to a separate submit. */
 .confidence {
