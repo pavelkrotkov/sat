@@ -957,3 +957,106 @@ def test_choice_radios_keep_their_intrinsic_size(live):
     choice_rule = css.split(".choice input {", 1)[1].split("}", 1)[0]
     assert "width: auto" in choice_rule
     assert "min-height: 0" in choice_rule
+
+
+# -------------------------------------------------- full rationale renders -- #
+# Issue #48: the official rationale is complete in the database but was
+# clipped to 1200 chars mid-sentence in the review template. The full text
+# must render, paragraph boundaries preserved.
+
+
+def _review_html_with_rationale(live, rationale: str) -> str:
+    """Answer one question wrong, set its rationale, render /review/{sid}."""
+    with db_context(live) as conn:
+        sess = create_session(conn, "error_clinic", count=1, seed="rat")
+        sid = sess["plan"]["session_id"]
+        qid = sess["questions"][0]["id"]
+        conn.execute("UPDATE questions SET rationale=? WHERE id=?", (rationale, qid))
+        conn.commit()
+        submit_answer(conn, sid, qid, "A", 3, 100)  # key is B -> wrong -> review
+        complete_session(conn, sid)
+        response = server_mod.review(None, sid, conn=conn)
+    return response.body.decode()
+
+
+def test_review_renders_a_rationale_longer_than_1200_chars_in_full(live):
+    """Regression for issue #48: the final sentence of a >1200-char
+    rationale must appear in the review response."""
+    tail = "This final sentence must appear in the review page."
+    rationale = (
+        "The best answer is B because the passage supports it. "
+        "The passage states this directly in the second paragraph. " * 30
+    ) + tail
+    assert len(rationale) > 1200
+
+    html = _review_html_with_rationale(live, rationale)
+
+    assert tail in html
+    # the whole text is present, not just a head slice
+    assert rationale[:-1] in html or rationale in html
+
+
+def test_review_renders_multi_paragraph_rationale_with_boundaries(live):
+    para1 = "Choice A is wrong because it overstates the evidence."
+    para2 = "Choice B is correct because it matches the passage exactly."
+    rationale = f"{para1}\n\n{para2}"
+
+    html = _review_html_with_rationale(live, rationale)
+
+    # each paragraph is its own block inside the official-rationale details
+    assert f"<p>{para1}</p>" in html
+    assert f"<p>{para2}</p>" in html
+    # neither paragraph is character-sliced
+    assert "[:1200]" not in html
+
+
+def test_review_compact_summary_is_a_labeled_excerpt(live):
+    """The 'why the key works' preview is a sentence-boundary excerpt of the
+    official text, and is labeled as such so the distinction stays clear."""
+    para1 = (
+        "Choice B is the best answer because it most logically completes the discussion. " * 40
+    )  # > 600 chars in one paragraph
+    para2 = "The other choices are incorrect for unrelated reasons."
+    html = _review_html_with_rationale(live, f"{para1}\n\n{para2}")
+
+    assert "(excerpt)" in html
+    assert "why the key works" in html
+
+
+def test_review_renders_null_rationale_without_crashing(live):
+    """PR-50 round-6 finding: a NULL rationale (column is nullable) must
+    not 500 the review page."""
+    with db_context(live) as conn:
+        sess = create_session(conn, "error_clinic", count=1, seed="rat-null")
+        sid = sess["plan"]["session_id"]
+        qid = sess["questions"][0]["id"]
+        conn.execute("UPDATE questions SET rationale=NULL WHERE id=?", (qid,))
+        conn.commit()
+        submit_answer(conn, sid, qid, "A", 3, 100)  # wrong -> in review
+        complete_session(conn, sid)
+        response = server_mod.review(None, sid, conn=conn)
+
+    assert response.status_code == 200
+    assert "no official rationale stored" in response.body.decode()
+
+
+def test_feedback_excerpt_never_cuts_mid_sentence(live):
+    """The per-question feedback surface shows the same compact preview; it
+    must end at a sentence boundary, never mid-sentence."""
+    s1 = "Choice B is best because it stays within the passage's scope."
+    s2 = "The remaining choices introduce unsupported claims."
+    # many sentences: the 600-char cap must stop at a boundary, not mid-sentence
+    rationale = f"{s1} {s2} " * 40 + s2
+    with db_context(live) as conn:
+        sess = create_session(conn, "error_clinic", count=1, seed="fb-rat")
+        sid = sess["plan"]["session_id"]
+        qid = sess["questions"][0]["id"]
+        conn.execute("UPDATE questions SET rationale=? WHERE id=?", (rationale, qid))
+        conn.commit()
+        submit_answer(conn, sid, qid, "A", 3, 900)
+        fb = answer_feedback(conn, sid, qid)
+
+    assert fb is not None
+    assert fb["why_key_works"].endswith(("scope.", "claims."))
+    # the last sentence is NOT partially included (no mid-sentence cut)
+    assert len(fb["why_key_works"]) <= 600

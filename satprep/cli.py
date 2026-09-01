@@ -42,7 +42,13 @@ from .reviews import (
     upsert_draft,
 )
 from .training.remediation import build_remediation_plan, explain_selection
-from .training.sessions import complete_session, create_session, review_payload, submit_answer
+from .training.sessions import (
+    complete_session,
+    create_session,
+    excerpt_sentences,
+    review_payload,
+    submit_answer,
+)
 from .training.weakness import compute_weakness
 
 
@@ -170,7 +176,7 @@ def _run_drill(conn, mode: str, args) -> None:
         if r["passage_skeleton"]:
             print("skeleton:", " | ".join(s[:120] for s in r["passage_skeleton"]))
         if r["rationale_official"]:
-            print("rationale:", r["rationale_official"][:500])
+            print("rationale:", excerpt_sentences(r["rationale_official"], max_chars=500))
 
 
 def cmd_benchmark(args) -> None:
