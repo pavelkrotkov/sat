@@ -464,6 +464,8 @@ def reports_serve(request: Request, name: str):
     if "/" in name or "\\" in name or not name.endswith(".html"):
         raise HTTPException(status_code=404)
     path = (base / name).resolve()
-    if not str(path).startswith(str(base)) or not path.is_file():
+    # Exact parent match: a symlink or mount point under data/ that resolves
+    # outside the reports dir fails the equality check (startswith would pass it).
+    if path.parent != base or not path.is_file():
         raise HTTPException(status_code=404)
     return FileResponse(path)

@@ -34,7 +34,7 @@ def report_meta() -> dict | None:
     if p is None:
         return None
     try:
-        generated = datetime.datetime.fromtimestamp(p.stat().st_mtime)
+        generated = datetime.datetime.fromtimestamp(p.stat().st_mtime, tz=datetime.UTC)
     except OSError:
         generated = None
     return {
