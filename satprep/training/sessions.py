@@ -289,13 +289,18 @@ def _why_key_works(rationale: str) -> str:
     return excerpt_sentences(rationale.split("\n")[0], max_chars=600)
 
 
-def _paragraphs(text: str) -> list[str]:
+def _paragraphs(text: str | None) -> list[str]:
     """Non-empty paragraphs of a stored text, preserving author boundaries.
 
     Rationales are stored newline-separated. Rendering each paragraph as
     its own block keeps the official text intact — no character-level
-    truncation anywhere on the review page.
+    truncation anywhere on the review page. A NULL/empty rationale
+    (the column is nullable) yields no paragraphs (PR-50 round-6
+    finding): the template's ``{% if r.rationale_official %}`` guard
+    handles the absence.
     """
+    if not text:
+        return []
     return [p.strip() for p in text.split("\n") if p.strip()]
 
 

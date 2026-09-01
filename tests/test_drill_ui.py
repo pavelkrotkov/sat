@@ -928,6 +928,23 @@ def test_review_compact_summary_is_a_labeled_excerpt(live):
     assert "why the key works" in html
 
 
+def test_review_renders_null_rationale_without_crashing(live):
+    """PR-50 round-6 finding: a NULL rationale (column is nullable) must
+    not 500 the review page."""
+    with db_context(live) as conn:
+        sess = create_session(conn, "error_clinic", count=1, seed="rat-null")
+        sid = sess["plan"]["session_id"]
+        qid = sess["questions"][0]["id"]
+        conn.execute("UPDATE questions SET rationale=NULL WHERE id=?", (qid,))
+        conn.commit()
+        submit_answer(conn, sid, qid, "A", 3, 100)   # wrong -> in review
+        complete_session(conn, sid)
+        response = server_mod.review(None, sid, conn=conn)
+
+    assert response.status_code == 200
+    assert "no official rationale stored" in response.body.decode()
+
+
 def test_feedback_excerpt_never_cuts_mid_sentence(live):
     """The per-question feedback surface shows the same compact preview; it
     must end at a sentence boundary, never mid-sentence."""

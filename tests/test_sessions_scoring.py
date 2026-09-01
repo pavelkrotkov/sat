@@ -318,3 +318,11 @@ def test_paragraphs_preserve_boundaries_and_drop_blanks():
     assert _paragraphs("first\n\nsecond\nthird") == ["first", "second", "third"]
     assert _paragraphs("") == []
     assert _paragraphs("single block, no newlines") == ["single block, no newlines"]
+
+
+def test_paragraphs_null_rationale_does_not_crash():
+    """PR-50 round-6 finding: the rationale column is nullable (TEXT
+    DEFAULT ''), so a NULL must not raise AttributeError in the review
+    payload."""
+    from satprep.training.sessions import _paragraphs
+    assert _paragraphs(None) == []
