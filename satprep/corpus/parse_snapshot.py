@@ -60,17 +60,17 @@ _CORRECT_IS_RE = re.compile(r"correct answer is\s+([A-H])", re.IGNORECASE)
 def _find_choice_list(soup) -> Tag | None:
     """Locate the answer <ol> in either Bluebook modal layout (issue #49).
 
-    Correct reviews keep the choices inside .question-panel
-    (<ol class="answer-options">); incorrect reviews put them in
-    .answer-panel. The question-panel list is preferred when both exist
-    because it is the fuller representation on correct reviews.
+    Correct reviews keep the choices inside .question-panel in a dedicated
+    <ol class="answer-options">; incorrect reviews put a plain <ol> in
+    .answer-panel. Only the specifically identified question-panel answer
+    list is preferred, since a generic question-panel <ol> often belongs to
+    an ordered list inside the passage, not to the choices (T7).
     """
     question_panel = soup.select_one(".question-panel")
     if question_panel is not None:
-        for selector in ("ol.answer-options", "ol"):
-            found = question_panel.select_one(selector)
-            if found is not None:
-                return found
+        found = question_panel.select_one("ol.answer-options")
+        if found is not None:
+            return found
     answer_panel = soup.select_one(".answer-panel")
     if answer_panel is not None:
         found = answer_panel.find("ol")
