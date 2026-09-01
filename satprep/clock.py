@@ -6,12 +6,12 @@ ingest anything. A clock is a leaf: it belongs to no side of the corpus /
 training seam, so both may depend on it and neither owns it.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def utc_now() -> str:
     """Second-resolution UTC timestamp, the format stored in every table."""
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
 def now_local() -> datetime:

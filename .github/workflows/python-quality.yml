@@ -1,0 +1,53 @@
+name: Python Quality
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Run Ruff check
+        run: uv run ruff check --output-format=github .
+
+      - name: Run Ruff format check
+        run: uv run ruff format --check .
+
+      - name: Run ty type check
+        # Exclusions live in [tool.ty.src] in pyproject.toml so this
+        # command and the pre-commit hook stay identical. The search
+        # paths must stay on the CLI: ty drops the implicit project
+        # root once extra paths are configured, and setting "." via
+        # the config file does not restore it.
+        run: >
+          uv run ty check --output-format=github
+          --extra-search-path "."
+          .

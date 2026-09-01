@@ -64,14 +64,15 @@ def pools_for(mode: str) -> tuple[str, ...]:
 
 # ---------------------------------------------------------- bucket rules --
 
+
 def _is_old_wrong_due(cand: Candidate, weakness: dict, now: datetime) -> bool:
     """Previously missed, and either never drilled in-app or due at `now`."""
     return (
         cand.question.pool == "historical"
         and cand.hist_correct == 0
-        and (cand.state is None
-             or row_field(cand.state, "due_at") is None
-             or is_due(cand.state, now))
+        and (
+            cand.state is None or row_field(cand.state, "due_at") is None or is_due(cand.state, now)
+        )
     )
 
 
@@ -81,14 +82,18 @@ def _is_old_correct_transfer(cand: Candidate, weakness: dict, now: datetime) -> 
     return (
         cand.question.pool == "historical"
         and cand.hist_correct == 1
-        and any(t in weak_tags and weak_tags[t]["score"] >= config.TRANSFER_TAG_THRESHOLD
-                for t in cand.tags)
+        and any(
+            t in weak_tags and weak_tags[t]["score"] >= config.TRANSFER_TAG_THRESHOLD
+            for t in cand.tags
+        )
     )
 
 
 def _is_fresh_weak(cand: Candidate, weakness: dict, now: datetime) -> bool:
     """Unseen, and classified well enough to be aimed at something."""
-    return cand.question.pool == "fresh_training" and bool(cand.tags or cand.question.official_skill)
+    return cand.question.pool == "fresh_training" and bool(
+        cand.tags or cand.question.official_skill
+    )
 
 
 def _is_any(cand: Candidate, weakness: dict, now: datetime) -> bool:
@@ -108,6 +113,7 @@ def eligible_for(bucket: str, cand: Candidate, weakness: dict, now: datetime) ->
 
 
 # ------------------------------------------------------------ allocation --
+
 
 def allocate(shares: dict[str, int | None], target: int) -> dict[str, int]:
     """Split `target` across buckets in proportion to `shares`.
@@ -136,15 +142,22 @@ def fallback_allowed(mode: str, cand: Candidate) -> bool:
     whole point is questions the student has never got wrong, so the fill
     must not quietly undo that when a bucket runs dry.
     """
-    if mode == "transfer_drill" and cand.question.pool == "historical" and cand.hist_correct == 0:
-        return False
-    return True
+    return not (
+        mode == "transfer_drill" and cand.question.pool == "historical" and cand.hist_correct == 0
+    )
 
 
 # -------------------------------------------------------------- compose ---
 
-def compose(mode: str, scored: list[Candidate], target: int, weakness: dict,
-            rng: random.Random, now: datetime) -> dict[int, str]:
+
+def compose(
+    mode: str,
+    scored: list[Candidate],
+    target: int,
+    weakness: dict,
+    rng: random.Random,
+    now: datetime,
+) -> dict[int, str]:
     """Assign question ids to buckets. Returns {question_id: bucket}.
 
     `now` is the moment the whole drill is composed against; it is required
@@ -154,8 +167,11 @@ def compose(mode: str, scored: list[Candidate], target: int, weakness: dict,
     chosen: dict[int, str] = {}
 
     for bucket, want in allocate(MODE_COMPOSITIONS[mode], target).items():
-        pool = [c for c in scored
-                if c.question.id not in chosen and eligible_for(bucket, c, weakness, now)]
+        pool = [
+            c
+            for c in scored
+            if c.question.id not in chosen and eligible_for(bucket, c, weakness, now)
+        ]
         pool.sort(key=lambda c: -c.score)
         for cand in pool[:want]:
             chosen[cand.question.id] = bucket
@@ -163,8 +179,7 @@ def compose(mode: str, scored: list[Candidate], target: int, weakness: dict,
     # graceful fill when a bucket ran dry; each mode keeps its own guarantee
     remaining = target - len(chosen)
     if remaining > 0:
-        rest = [c for c in scored
-                if c.question.id not in chosen and fallback_allowed(mode, c)]
+        rest = [c for c in scored if c.question.id not in chosen and fallback_allowed(mode, c)]
         rest.sort(key=lambda c: -c.score)
         rng.shuffle(rest)  # jitter among candidates; slice AFTER shuffling
         for cand in rest[:remaining]:

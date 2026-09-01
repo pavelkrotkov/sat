@@ -9,9 +9,8 @@ from the file alone, without artifacts/ or network access.
 import json
 from pathlib import Path
 
-from ..clock import utc_now
-
 from .. import config
+from ..clock import utc_now
 from .questions import Question
 from .tags import all_tags_with_origin, restore_tag
 
@@ -56,18 +55,26 @@ def export_corpus(conn, out_path: Path | None = None) -> Path:
     the connection; `cli.cmd_export` still checks the file up front so it
     can point at `satprep restore` instead.
     """
-    out_path = Path(out_path) if out_path else config.REPO_ROOT / "exports" / f"corpus-v{ARCHIVE_VERSION}.jsonl"
+    out_path = (
+        Path(out_path)
+        if out_path
+        else config.REPO_ROOT / "exports" / f"corpus-v{ARCHIVE_VERSION}.jsonl"
+    )
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    if conn.execute("SELECT COUNT(*) FROM questions WHERE active=1").fetchone()[0] == 0 \
-            and out_path.exists() and out_path.stat().st_size > 0:
+    if (
+        conn.execute("SELECT COUNT(*) FROM questions WHERE active=1").fetchone()[0] == 0
+        and out_path.exists()
+        and out_path.stat().st_size > 0
+    ):
         raise RuntimeError(
             f"Live corpus is empty; refusing to replace non-empty archive {out_path}."
         )
     tmp = out_path.with_suffix(".jsonl.tmp")
     with tmp.open("w", encoding="utf-8") as fh:
         for row in conn.execute("SELECT * FROM questions WHERE active=1 ORDER BY id"):
-            fh.write(json.dumps(_question_line(conn, Question.from_row(row)),
-                                ensure_ascii=False) + "\n")
+            fh.write(
+                json.dumps(_question_line(conn, Question.from_row(row)), ensure_ascii=False) + "\n"
+            )
     tmp.replace(out_path)
     return out_path
 
@@ -80,7 +87,11 @@ def restore_corpus(conn, archive_path: Path | None = None) -> dict:
     aborts the whole restore; `db_context` rolls the caller's transaction
     back, so a half-applied archive is never left behind.
     """
-    archive_path = Path(archive_path) if archive_path else config.REPO_ROOT / "exports" / f"corpus-v{ARCHIVE_VERSION}.jsonl"
+    archive_path = (
+        Path(archive_path)
+        if archive_path
+        else config.REPO_ROOT / "exports" / f"corpus-v{ARCHIVE_VERSION}.jsonl"
+    )
     if not archive_path.exists():
         raise FileNotFoundError(f"No archive at {archive_path}")
     stats = {"lines": 0, "restored": 0, "duplicates": 0, "invalid": 0}
@@ -89,7 +100,9 @@ def restore_corpus(conn, archive_path: Path | None = None) -> dict:
 
 
 def _restore_lines(conn, archive_path: Path, stats: dict) -> None:
-    head = next((l for l in archive_path.read_text(encoding="utf-8").splitlines() if l.strip()), "")
+    head = next(
+        (line for line in archive_path.read_text(encoding="utf-8").splitlines() if line.strip()), ""
+    )
     if head:
         v = json.loads(head).get("_v")
         if v != ARCHIVE_VERSION:
@@ -120,17 +133,27 @@ def _restore_lines(conn, archive_path: Path, stats: dict) -> None:
                pool, seen_benchmark, is_new_bank, import_batch, imported_at, provenance_json)
               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)""",
             (
-                rec["fingerprint"], rec.get("source", ""), rec.get("source_test", ""),
-                str(rec.get("source_question_number", "")), rec.get("module", ""),
-                rec.get("passage", ""), rec.get("stem", ""),
-                json.dumps(rec.get("choices", [])), rec["correct_letter"],
-                rec.get("rationale", ""), json.dumps(rec.get("images", [])),
+                rec["fingerprint"],
+                rec.get("source", ""),
+                rec.get("source_test", ""),
+                str(rec.get("source_question_number", "")),
+                rec.get("module", ""),
+                rec.get("passage", ""),
+                rec.get("stem", ""),
+                json.dumps(rec.get("choices", [])),
+                rec["correct_letter"],
+                rec.get("rationale", ""),
+                json.dumps(rec.get("images", [])),
                 json.dumps(rec.get("visuals", [])),
-                rec.get("official_domain", ""), rec.get("official_skill", ""),
+                rec.get("official_domain", ""),
+                rec.get("official_skill", ""),
                 rec.get("skill_source") or ("archive" if rec.get("official_skill") else "unknown"),
-                rec.get("difficulty", ""), rec.get("pool", "historical"),
-                int(rec.get("is_new_bank", 0)), rec.get("import_batch", ""),
-                utc_now(), json.dumps(rec.get("provenance", {})),
+                rec.get("difficulty", ""),
+                rec.get("pool", "historical"),
+                int(rec.get("is_new_bank", 0)),
+                rec.get("import_batch", ""),
+                utc_now(),
+                json.dumps(rec.get("provenance", {})),
             ),
         )
         if cur.rowcount == 0:

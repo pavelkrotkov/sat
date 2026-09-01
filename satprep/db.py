@@ -142,7 +142,7 @@ _SCHEMA_APPLIED: set[str] = set()
 _SCHEMA_LOCK = threading.Lock()
 
 
-def connect(db_path: Path | None = None) -> sqlite3.Connection:
+def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
     """Open a connection. Prefer `db_context`, which also commits and closes."""
     path = Path(db_path) if db_path else config.DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -208,7 +208,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 
 @contextmanager
-def db_context(db_path: Path | None = None):
+def db_context(db_path: Path | str | None = None):
     """One connection, one transaction, for the span of one command.
 
     Every entry point - each CLI subcommand, each web request - opens exactly

@@ -14,8 +14,8 @@ and writes to student_error_tags.
 
 import re
 
-from ..config import SKILL_TO_DOMAIN
 from ..clock import utc_now
+from ..config import SKILL_TO_DOMAIN
 from .questions import iter_active
 from .tags import set_rule_tags
 
@@ -23,63 +23,90 @@ from .tags import set_rule_tags
 
 _SKILL_STEM_RULES: list[tuple[str, list[str]]] = [
     # (skill, regexes tested against the stem)
-    ("Cross-Text Connections", [
-        r"\btext\s*1\b.*\btext\s*2\b", r"\bboth\s+(passages|texts|authors)\b",
-        r"author of text (1|2)", r"how would the author of",
-        r"\bpassage\s*(1|2)\b.*\bpassage\s*(1|2)\b",
-    ]),
-    ("Command of Evidence", [
-        r"which (quotation|choice .*)? ?(?:from the text|finding|detail).*?(best )?(supports|support|provides)",
-        r"best supports the (claim|inference|hypothesis|argument)",
-        r"most relevant piece of evidence",
-        r"which (finding|result), if true",
-        r"would most directly (support|weaken|challenge)",
-        r"most effectively illustrates the claim",
-        r"quotation from .+ (illustrates|supports|provides)",
-    ]),
-    ("Inferences", [
-        r"what does the text most strongly suggest",
-        r"can most reasonably be inferred",
-        r"which choice (most )?(logically completes|can be inferred)",
-        r"the text suggests? (that|which)",
-        r"what can best be inferred",
-        r"it can most reasonably be inferred",
-    ]),
-    ("Central Ideas and Details", [
-        r"(main|central) (idea|theme|claim)",
-        r"best states the main",
-        r"text is primarily about",
-        r"^according to the text\b",
-        r"according to the text, (why|what|how|which)",
-    ]),
-    ("Text Structure and Purpose", [
-        r"(function|purpose) of the (underlined|noted|final|first|last)?\s*(sentence|portion|text)",
-        r"why does the author (mention|include|note|quote|provide)",
-        r"the author (includes|mentions).*(in order to|to)",
-        r"best describes the (text.s|author.s) (approach|structure|purpose)",
-    ]),
-    ("Words in Context", [
-        r"as used in the text, what does",
-        r"most nearly means?",
-        r"most logical and precise word or phrase",
-        r"which choice best (states|describes) the meaning of",
-    ]),
-    ("Rhetorical Synthesis", [
-        r"most effectively uses? .*(quotations|information|data)",
-        r"goal.*(would best|best accomplish)",
-        r"succinctly|concisely summariz",
-        r"relevant and sufficient",
-    ]),
-    ("Transitions", [
-        r"which choice completes the text with the most logical transition",
-        r"most logical and effective transition",
-    ]),
+    (
+        "Cross-Text Connections",
+        [
+            r"\btext\s*1\b.*\btext\s*2\b",
+            r"\bboth\s+(passages|texts|authors)\b",
+            r"author of text (1|2)",
+            r"how would the author of",
+            r"\bpassage\s*(1|2)\b.*\bpassage\s*(1|2)\b",
+        ],
+    ),
+    (
+        "Command of Evidence",
+        [
+            r"which (quotation|choice .*)? ?(?:from the text|finding|detail).*?(best )?(supports|support|provides)",
+            r"best supports the (claim|inference|hypothesis|argument)",
+            r"most relevant piece of evidence",
+            r"which (finding|result), if true",
+            r"would most directly (support|weaken|challenge)",
+            r"most effectively illustrates the claim",
+            r"quotation from .+ (illustrates|supports|provides)",
+        ],
+    ),
+    (
+        "Inferences",
+        [
+            r"what does the text most strongly suggest",
+            r"can most reasonably be inferred",
+            r"which choice (most )?(logically completes|can be inferred)",
+            r"the text suggests? (that|which)",
+            r"what can best be inferred",
+            r"it can most reasonably be inferred",
+        ],
+    ),
+    (
+        "Central Ideas and Details",
+        [
+            r"(main|central) (idea|theme|claim)",
+            r"best states the main",
+            r"text is primarily about",
+            r"^according to the text\b",
+            r"according to the text, (why|what|how|which)",
+        ],
+    ),
+    (
+        "Text Structure and Purpose",
+        [
+            r"(function|purpose) of the (underlined|noted|final|first|last)?\s*(sentence|portion|text)",
+            r"why does the author (mention|include|note|quote|provide)",
+            r"the author (includes|mentions).*(in order to|to)",
+            r"best describes the (text.s|author.s) (approach|structure|purpose)",
+        ],
+    ),
+    (
+        "Words in Context",
+        [
+            r"as used in the text, what does",
+            r"most nearly means?",
+            r"most logical and precise word or phrase",
+            r"which choice best (states|describes) the meaning of",
+        ],
+    ),
+    (
+        "Rhetorical Synthesis",
+        [
+            r"most effectively uses? .*(quotations|information|data)",
+            r"goal.*(would best|best accomplish)",
+            r"succinctly|concisely summariz",
+            r"relevant and sufficient",
+        ],
+    ),
+    (
+        "Transitions",
+        [
+            r"which choice completes the text with the most logical transition",
+            r"most logical and effective transition",
+        ],
+    ),
 ]
 
 _CONVENTIONS_RE = re.compile(r"conventions?\s+(of|for)\s+(standard\s+)?english", re.I)
 _BOUNDARY_SHAPE = re.compile(r"[,;:]|\s—|\s--")
 _FORM_SHAPE = re.compile(
-    r"\b(is|are|was|were|has|have|had|does|do|its|it's|their|they're|there|being|having|than)\b", re.I
+    r"\b(is|are|was|were|has|have|had|does|do|its|it's|their|they're|there|being|having|than)\b",
+    re.I,
 )
 
 
@@ -97,7 +124,9 @@ def _split_conventions(stem: str, passage: str, choices: list[str]) -> tuple[str
     return "", ""
 
 
-def derive_official_skill(stem: str, passage: str = "", choices: list[str] | None = None) -> tuple[str, str]:
+def derive_official_skill(
+    stem: str, passage: str = "", choices: list[str] | None = None
+) -> tuple[str, str]:
     """Return (skill, domain). Deterministic stem-pattern matching."""
     low = f"{stem}\n{passage[:400]}".lower()
     for skill, patterns in _SKILL_STEM_RULES:
@@ -119,41 +148,65 @@ def derive_official_skill(stem: str, passage: str = "", choices: list[str] | Non
 # ------------------------------------------------------------ reasoning ----
 
 _ABSOLUTES = re.compile(
-    r"\b(all|none|never|always|every|entirely|completely|impossible|proves?|definitely|undoubtedly|certainly)\b", re.I
+    r"\b(all|none|never|always|every|entirely|completely|impossible|proves?|definitely|undoubtedly|certainly)\b",
+    re.I,
 )
 _HEDGES = re.compile(
-    r"\b(may|might|could|possibly|perhaps|likely|unlikely|some|several|suggests?|appears?|tends?)\b", re.I
+    r"\b(may|might|could|possibly|perhaps|likely|unlikely|some|several|suggests?|appears?|tends?)\b",
+    re.I,
 )
 _CAUSAL = re.compile(
-    r"\b(caus(e|es|ed|ing)|because|due to|lead[s]? to|led to|results? in|resulted in|therefore|thus|consequently|drives?|produces?|responsible for)\b", re.I
+    r"\b(caus(e|es|ed|ing)|because|due to|lead[s]? to|led to|results? in|resulted in|therefore|thus|consequently|drives?|produces?|responsible for)\b",
+    re.I,
 )
 _CONTRAST = re.compile(
-    r"\b(however|but|yet|although|though|while|whereas|despite|nevertheless|nonetheless|instead|rather|in contrast|on the other hand|even so|still)\b", re.I
+    r"\b(however|but|yet|although|though|while|whereas|despite|nevertheless|nonetheless|instead|rather|in contrast|on the other hand|even so|still)\b",
+    re.I,
 )
 _COMPARATIVE = re.compile(
-    r"\b(more|less|fewer|greater|higher|lower|larger|smaller|(?:\w+)er)\b.{0,24}\bthan\b|\bcompared (to|with)\b|\bas .{1,20} as\b", re.I
+    r"\b(more|less|fewer|greater|higher|lower|larger|smaller|(?:\w+)er)\b.{0,24}\bthan\b|\bcompared (to|with)\b|\bas .{1,20} as\b",
+    re.I,
 )
 _CHRONOLOGY = re.compile(
     r"\b(before|after|earlier|later|prior to|subsequently|eventually|by \d{3,4}|until|once|when)\b|\b(1[0-9]{3}|20[0-9]{2})\b"
 )
-_HYPOTHESIS = re.compile(r"\b(hypothes[ia]z|theoriz|predict|expect(ed)?|assumed|propose[sd]?|postulat)\w*", re.I)
-_RESULT_WORDS = re.compile(r"\b(found|observed|showed|revealed|measured|recorded|reported|demonstrated|data show)\w*", re.I)
-_EVIDENCE_STEM = re.compile(r"which (quotation|finding|choice).*?(best )?(supports?|illustrates?|provides?|strengthens?|weakens?|challenges?)", re.I)
-_MAIN_IDEA_STEM = re.compile(r"(main|central) (idea|claim|theme|point)|best states the main|primarily about", re.I)
+_HYPOTHESIS = re.compile(
+    r"\b(hypothes[ia]z|theoriz|predict|expect(ed)?|assumed|propose[sd]?|postulat)\w*", re.I
+)
+_RESULT_WORDS = re.compile(
+    r"\b(found|observed|showed|revealed|measured|recorded|reported|demonstrated|data show)\w*", re.I
+)
+_EVIDENCE_STEM = re.compile(
+    r"which (quotation|finding|choice).*?(best )?(supports?|illustrates?|provides?|strengthens?|weakens?|challenges?)",
+    re.I,
+)
+_MAIN_IDEA_STEM = re.compile(
+    r"(main|central) (idea|claim|theme|point)|best states the main|primarily about", re.I
+)
 _PURPOSE_STEM = re.compile(r"(function|purpose) of|why does the author|in order to", re.I)
 _WORD_SENSE_STEM = re.compile(r"as used in the text|most nearly means?", re.I)
 _CROSS_TEXT_STEM = re.compile(r"text\s*(1|2)|both (texts|passages|authors)|author of text", re.I)
 _QUOTED_CHOICE = re.compile(r"[\"“”]")
-_TECH_SUFFIX = re.compile(r"\w+(tion|sion|ology|ography|ometry|itis|genesis|metry|pathy|esis|osis|ase|ine)\b", re.I)
+_TECH_SUFFIX = re.compile(
+    r"\w+(tion|sion|ology|ography|ometry|itis|genesis|metry|pathy|esis|osis|ase|ine)\b", re.I
+)
 
 _DIRECTION_PAIRS = [
-    ("increase", "decrease"), ("more", "less"), ("higher", "lower"),
-    ("greater", "smaller"), ("help", "harm"), ("benefit", "damage"),
-    ("strengthen", "weaken"), ("attract", "repel"), ("accelerate", "slow"),
-    ("positive", "negative"), ("gain", "loss"),
+    ("increase", "decrease"),
+    ("more", "less"),
+    ("higher", "lower"),
+    ("greater", "smaller"),
+    ("help", "harm"),
+    ("benefit", "damage"),
+    ("strengthen", "weaken"),
+    ("attract", "repel"),
+    ("accelerate", "slow"),
+    ("positive", "negative"),
+    ("gain", "loss"),
 ]
 _STANCE_WORDS = re.compile(
-    r"\b(critical|skeptic\w*|enthusiast\w*|support\w*|oppos\w*|favor\w*|object\w*|endorse\w*|caution\w*|dismiss\w*|ambivalent|neutral)\b", re.I
+    r"\b(critical|skeptic\w*|enthusiast\w*|support\w*|oppos\w*|favor\w*|object\w*|endorse\w*|caution\w*|dismiss\w*|ambivalent|neutral)\b",
+    re.I,
 )
 
 
@@ -190,7 +243,11 @@ def reasoning_tags(passage: str, stem: str, choices: list[str]) -> list[str]:
         add("word_sense_in_context")
         add("near_synonym_distinction")
     if _CROSS_TEXT_STEM.search(stem):
-        add("cross_text_agreement" if re.search(r"agree|similar|shared|both", stem_low) else "cross_text_disagreement")
+        add(
+            "cross_text_agreement"
+            if re.search(r"agree|similar|shared|both", stem_low)
+            else "cross_text_disagreement"
+        )
         add("same_topic_wrong_relationship")
     if re.search(r"suggest|infer", stem_low):
         add("unsupported_inference")
@@ -220,12 +277,20 @@ def reasoning_tags(passage: str, stem: str, choices: list[str]) -> list[str]:
         add("tone_or_stance")
         add("degree_or_intensity")
     low_words = ["increase", "decrease", "reduce", "expand"]
-    if len({w for w in low_words for c in choices if w in c.lower()}) >= 2 or \
-       any(a in c.lower() and b in c2.lower() for a, b in _DIRECTION_PAIRS for c in choices for c2 in choices if c is not c2):
+    if len({w for w in low_words for c in choices if w in c.lower()}) >= 2 or any(
+        a in c.lower() and b in c2.lower()
+        for a, b in _DIRECTION_PAIRS
+        for c in choices
+        for c2 in choices
+        if c is not c2
+    ):
         add("direction_reversal")
 
     quantifiers = {"all", "none", "some", "several", "most", "many", "few", "only", "both"}
-    q_per_choice = [{m.group(0).lower() for m in re.finditer(r"\b(" + "|".join(quantifiers) + r")\b", c, re.I)} for c in choices]
+    q_per_choice = [
+        {m.group(0).lower() for m in re.finditer(r"\b(" + "|".join(quantifiers) + r")\b", c, re.I)}
+        for c in choices
+    ]
     union_q = set().union(*q_per_choice) if q_per_choice else set()
     if len(union_q) >= 2 and any(len(q) > 0 for q in q_per_choice):
         add("quantifier_mismatch")
@@ -250,8 +315,9 @@ def reasoning_tags(passage: str, stem: str, choices: list[str]) -> list[str]:
         add("dense_scientific_vocabulary")
     if avg_len >= 30:
         add("scientific_noun_overload")
-    if ("dense_scientific_vocabulary" in tags or "scientific_noun_overload" in tags) and \
-       (_HYPOTHESIS.search(full) or _COMPARATIVE.search(full)):
+    if ("dense_scientific_vocabulary" in tags or "scientific_noun_overload" in tags) and (
+        _HYPOTHESIS.search(full) or _COMPARATIVE.search(full)
+    ):
         add("abstract_relationship_extraction")
 
     # inference stems on abstract relations
@@ -262,6 +328,7 @@ def reasoning_tags(passage: str, stem: str, choices: list[str]) -> list[str]:
 
 
 # ---------------------------------------------------------- diagnostics ---
+
 
 def diagnose_error(correct_text: str, student_text: str) -> list[str]:
     """Compare the chosen WRONG choice against the key. Returns error tags.
@@ -294,7 +361,11 @@ def diagnose_error(correct_text: str, student_text: str) -> list[str]:
         if ((a in s and b in c) or (b in s and a in c)) and not (a in c and b in c):
             add("direction_reversal")
             break
-    if _CONTRAST.search(c) and not _CONTRAST.search(s) and re.search(r"\bhowever|but|although\b", s) is None:
+    if (
+        _CONTRAST.search(c)
+        and not _CONTRAST.search(s)
+        and re.search(r"\bhowever|but|although\b", s) is None
+    ):
         add("contrast_concession")
     st, ct = _tokens(student_text), _tokens(correct_text)
     if len(st) >= 4 and len(ct) >= 4:
@@ -306,15 +377,19 @@ def diagnose_error(correct_text: str, student_text: str) -> list[str]:
 
 # ------------------------------------------------------------ persistence --
 
-def tag_question_row(conn, qid: int, passage: str, stem: str, choices: list[str],
-                     correct_letter: str = "") -> list[str]:
+
+def tag_question_row(
+    conn, qid: int, passage: str, stem: str, choices: list[str], correct_letter: str = ""
+) -> list[str]:
     """Recompute this question's rule tags. Manual corrections survive."""
     tags = reasoning_tags(passage, stem, choices)
     set_rule_tags(conn, qid, tags)
     return tags
 
 
-def diagnose_attempt(conn, qid: int, choices: list[dict], correct_letter: str, student_letter: str) -> list[str]:
+def diagnose_attempt(
+    conn, qid: int, choices: list[dict], correct_letter: str, student_letter: str
+) -> list[str]:
     if not student_letter or student_letter == correct_letter:
         return []
     cmap = {c["letter"]: c["text"] for c in choices}
@@ -339,12 +414,12 @@ def run_full_tagging(conn) -> dict:
     for question in questions:
         # choice-less questions (Bluebook omits options on correct reviews)
         # are still tagged from passage+stem so they inform the weakness model
-        tag_question_row(conn, question.id, question.passage, question.stem,
-                         question.choice_texts)
+        tag_question_row(conn, question.id, question.passage, question.stem, question.choice_texts)
         stats["tagged"] += 1
         if not question.official_skill:
-            skill, domain = derive_official_skill(question.stem, question.passage,
-                                                  question.choice_texts)
+            skill, domain = derive_official_skill(
+                question.stem, question.passage, question.choice_texts
+            )
             if skill or domain:
                 conn.execute(
                     "UPDATE questions SET official_skill=?, official_domain=?, skill_source=? WHERE id=?",
@@ -352,5 +427,3 @@ def run_full_tagging(conn) -> dict:
                 )
                 stats["skills_derived"] += 1
     return stats
-
-

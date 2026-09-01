@@ -127,4 +127,3 @@ If you only have one week, do not study everything equally. Attack the concepts 
 | **5** | R&W (Rhetorical Synthesis) | Before reading the bullet points, read the *question*. If it asks for a contrast, eliminate any choice without a contrast word (however, while). | **High** (Quick strategy fix) |
 | **6** | Math (Unit Conversions) | Review 2D and 3D conversions. If $1\text{m} = 3\text{ft}$, then $1\text{m}^2 = 9\text{ft}^2$. | **Medium** |
 | **7** | R&W (Logical Conclusions) | When reading heavy science passages, ignore the big words. Map it as $A \rightarrow B$, but $C \rightarrow D$. What happens to $A$? | **Medium** (Takes more practice) |
-

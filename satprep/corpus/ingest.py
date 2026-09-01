@@ -18,7 +18,7 @@ from pathlib import Path
 from .. import config
 from ..clock import utc_now
 from . import fingerprint as fpmod
-from .parse_snapshot import parse_snapshot, ParsedQuestion
+from .parse_snapshot import ParsedQuestion, parse_snapshot
 from .qbank_fetch import insert_qbank_row
 from .tagger import diagnose_attempt
 
@@ -34,7 +34,11 @@ def _letter(value: str | None) -> str:
 def _status_of(rec: dict) -> tuple[str, str]:
     """Return (student_letter, correct_letter) preferring snapshot data."""
     my = rec.get("my_answer") or ""
-    student = _letter(my.split(";")[0]) if ";" in my else (_letter(my) if "correct" not in my.lower() else "")
+    student = (
+        _letter(my.split(";")[0])
+        if ";" in my
+        else (_letter(my) if "correct" not in my.lower() else "")
+    )
     correct = _letter(rec.get("correct_answer"))
     return student, correct
 
@@ -53,8 +57,14 @@ def _historical_correctness(rec: dict) -> int | None:
 
 def ingest_bluebook(conn) -> dict:
     """Ingest the scraped 8-test history. Idempotent."""
-    stats = {"records_seen": 0, "rw_records": 0, "questions_added": 0,
-             "attempts_added": 0, "parse_fallbacks": 0, "skipped_existing": 0}
+    stats = {
+        "records_seen": 0,
+        "rw_records": 0,
+        "questions_added": 0,
+        "attempts_added": 0,
+        "parse_fallbacks": 0,
+        "skipped_existing": 0,
+    }
     if not config.BLUEBOOK_JSON.exists():
         return stats
 
@@ -68,7 +78,7 @@ def ingest_bluebook(conn) -> dict:
             continue
         stats["rw_records"] += 1
 
-        parsed = None
+        parsed: ParsedQuestion | None = None
         snap_path = rec.get("html_snapshot_path")
         if snap_path and Path(snap_path).exists():
             try:
@@ -96,9 +106,7 @@ def ingest_bluebook(conn) -> dict:
         choice_texts = [c["text"] for c in parsed.choices]
         fp = fpmod.fingerprint(passage, stem, choice_texts)
 
-        existing = conn.execute(
-            "SELECT id FROM questions WHERE fingerprint=?", (fp,)
-        ).fetchone()
+        existing = conn.execute("SELECT id FROM questions WHERE fingerprint=?", (fp,)).fetchone()
         if existing:
             stats["skipped_existing"] += 1
             qid = existing["id"]
@@ -121,15 +129,25 @@ def ingest_bluebook(conn) -> dict:
                    pool, seen_benchmark, is_new_bank, import_batch, imported_at, provenance_json)
                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,'',?,?)""",
                 (
-                    fp, "bluebook_test", rec.get("test_name") or "", str(rec.get("question_number") or ""),
+                    fp,
+                    "bluebook_test",
+                    rec.get("test_name") or "",
+                    str(rec.get("question_number") or ""),
                     rec.get("module") or "",
-                    passage, stem, json.dumps(parsed.choices), correct_letter,
+                    passage,
+                    stem,
+                    json.dumps(parsed.choices),
+                    correct_letter,
                     parsed.rationale or rec.get("explanation") or "",
-                    json.dumps(rec.get("images") or []), json.dumps(rec.get("visuals") or []),
-                    rec.get("domain") or "", rec.get("skill") or "",
+                    json.dumps(rec.get("images") or []),
+                    json.dumps(rec.get("visuals") or []),
+                    rec.get("domain") or "",
+                    rec.get("skill") or "",
                     "metadata" if rec.get("skill") else "unknown",
                     "",  # difficulty unknown for bluebook history
-                    "historical", utc_now(), json.dumps(provenance),
+                    "historical",
+                    utc_now(),
+                    json.dumps(provenance),
                 ),
             )
             qid = cur.lastrowid
@@ -162,7 +180,7 @@ def ingest_bluebook(conn) -> dict:
     return stats
 
 
-def _question_from_json_record(rec: dict) -> "object":
+def _question_from_json_record(rec: dict) -> ParsedQuestion:
     text = rec.get("question_text") or ""
     choices = []
     for i, raw in enumerate(rec.get("answer_choices") or []):
@@ -184,6 +202,7 @@ def _question_from_json_record(rec: dict) -> "object":
 
 
 # --------------------------------------------------------------- qbank -----
+
 
 def _qbank_rows_from_file(path: Path) -> list[dict]:
     """Normalize supported official export shapes into row dicts.
@@ -208,38 +227,56 @@ def _qbank_rows_from_file(path: Path) -> list[dict]:
 
     if suffix in (".json", ".ndjson"):
         raw = path.read_text()
-        data = json.loads(raw) if not path.name.endswith(".ndjson") else [json.loads(l) for l in raw.splitlines() if l.strip()]
+        data = (
+            json.loads(raw)
+            if not path.name.endswith(".ndjson")
+            else [json.loads(line) for line in raw.splitlines() if line.strip()]
+        )
         if isinstance(data, dict):
             data = data.get("questions") or data.get("items") or [data]
         for item in data:
-            rows.append({
-                "passage": str(get(item, "passage", "stimulus", default="")),
-                "stem": str(get(item, "stem", "question", "questiontext", default="")),
-                "choices": get(item, "choices", "answeroptions", "options", default=[]),
-                "correct": str(get(item, "correct", "correctanswer", "answerkey", "answer", default="")),
-                "domain": str(get(item, "domain", "contentdomain", default="")),
-                "skill": str(get(item, "skill", "skillknowledge", "testingpoint", default="")),
-                "difficulty": str(get(item, "difficulty", "level", "hardness", default="")).lower(),
-                "rationale": str(get(item, "rationale", "explanation", default="")),
-                "ext_id": str(get(item, "id", "questionid", default="")),
-            })
+            rows.append(
+                {
+                    "passage": str(get(item, "passage", "stimulus", default="")),
+                    "stem": str(get(item, "stem", "question", "questiontext", default="")),
+                    "choices": get(item, "choices", "answeroptions", "options", default=[]),
+                    "correct": str(
+                        get(item, "correct", "correctanswer", "answerkey", "answer", default="")
+                    ),
+                    "domain": str(get(item, "domain", "contentdomain", default="")),
+                    "skill": str(get(item, "skill", "skillknowledge", "testingpoint", default="")),
+                    "difficulty": str(
+                        get(item, "difficulty", "level", "hardness", default="")
+                    ).lower(),
+                    "rationale": str(get(item, "rationale", "explanation", default="")),
+                    "ext_id": str(get(item, "id", "questionid", default="")),
+                }
+            )
     elif suffix == ".csv":
         with path.open(newline="", encoding="utf-8-sig") as fh:
             for row in csv.DictReader(fh):
-                rows.append({
-                    "passage": str(get(row, "passage", "stimulus", default="")),
-                    "stem": str(get(row, "stem", "question", default="")),
-                    "choices": [v for k, v in row.items() if norm_key(k).startswith("choice") and v],
-                    "correct": str(get(row, "correct", "correctanswer", "answerkey", "answer", default="")),
-                    "domain": str(get(row, "domain", default="")),
-                    "skill": str(get(row, "skill", default="")),
-                    "difficulty": str(get(row, "difficulty", "level", default="")).lower(),
-                    "rationale": str(get(row, "rationale", "explanation", default="")),
-                    "ext_id": str(get(row, "id", "questionid", default="")),
-                })
+                rows.append(
+                    {
+                        "passage": str(get(row, "passage", "stimulus", default="")),
+                        "stem": str(get(row, "stem", "question", default="")),
+                        "choices": [
+                            v for k, v in row.items() if norm_key(k).startswith("choice") and v
+                        ],
+                        "correct": str(
+                            get(row, "correct", "correctanswer", "answerkey", "answer", default="")
+                        ),
+                        "domain": str(get(row, "domain", default="")),
+                        "skill": str(get(row, "skill", default="")),
+                        "difficulty": str(get(row, "difficulty", "level", default="")).lower(),
+                        "rationale": str(get(row, "rationale", "explanation", default="")),
+                        "ext_id": str(get(row, "id", "questionid", default="")),
+                    }
+                )
     else:
-        raise ValueError(f"Unsupported Question Bank format: {path.name} "
-                         f"(export CSV or JSON from the College Board Question Bank)")
+        raise ValueError(
+            f"Unsupported Question Bank format: {path.name} "
+            f"(export CSV or JSON from the College Board Question Bank)"
+        )
     return rows
 
 
@@ -273,7 +310,11 @@ def ingest_qbank(conn, path_or_dir=None, batch_name: str | None = None) -> dict:
     """
     base = Path(path_or_dir) if path_or_dir else config.IMPORT_DIR
     base.mkdir(parents=True, exist_ok=True)
-    files = [p for p in sorted(base.rglob("*")) if p.is_file() and p.suffix.lower() in (".json", ".ndjson", ".csv")]
+    files = [
+        p
+        for p in sorted(base.rglob("*"))
+        if p.is_file() and p.suffix.lower() in (".json", ".ndjson", ".csv")
+    ]
     stats = {"files": len(files), "rows_seen": 0, "added_fresh": 0, "duplicates": 0, "invalid": 0}
 
     for path in files:

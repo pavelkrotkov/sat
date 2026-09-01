@@ -103,6 +103,7 @@ class Question:
         Missing columns fail here, at the seam, naming the column - rather
         than several modules downstream inside a comprehension.
         """
+
         def get(name, default=None):
             try:
                 value = row[name]
@@ -118,7 +119,9 @@ class Question:
             fingerprint=get("fingerprint", ""),
             passage=get("passage", ""),
             stem=get("stem", ""),
-            choices=tuple(Choice.from_dict(c) for c in json.loads(get("choices_json", "[]") or "[]")),
+            choices=tuple(
+                Choice.from_dict(c) for c in json.loads(get("choices_json", "[]") or "[]")
+            ),
             correct_letter=get("correct_letter", ""),
             pool=get("pool", ""),
             official_skill=get("official_skill", ""),
@@ -141,6 +144,7 @@ class Question:
 
 
 # ------------------------------------------------------------------ reads --
+
 
 def load(conn, question_id: int) -> Question | None:
     row = conn.execute("SELECT * FROM questions WHERE id=?", (question_id,)).fetchone()

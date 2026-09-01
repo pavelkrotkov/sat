@@ -28,6 +28,7 @@ Output goes to stderr (findings) and stdout (the retrieval index when
 regenerated). Local-only; the CI workflow runs the same command and fails
 on any non-empty findings list.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -38,9 +39,10 @@ import os
 import pathlib
 import re
 import sys
+
 try:
     import yaml
-except ImportError:                                  # pragma: no cover
+except ImportError:  # pragma: no cover
     print("error: PyYAML is required (transitive dep of MkDocs)", file=sys.stderr)
     sys.exit(2)
 
@@ -52,8 +54,7 @@ except ImportError:                                  # pragma: no cover
 # All other paths are derived from it, so a single override re-roots the
 # whole script.
 REPO_ROOT = pathlib.Path(
-    os.environ.get("SAT_KB_ROOT")
-    or pathlib.Path(__file__).resolve().parent.parent
+    os.environ.get("SAT_KB_ROOT") or pathlib.Path(__file__).resolve().parent.parent
 ).resolve()
 VAULT = REPO_ROOT / "kb" / "wiki"
 RAW = REPO_ROOT / "kb" / "raw"
@@ -64,13 +65,19 @@ DEFAULT_INDEX = REPO_ROOT / "kb" / ".kb-index.json"
 # `created` and `updated` are required for non-README pages because they
 # feed KB log/history and the retrieval index timestamp.
 REQUIRED_BY_TYPE: dict[str, list[str]] = {
-    "summary": ["title", "type", "created", "updated", "tags",
-                "sources", "confidence"],
-    "concept": ["title", "type", "created", "updated", "tags",
-                "sources", "confidence"],
-    "question-review": ["title", "type", "created", "updated", "tags",
-                        "question_fingerprint", "student_answer",
-                        "correct_answer", "confidence"],
+    "summary": ["title", "type", "created", "updated", "tags", "sources", "confidence"],
+    "concept": ["title", "type", "created", "updated", "tags", "sources", "confidence"],
+    "question-review": [
+        "title",
+        "type",
+        "created",
+        "updated",
+        "tags",
+        "question_fingerprint",
+        "student_answer",
+        "correct_answer",
+        "confidence",
+    ],
 }
 ALLOWED_TYPES = set(REQUIRED_BY_TYPE) | {"log", "index", "readme"}
 
@@ -99,11 +106,15 @@ _BARE_FILE_PATHS: set[str] = {
 # A handful of topical README files are also bare by convention. Add
 # them explicitly here rather than letting the basename rule exempt
 # every matching filename under any directory.
-_BARE_FILE_PATHS.update({
-    f.as_posix() for f in [
-        pathlib.Path("kb/wiki/reviews/README.md"),
-    ] if f.exists() or True  # declared; rely on file presence to swallow
-})
+_BARE_FILE_PATHS.update(
+    {
+        f.as_posix()
+        for f in [
+            pathlib.Path("kb/wiki/reviews/README.md"),
+        ]
+        if f.exists() or True  # declared; rely on file presence to swallow
+    }
+)
 # The review-templates directory contains the authoring convention itself.
 # Linting its frontmatter is misleading: the placeholder values (literal
 # `64-hex-sha256`, `YYYY-MM-DD`, example tags) are intentional teaching
@@ -117,11 +128,12 @@ TEMPLATE_DIRS = {("review-templates",), ("reports",)}
 # Findings
 # ---------------------------------------------------------------------------
 
+
 @dataclasses.dataclass
 class Finding:
-    level: str            # "error" | "warning"
-    path: str             # repo-relative, forward-slash
-    code: str             # short identifier for filtering
+    level: str  # "error" | "warning"
+    path: str  # repo-relative, forward-slash
+    code: str  # short identifier for filtering
     message: str
 
     def render(self) -> str:
@@ -148,6 +160,7 @@ def find_repo_root(start: pathlib.Path) -> pathlib.Path:
 # ---------------------------------------------------------------------------
 # Frontmatter
 # ---------------------------------------------------------------------------
+
 
 def parse_frontmatter(text: str) -> tuple[dict, str | None]:
     m = FRONTMATTER_RE.match(text)
@@ -177,37 +190,62 @@ def check_frontmatter(rel: pathlib.Path, text: str) -> tuple[dict, list[Finding]
     # YAML may parse to a non-mapping (a list, a scalar) at the top level.
     # Reject it explicitly so callers don't blow up on fm["type"].
     if not isinstance(fm, dict):
-        findings.append(Finding("error", rel.as_posix(), "FM_NOT_MAPPING",
-                                f"frontmatter must be a YAML mapping, "
-                                f"got {type(fm).__name__}"))
+        findings.append(
+            Finding(
+                "error",
+                rel.as_posix(),
+                "FM_NOT_MAPPING",
+                f"frontmatter must be a YAML mapping, got {type(fm).__name__}",
+            )
+        )
         return {}, findings
     if "type" not in fm:
-        findings.append(Finding("error", rel.as_posix(), "FM_TYPE",
-                                "frontmatter missing `type`"))
+        findings.append(Finding("error", rel.as_posix(), "FM_TYPE", "frontmatter missing `type`"))
         return fm, findings
     if fm["type"] not in ALLOWED_TYPES:
-        findings.append(Finding("error", rel.as_posix(), "FM_TYPE_UNKNOWN",
-                                f"unknown type {fm['type']!r}; "
-                                f"expected one of {sorted(ALLOWED_TYPES)}"))
+        findings.append(
+            Finding(
+                "error",
+                rel.as_posix(),
+                "FM_TYPE_UNKNOWN",
+                f"unknown type {fm['type']!r}; expected one of {sorted(ALLOWED_TYPES)}",
+            )
+        )
         return fm, findings
     required = REQUIRED_BY_TYPE.get(fm["type"], ["title", "type"])
     for key in required:
         if key not in fm or fm[key] in (None, "", []):
-            findings.append(Finding("error", rel.as_posix(), "FM_REQUIRED",
-                                    f"missing required field `{key}` for "
-                                    f"type={fm['type']}"))
+            findings.append(
+                Finding(
+                    "error",
+                    rel.as_posix(),
+                    "FM_REQUIRED",
+                    f"missing required field `{key}` for type={fm['type']}",
+                )
+            )
     # Type-specific shape checks
     if fm.get("type") == "question-review":
         fp = fm.get("question_fingerprint", "")
         if not isinstance(fp, str) or not SHA256_RE.match(fp):
-            findings.append(Finding("error", rel.as_posix(), "FM_FINGERPRINT",
-                                    "question_fingerprint must be a "
-                                    "64-char lowercase hex SHA-256"))
+            findings.append(
+                Finding(
+                    "error",
+                    rel.as_posix(),
+                    "FM_FINGERPRINT",
+                    "question_fingerprint must be a 64-char lowercase hex SHA-256",
+                )
+            )
     for sa in ("student_answer", "correct_answer"):
         v = fm.get(sa)
-        if "question-review" == fm.get("type") and v not in {"A", "B", "C", "D", "E"}:
-            findings.append(Finding("error", rel.as_posix(), "FM_ANSWER",
-                                    f"{sa} must be a single letter A-E, got {v!r}"))
+        if fm.get("type") == "question-review" and v not in {"A", "B", "C", "D", "E"}:
+            findings.append(
+                Finding(
+                    "error",
+                    rel.as_posix(),
+                    "FM_ANSWER",
+                    f"{sa} must be a single letter A-E, got {v!r}",
+                )
+            )
     return fm, findings
 
 
@@ -215,64 +253,109 @@ def check_frontmatter(rel: pathlib.Path, text: str) -> tuple[dict, list[Finding]
 # Manifest
 # ---------------------------------------------------------------------------
 
+
 def check_manifest(findings: list[Finding]) -> list[dict]:
     rows: list[dict] = []
     seen_ids: set[str] = set()
     if not MANIFEST.exists():
-        findings.append(Finding("error", "kb/raw/source-manifest.jsonl",
-                                "MANIFEST_MISSING",
-                                "source manifest is required"))
+        findings.append(
+            Finding(
+                "error",
+                "kb/raw/source-manifest.jsonl",
+                "MANIFEST_MISSING",
+                "source manifest is required",
+            )
+        )
         return rows
     text = MANIFEST.read_text(encoding="utf-8")
     # JSONL spec: each line must end with \n including the last; a missing
     # trailing newline is a finding (and a parser hazard for strict readers).
     if text and not text.endswith("\n"):
-        findings.append(Finding("error", "kb/raw/source-manifest.jsonl",
-                                "MANIFEST_NEWLINE",
-                                "missing trailing newline (JSONL spec)"))
+        findings.append(
+            Finding(
+                "error",
+                "kb/raw/source-manifest.jsonl",
+                "MANIFEST_NEWLINE",
+                "missing trailing newline (JSONL spec)",
+            )
+        )
     for lineno, raw in enumerate(text.splitlines(), 1):
         if not raw.strip():
             continue
         try:
             row = json.loads(raw)
         except json.JSONDecodeError as e:
-            findings.append(Finding("error", "kb/raw/source-manifest.jsonl",
-                                    "MANIFEST_JSON",
-                                    f"line {lineno}: {e}"))
+            findings.append(
+                Finding(
+                    "error", "kb/raw/source-manifest.jsonl", "MANIFEST_JSON", f"line {lineno}: {e}"
+                )
+            )
             continue
         # PR-43 review: validate that each decoded row is a mapping
         # before accessing fields. Valid JSON scalars (null / []) used
         # to raise AttributeError here, producing a traceback instead
         # of a structured finding and breaking `--json` for consumers.
         if not isinstance(row, dict):
-            findings.append(Finding("error", "kb/raw/source-manifest.jsonl",
-                                    "MANIFEST_ROW_SHAPE",
-                                    f"line {lineno}: each manifest row "
-                                    f"must be a JSON object, got "
-                                    f"{type(row).__name__}"))
+            findings.append(
+                Finding(
+                    "error",
+                    "kb/raw/source-manifest.jsonl",
+                    "MANIFEST_ROW_SHAPE",
+                    f"line {lineno}: each manifest row "
+                    f"must be a JSON object, got "
+                    f"{type(row).__name__}",
+                )
+            )
             continue
         sid = row.get("source_id", "")
         if not sid:
-            findings.append(Finding("error", "kb/raw/source-manifest.jsonl",
-                                    "MANIFEST_ID",
-                                    f"line {lineno}: missing source_id"))
+            findings.append(
+                Finding(
+                    "error",
+                    "kb/raw/source-manifest.jsonl",
+                    "MANIFEST_ID",
+                    f"line {lineno}: missing source_id",
+                )
+            )
         elif sid in seen_ids:
-            findings.append(Finding("error", "kb/raw/source-manifest.jsonl",
-                                    "MANIFEST_DUP",
-                                    f"line {lineno}: duplicate source_id {sid}"))
+            findings.append(
+                Finding(
+                    "error",
+                    "kb/raw/source-manifest.jsonl",
+                    "MANIFEST_DUP",
+                    f"line {lineno}: duplicate source_id {sid}",
+                )
+            )
         seen_ids.add(sid)
 
-        for field in ("title", "url", "retrieved_at", "content_type",
-                      "sha256", "bytes", "transcript", "authority"):
+        for field in (
+            "title",
+            "url",
+            "retrieved_at",
+            "content_type",
+            "sha256",
+            "bytes",
+            "transcript",
+            "authority",
+        ):
             if field not in row or row[field] in (None, ""):
-                findings.append(Finding("error", "kb/raw/source-manifest.jsonl",
-                                        "MANIFEST_FIELD",
-                                        f"line {lineno}: missing field {field}"))
+                findings.append(
+                    Finding(
+                        "error",
+                        "kb/raw/source-manifest.jsonl",
+                        "MANIFEST_FIELD",
+                        f"line {lineno}: missing field {field}",
+                    )
+                )
         if not SHA256_RE.match(str(row.get("sha256", ""))):
-            findings.append(Finding("error", "kb/raw/source-manifest.jsonl",
-                                    "MANIFEST_SHA",
-                                    f"line {lineno}: sha256 must be a "
-                                    f"64-char lowercase hex string"))
+            findings.append(
+                Finding(
+                    "error",
+                    "kb/raw/source-manifest.jsonl",
+                    "MANIFEST_SHA",
+                    f"line {lineno}: sha256 must be a 64-char lowercase hex string",
+                )
+            )
         try:
             want_bytes = int(row.get("bytes", -1))
         except (TypeError, ValueError):
@@ -287,29 +370,46 @@ def check_manifest(findings: list[Finding]) -> list[dict]:
             try:
                 p.relative_to(RAW)
             except ValueError:
-                findings.append(Finding("error", "kb/raw/source-manifest.jsonl",
-                                        "MANIFEST_TRAVERSAL",
-                                        f"line {lineno}: transcript resolves "
-                                        f"outside kb/raw/: {rel}"))
+                findings.append(
+                    Finding(
+                        "error",
+                        "kb/raw/source-manifest.jsonl",
+                        "MANIFEST_TRAVERSAL",
+                        f"line {lineno}: transcript resolves outside kb/raw/: {rel}",
+                    )
+                )
             if not p.is_file():
-                findings.append(Finding("error", "kb/raw/source-manifest.jsonl",
-                                        "MANIFEST_PATH",
-                                        f"line {lineno}: transcript not found: "
-                                        f"{rel}"))
+                findings.append(
+                    Finding(
+                        "error",
+                        "kb/raw/source-manifest.jsonl",
+                        "MANIFEST_PATH",
+                        f"line {lineno}: transcript not found: {rel}",
+                    )
+                )
             else:
                 actual = p.read_bytes()
                 actual_sha = hashlib.sha256(actual).hexdigest()
                 if actual_sha != row.get("sha256"):
-                    findings.append(Finding("error", "kb/raw/source-manifest.jsonl",
-                                            "MANIFEST_SHA",
-                                            f"line {lineno}: sha256 mismatch "
-                                            f"for {rel}"))
+                    findings.append(
+                        Finding(
+                            "error",
+                            "kb/raw/source-manifest.jsonl",
+                            "MANIFEST_SHA",
+                            f"line {lineno}: sha256 mismatch for {rel}",
+                        )
+                    )
                 if len(actual) != want_bytes:
-                    findings.append(Finding("error", "kb/raw/source-manifest.jsonl",
-                                            "MANIFEST_BYTES",
-                                            f"line {lineno}: bytes mismatch "
-                                            f"for {rel} (manifest {want_bytes}, "
-                                            f"actual {len(actual)})"))
+                    findings.append(
+                        Finding(
+                            "error",
+                            "kb/raw/source-manifest.jsonl",
+                            "MANIFEST_BYTES",
+                            f"line {lineno}: bytes mismatch "
+                            f"for {rel} (manifest {want_bytes}, "
+                            f"actual {len(actual)})",
+                        )
+                    )
         rows.append(row)
     return rows
 
@@ -317,6 +417,7 @@ def check_manifest(findings: list[Finding]) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Wikilinks + cross-references
 # ---------------------------------------------------------------------------
+
 
 def discover_md(root: pathlib.Path) -> list[pathlib.Path]:
     """Pages to validate and include in the retrieval index.
@@ -350,7 +451,7 @@ def check_links_and_refs(
     all_pages: list[pathlib.Path],
     manifest_rows: list[dict],
     findings: list[Finding],
-) -> tuple[set[str], set[str]]:
+) -> tuple[set[str], list[pathlib.Path]]:
     """Walk every .md under the vault. Verify:
       - all [[wikilinks]] resolve to a committed page
       - all `sources` entries reference committed transcripts
@@ -400,8 +501,9 @@ def check_links_and_refs(
         targets.add(rel_to_repo)
 
     fingerprints: set[str] = set()
-    transcript_paths = {(RAW / r["transcript"]).resolve()
-                        for r in manifest_rows if r.get("transcript")}
+    transcript_paths = {
+        (RAW / r["transcript"]).resolve() for r in manifest_rows if r.get("transcript")
+    }
 
     for p in pages:
         rel = p.relative_to(REPO_ROOT).as_posix()
@@ -415,8 +517,7 @@ def check_links_and_refs(
         for m in WIKILINK_RE.finditer(text):
             target = m.group(1).strip()
             if target not in targets:
-                findings.append(Finding("error", rel, "WIKILINK",
-                                        f"unresolved [[{target}]]"))
+                findings.append(Finding("error", rel, "WIKILINK", f"unresolved [[{target}]]"))
         # sources[] must reference committed transcripts. The path is
         # relative to the kb/raw/ directory (the manifest's anchor), so we
         # also accept a vault-relative "raw/transcripts/..." form for
@@ -425,11 +526,16 @@ def check_links_and_refs(
         # drop.
         sources = fm.get("sources")
         if sources is None:
-            pass                          # already flagged by FM_REQUIRED
+            pass  # already flagged by FM_REQUIRED
         elif not isinstance(sources, list):
-            findings.append(Finding("error", rel, "SOURCE_SCALAR",
-                                    f"sources must be a list, got "
-                                    f"{type(sources).__name__}"))
+            findings.append(
+                Finding(
+                    "error",
+                    rel,
+                    "SOURCE_SCALAR",
+                    f"sources must be a list, got {type(sources).__name__}",
+                )
+            )
         else:
             for s in sources:
                 # PR-43 round-3: validate every element is a non-empty
@@ -437,34 +543,55 @@ def check_links_and_refs(
                 # like `123` would otherwise crash on `s.startswith`
                 # with AttributeError.
                 if not isinstance(s, str) or not s:
-                    findings.append(Finding("error", rel, "SOURCE_NON_STRING",
-                                            f"sources must be a list of "
-                                            f"non-empty strings; got "
-                                            f"{type(s).__name__}={s!r}"))
+                    findings.append(
+                        Finding(
+                            "error",
+                            rel,
+                            "SOURCE_NON_STRING",
+                            f"sources must be a list of "
+                            f"non-empty strings; got "
+                            f"{type(s).__name__}={s!r}",
+                        )
+                    )
                     continue
                 if s.startswith("raw/"):
-                    candidate = (RAW / s[len("raw/"):]).resolve()
+                    candidate = (RAW / s[len("raw/") :]).resolve()
                 else:
                     candidate = (RAW / s).resolve()
                 if not _under_raw(candidate):
-                    findings.append(Finding("error", rel, "SOURCE_TRAVERSAL",
-                                            f"sources entry resolves outside "
-                                            f"kb/raw/: {s!r}"))
+                    findings.append(
+                        Finding(
+                            "error",
+                            rel,
+                            "SOURCE_TRAVERSAL",
+                            f"sources entry resolves outside kb/raw/: {s!r}",
+                        )
+                    )
                 elif not candidate.is_file():
-                    findings.append(Finding("error", rel, "SOURCE_MISSING",
-                                            f"sources entry not committed: {s!r}"))
+                    findings.append(
+                        Finding(
+                            "error", rel, "SOURCE_MISSING", f"sources entry not committed: {s!r}"
+                        )
+                    )
                 elif candidate not in transcript_paths:
-                    findings.append(Finding("error", rel, "SOURCE_NOT_MANIFESTED",
-                                            f"sources entry {s!r} has no "
-                                            f"manifest row"))
+                    findings.append(
+                        Finding(
+                            "error",
+                            rel,
+                            "SOURCE_NOT_MANIFESTED",
+                            f"sources entry {s!r} has no manifest row",
+                        )
+                    )
         # duplicate fingerprint check (question-review only)
         if fm and fm.get("type") == "question-review":
             fp = fm.get("question_fingerprint", "")
             if fp:
                 if fp in fingerprints:
-                    findings.append(Finding("error", rel, "REVIEW_DUP",
-                                            f"duplicate question_fingerprint "
-                                            f"{fp[:8]}…"))
+                    findings.append(
+                        Finding(
+                            "error", rel, "REVIEW_DUP", f"duplicate question_fingerprint {fp[:8]}…"
+                        )
+                    )
                 fingerprints.add(fp)
         # Transcripts must in turn be cited by at least one summary/concept,
         # otherwise they are orphaned (a finding at WARN, not error, so we
@@ -488,7 +615,7 @@ def check_links_and_refs(
             if not isinstance(s, str) or not s:
                 continue
             if s.startswith("raw/"):
-                candidate = (RAW / s[len("raw/"):]).resolve()
+                candidate = (RAW / s[len("raw/") :]).resolve()
             else:
                 candidate = (RAW / s).resolve()
             if _under_raw(candidate):
@@ -498,12 +625,16 @@ def check_links_and_refs(
             continue
         m_path = (RAW / t["transcript"]).resolve()
         if not _under_raw(m_path):
-            continue                          # already flagged in check_manifest
+            continue  # already flagged in check_manifest
         if m_path not in cited:
-            findings.append(Finding("warning", "kb/raw/source-manifest.jsonl",
-                                    "TRANSCRIPT_ORPHAN",
-                                    f"transcript {t['transcript']!r} is not "
-                                    f"cited by any summary or concept"))
+            findings.append(
+                Finding(
+                    "warning",
+                    "kb/raw/source-manifest.jsonl",
+                    "TRANSCRIPT_ORPHAN",
+                    f"transcript {t['transcript']!r} is not cited by any summary or concept",
+                )
+            )
     return targets, all_pages
 
 
@@ -522,8 +653,9 @@ def check_nav_sections(findings: list[Finding]) -> list[str]:
     accepts either a single combined heading or two separate ones."""
     idx = VAULT / "index.md"
     if not idx.exists():
-        findings.append(Finding("error", "kb/wiki/index.md", "INDEX_MISSING",
-                                "index.md is required"))
+        findings.append(
+            Finding("error", "kb/wiki/index.md", "INDEX_MISSING", "index.md is required")
+        )
         return []
     sections: list[str] = []
     for line in idx.read_text(encoding="utf-8").splitlines():
@@ -531,8 +663,11 @@ def check_nav_sections(findings: list[Finding]) -> list[str]:
             sections.append(line[3:].strip())
     for req in REQUIRED_NAV_SECTIONS:
         if not any(req == s or s.startswith(req) for s in sections):
-            findings.append(Finding("error", "kb/wiki/index.md", "NAV_SECTION",
-                                    f"missing required section: {req}"))
+            findings.append(
+                Finding(
+                    "error", "kb/wiki/index.md", "NAV_SECTION", f"missing required section: {req}"
+                )
+            )
     # Review Templates + Reviews: either each present individually, or a
     # combined heading that mentions both. PR-43 review: previously the
     # 'combined' predicate reused the templates heuristic
@@ -553,16 +688,23 @@ def check_nav_sections(findings: list[Finding]) -> list[str]:
         for s in sections
     )
     if not (combined or (has_rt and has_rv)):
-        findings.append(Finding("error", "kb/wiki/index.md", "NAV_SECTION",
-                                "missing Review Templates and Reviews sections "
-                                "(either as separate sections or a single "
-                                "'Templates & reviews' heading)"))
+        findings.append(
+            Finding(
+                "error",
+                "kb/wiki/index.md",
+                "NAV_SECTION",
+                "missing Review Templates and Reviews sections "
+                "(either as separate sections or a single "
+                "'Templates & reviews' heading)",
+            )
+        )
     return sections
 
 
 # ---------------------------------------------------------------------------
 # Retrieval index
 # ---------------------------------------------------------------------------
+
 
 def build_retrieval_index(
     pages: list[pathlib.Path],
@@ -584,27 +726,33 @@ def build_retrieval_index(
         if isinstance(tags, str):
             tags = [t.strip() for t in tags.split(",") if t.strip()]
         wikilinks = sorted(set(WIKILINK_RE.findall(text)))
-        out_pages.append({
-            "path": rel,
-            "type": fm.get("type", ""),
-            "title": fm.get("title", ""),
-            "description": fm.get("description", ""),
-            "tags": sorted(tags),
-            "sources": sorted(fm.get("sources") or []),
-            "wikilinks": wikilinks,
-            "question_fingerprint": fm.get("question_fingerprint", ""),
-        })
+        out_pages.append(
+            {
+                "path": rel,
+                "type": fm.get("type", ""),
+                "title": fm.get("title", ""),
+                "description": fm.get("description", ""),
+                "tags": sorted(tags),
+                "sources": sorted(fm.get("sources") or []),
+                "wikilinks": wikilinks,
+                "question_fingerprint": fm.get("question_fingerprint", ""),
+            }
+        )
     out_pages.sort(key=lambda d: (d["type"], d["path"]))
     return {
         "schema_version": 1,
         "vault": "kb/wiki",
         "sources": sorted(
-            ({"source_id": r.get("source_id", ""),
-              "title": r.get("title", ""),
-              "tags": [],     # source-level tags not modeled yet
-              "url": r.get("url", ""),
-              "transcript": r.get("transcript", "")}
-             for r in manifest_rows),
+            (
+                {
+                    "source_id": r.get("source_id", ""),
+                    "title": r.get("title", ""),
+                    "tags": [],  # source-level tags not modeled yet
+                    "url": r.get("url", ""),
+                    "transcript": r.get("transcript", ""),
+                }
+                for r in manifest_rows
+            ),
             key=lambda d: d["source_id"],
         ),
         "pages": out_pages,
@@ -616,17 +764,22 @@ def build_retrieval_index(
 # Driver
 # ---------------------------------------------------------------------------
 
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--check", action="store_true",
-                    help="validate only; do not write the retrieval index")
-    ap.add_argument("--index-out", type=pathlib.Path, default=DEFAULT_INDEX,
-                    help=f"path to write the retrieval index "
-                         f"(default: {DEFAULT_INDEX.relative_to(REPO_ROOT)})")
-    ap.add_argument("--json", action="store_true",
-                    help="emit findings as JSON on stdout")
-    ap.add_argument("--quiet", action="store_true",
-                    help="suppress the human-readable summary on stderr")
+    ap.add_argument(
+        "--check", action="store_true", help="validate only; do not write the retrieval index"
+    )
+    ap.add_argument(
+        "--index-out",
+        type=pathlib.Path,
+        default=DEFAULT_INDEX,
+        help=f"path to write the retrieval index (default: {DEFAULT_INDEX.relative_to(REPO_ROOT)})",
+    )
+    ap.add_argument("--json", action="store_true", help="emit findings as JSON on stdout")
+    ap.add_argument(
+        "--quiet", action="store_true", help="suppress the human-readable summary on stderr"
+    )
     args = ap.parse_args()
 
     findings: list[Finding] = []
@@ -637,7 +790,7 @@ def main() -> int:
     # [[wikilink]] but excluded from frontmatter checks and the
     # retrieval index.
     all_pages = _all_markdown_for_link_resolution(VAULT)
-    targets, _ = check_links_and_refs(pages, all_pages, manifest_rows, findings)
+    _targets, _ = check_links_and_refs(pages, all_pages, manifest_rows, findings)
     sections = check_nav_sections(findings)
 
     errors = [f for f in findings if f.level == "error"]
@@ -651,14 +804,11 @@ def main() -> int:
 
     if not args.check:
         idx = build_retrieval_index(pages, manifest_rows, sections)
-        text = json.dumps(idx, sort_keys=True, indent=2,
-                          ensure_ascii=False) + "\n"
+        text = json.dumps(idx, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
         args.index_out.parent.mkdir(parents=True, exist_ok=True)
         args.index_out.write_text(text, encoding="utf-8")
         if args.json:
-            print(json.dumps(
-                [dataclasses.asdict(f) for f in findings],
-                sort_keys=True, indent=2))
+            print(json.dumps([dataclasses.asdict(f) for f in findings], sort_keys=True, indent=2))
         elif not args.quiet:
             for f in findings:
                 print(f.render(), file=sys.stderr)
@@ -671,30 +821,33 @@ def main() -> int:
                 # path rather than crash in `relative_to`. --json and
                 # --quiet already skip this branch entirely.
                 rel_path = args.index_out.resolve()
-            print(f"wrote {rel_path} ({len(idx['pages'])} pages, "
-                  f"{len(idx['sources'])} sources)",
-                  file=sys.stderr)
+            print(
+                f"wrote {rel_path} ({len(idx['pages'])} pages, {len(idx['sources'])} sources)",
+                file=sys.stderr,
+            )
     else:
         # --check: validate only. If the committed index would be regenerated
         # to something different, the vault metadata has drifted and the
         # committed index is stale; surface that as an error so CI fails
         # before the build can publish a stale lookup index.
         idx = build_retrieval_index(pages, manifest_rows, sections)
-        regenerated = json.dumps(idx, sort_keys=True, indent=2,
-                                 ensure_ascii=False) + "\n"
+        regenerated = json.dumps(idx, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
         # PR-43 review: a missing committed index was being silently
         # accepted. Treat absent kb/.kb-index.json as an INDEX_MISSING
         # error in --check mode so a deleted/untracked index fails the
         # check instead of letting the explanation pipeline ship with
         # no KB references.
         if not args.index_out.is_file():
-            findings.append(Finding(
-                "error",
-                args.index_out.resolve().as_posix(),
-                "INDEX_MISSING",
-                "committed retrieval index is missing; run "
-                "scripts/check_kb.py (without --check) to "
-                "(re)generate it, then commit the result"))
+            findings.append(
+                Finding(
+                    "error",
+                    args.index_out.resolve().as_posix(),
+                    "INDEX_MISSING",
+                    "committed retrieval index is missing; run "
+                    "scripts/check_kb.py (without --check) to "
+                    "(re)generate it, then commit the result",
+                )
+            )
         else:
             committed = args.index_out.read_text(encoding="utf-8")
             if committed != regenerated:
@@ -705,13 +858,16 @@ def main() -> int:
                     # repo (e.g. /tmp/index.json). Report the absolute
                     # path so the operator can find the stale file.
                     stale_path = args.index_out.resolve().as_posix()
-                findings.append(Finding(
-                    "error",
-                    stale_path,
-                    "INDEX_STALE",
-                    "committed retrieval index is stale relative to the "
-                    "vault; run scripts/check_kb.py (without --check) to "
-                    "regenerate, then commit the result"))
+                findings.append(
+                    Finding(
+                        "error",
+                        stale_path,
+                        "INDEX_STALE",
+                        "committed retrieval index is stale relative to the "
+                        "vault; run scripts/check_kb.py (without --check) to "
+                        "regenerate, then commit the result",
+                    )
+                )
         # Emit findings AFTER the index comparison so stale/missing
         # entries survive into both the JSON output and the human-readable
         # summary. Re-read `errors`/`warnings` because the findings list
@@ -719,17 +875,17 @@ def main() -> int:
         errors = [f for f in findings if f.level == "error"]
         warnings = [f for f in findings if f.level == "warning"]
         if args.json:
-            print(json.dumps(
-                [dataclasses.asdict(f) for f in findings],
-                sort_keys=True, indent=2))
+            print(json.dumps([dataclasses.asdict(f) for f in findings], sort_keys=True, indent=2))
         elif not args.quiet:
             for f in findings:
                 print(f.render(), file=sys.stderr)
 
     if not args.json and not args.quiet:
-        print(f"KB lint: {len(errors)} error(s), {len(warnings)} warning(s), "
-              f"{len(pages)} page(s) scanned",
-              file=sys.stderr)
+        print(
+            f"KB lint: {len(errors)} error(s), {len(warnings)} warning(s), "
+            f"{len(pages)} page(s) scanned",
+            file=sys.stderr,
+        )
 
     return 1 if errors else 0
 

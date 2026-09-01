@@ -20,7 +20,7 @@ def row_field(state, key: str, default=None):
 
 
 class Candidate:
-    __slots__ = ("question", "tags", "components", "score", "state", "hist_correct")
+    __slots__ = ("components", "hist_correct", "question", "score", "state", "tags")
 
     def __init__(self, question, tags):
         self.question = question

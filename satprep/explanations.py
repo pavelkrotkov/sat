@@ -23,6 +23,7 @@ This module NEVER mutates the database or writes to the KB vault. Its
 sole output is an `Explanation` dataclass for callers (admin UI, server
 endpoint, batch harness) to render.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -35,8 +36,8 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from .corpus.tagger import diagnose_error, reasoning_tags
 from .corpus.tagger import _tokens as _corpus_tokens
+from .corpus.tagger import diagnose_error, reasoning_tags
 from .corpus.tags import effective_tags
 
 log = logging.getLogger(__name__)
@@ -63,9 +64,11 @@ _ALLOWED_MODELS: set[str] = {
 # Data model
 # ---------------------------------------------------------------------------
 
+
 @dataclasses.dataclass(frozen=True)
 class Explanation:
     """Stable, JSON-serialisable result of explain_error()."""
+
     tested_task: str
     tempting_answer: str
     exact_failure: str
@@ -81,6 +84,7 @@ class Explanation:
 # ---------------------------------------------------------------------------
 # Retrieval
 # ---------------------------------------------------------------------------
+
 
 def _repo_root() -> pathlib.Path:
     """Locate the KB root (the parent of kb/wiki/index.md) without
@@ -107,8 +111,7 @@ def _load_index(repo: pathlib.Path) -> dict:
         log.warning("could not load KB retrieval index from %s: %s", p, e)
         return {}
     if not isinstance(data, dict) or not isinstance(data.get("pages"), list):
-        log.warning("KB retrieval index has unexpected shape: top-level=%r",
-                    type(data).__name__)
+        log.warning("KB retrieval index has unexpected shape: top-level=%r", type(data).__name__)
         return {}
     return data
 
@@ -120,12 +123,10 @@ def _error_to_kb_hits(errset_lower: set[str], page_path: str) -> int:
     observed errors, 0 otherwise. The mapping is small and explicit on
     purpose: extension means editing a 6-line table, not adjusting weights.
     """
-    strong = {"qualifier_strength", "absolute_vs_tentative_language",
-              "over_inference"}
+    strong = {"qualifier_strength", "absolute_vs_tentative_language", "over_inference"}
     trap = {"true_but_not_supported", "same_topic_wrong_relationship"}
     inference = {"unsupported_inference"}
-    confusion = {"direction_reversal", "paraphrase_precision",
-                 "near_synonym_distinction"}
+    confusion = {"direction_reversal", "paraphrase_precision", "near_synonym_distinction"}
     causal = {"cause_vs_correlation", "hypothesis_vs_result"}
     explicit = {
         "kb/wiki/summaries/settele-strong-words.md": strong,
@@ -140,10 +141,14 @@ def _error_to_kb_hits(errset_lower: set[str], page_path: str) -> int:
     return 0
 
 
-def _retrieve_pages(index: dict, *, task_tags: list[str],
-                    error_taxonomy: list[str] | None = None,
-                    question_fingerprint: str = "",
-                    max_pages: int = 3) -> list[dict]:
+def _retrieve_pages(
+    index: dict,
+    *,
+    task_tags: list[str],
+    error_taxonomy: list[str] | None = None,
+    question_fingerprint: str = "",
+    max_pages: int = 3,
+) -> list[dict]:
     """Pick the smallest relevant subset of KB pages.
 
     Relevance is the union of three signals:
@@ -182,24 +187,24 @@ def _retrieve_pages(index: dict, *, task_tags: list[str],
             pf = page.get("question_fingerprint") or ""
             if question_fingerprint and pf and pf != question_fingerprint:
                 continue
-        page_tags = {_tag_family(t)
-                     for t in (page.get("tags") or [])}
+        page_tags = {_tag_family(t) for t in (page.get("tags") or [])}
         tag_overlap = len(tagset & page_tags)
         mapping_hits = _error_to_kb_hits(errset_lower, path)
         # If the review page matches our question's fingerprint, add
         # 3 to mapping_hits so it ranks above pure tag-overlap
         # matches. A non-matching review was filtered out above.
-        if (page.get("type") == "question-review"
-                and question_fingerprint
-                and (page.get("question_fingerprint") or "") == question_fingerprint):
+        if (
+            page.get("type") == "question-review"
+            and question_fingerprint
+            and (page.get("question_fingerprint") or "") == question_fingerprint
+        ):
             mapping_hits += 3
         if tag_overlap <= 0 and mapping_hits <= 0:
             continue
         # PR-43 review: error-taxonomy hits rank above pure tag overlap,
         # so pack mapping_hits first and total score second for a useful
         # tie-breaker.
-        scored.append((mapping_hits, tag_overlap + mapping_hits,
-                       path, page))
+        scored.append((mapping_hits, tag_overlap + mapping_hits, path, page))
     # Sort by mapping hits (error taxonomy matches rank higher), then
     # total, then path for deterministic tie-breaking.
     scored.sort(key=lambda t: (-t[0], -t[1], t[2]))
@@ -215,26 +220,49 @@ def _tag_family(tag: str) -> str:
     if not tag:
         return ""
     t = tag.strip().lower()
-    if t in {"unsupported_inference", "over_inference", "irrelevant_detail",
-             "evidence_relevance", "evidence_strength", "claim_vs_evidence",
-             "main_claim_vs_detail", "true_but_not_supported",
-             "abstract_relationship_extraction"}:
+    if t in {
+        "unsupported_inference",
+        "over_inference",
+        "irrelevant_detail",
+        "evidence_relevance",
+        "evidence_strength",
+        "claim_vs_evidence",
+        "main_claim_vs_detail",
+        "true_but_not_supported",
+        "abstract_relationship_extraction",
+    }:
         return "inference"
-    if t in {"cause_vs_correlation", "hypothesis_vs_result",
-             "direction_reversal", "comparison_relationship",
-             "scope_shift", "wrong_reference_group",
-             "chronology"}:
+    if t in {
+        "cause_vs_correlation",
+        "hypothesis_vs_result",
+        "direction_reversal",
+        "comparison_relationship",
+        "scope_shift",
+        "wrong_reference_group",
+        "chronology",
+    }:
         return "evidence"
-    if t in {"paraphrase_precision", "near_synonym_distinction",
-             "word_sense_in_context", "qualifier_strength",
-             "absolute_vs_tentative_language", "tone_or_stance",
-             "degree_or_intensity", "author_purpose",
-             "contrast_concession", "logical_connector",
-             "quantifier_mismatch"}:
+    if t in {
+        "paraphrase_precision",
+        "near_synonym_distinction",
+        "word_sense_in_context",
+        "qualifier_strength",
+        "absolute_vs_tentative_language",
+        "tone_or_stance",
+        "degree_or_intensity",
+        "author_purpose",
+        "contrast_concession",
+        "logical_connector",
+        "quantifier_mismatch",
+    }:
         return "word-in-context"
-    if t in {"cross_text_agreement", "cross_text_disagreement",
-             "same_topic_wrong_relationship", "dense_scientific_vocabulary",
-             "scientific_noun_overload"}:
+    if t in {
+        "cross_text_agreement",
+        "cross_text_disagreement",
+        "same_topic_wrong_relationship",
+        "dense_scientific_vocabulary",
+        "scientific_noun_overload",
+    }:
         return "passage-strategy"
     if t in {"pacing", "pacing-strategy", "pacing_strategy"}:
         return "pacing-strategy"
@@ -245,6 +273,7 @@ def _tag_family(tag: str) -> str:
 # Evidence extraction
 # ---------------------------------------------------------------------------
 
+
 def _tokenize_for_evidence(text: str) -> set[str]:
     """Thin wrapper over the corpus tokenizer, kept under this name so
     `_pick_passage_span` and tests can pass a tokenizer without
@@ -254,8 +283,9 @@ def _tokenize_for_evidence(text: str) -> set[str]:
     return _corpus_tokens(text)
 
 
-def _extract_evidence(passage: str, stem: str, choices: list[dict],
-                      student_letter: str, correct_letter: str) -> list[dict]:
+def _extract_evidence(
+    passage: str, stem: str, choices: list[dict], student_letter: str, correct_letter: str
+) -> list[dict]:
     """Collect the smallest set of {role, text} dicts that any
     explanation must rest on: the question stem, the student's chosen
     choice, the correct choice, and the smallest relevant passage span.
@@ -276,16 +306,21 @@ def _extract_evidence(passage: str, stem: str, choices: list[dict],
         out.append({"role": "stem", "text": stem})
     cmap = {c.get("letter", ""): c.get("text", "") for c in choices or []}
     if student_letter and cmap.get(student_letter):
-        out.append({"role": "student_choice", "letter": student_letter,
-                    "text": cmap[student_letter]})
+        out.append(
+            {"role": "student_choice", "letter": student_letter, "text": cmap[student_letter]}
+        )
     if correct_letter and cmap.get(correct_letter):
-        out.append({"role": "correct_choice", "letter": correct_letter,
-                    "text": cmap[correct_letter]})
+        out.append(
+            {"role": "correct_choice", "letter": correct_letter, "text": cmap[correct_letter]}
+        )
     if passage:
-        excerpt = _pick_passage_span(passage, stem,
-                                     cmap.get(correct_letter, ""),
-                                     cmap.get(student_letter, ""),
-                                     _tokenize_for_evidence)
+        excerpt = _pick_passage_span(
+            passage,
+            stem,
+            cmap.get(correct_letter, ""),
+            cmap.get(student_letter, ""),
+            _tokenize_for_evidence,
+        )
         out.append({"role": "passage_excerpt", "text": excerpt})
     return out
 
@@ -295,8 +330,9 @@ def _extract_evidence(passage: str, stem: str, choices: list[dict],
 _EVIDENCE_MAX_CHARS = 480
 
 
-def _pick_passage_span(passage: str, stem: str, correct_text: str,
-                       student_text: str, tokenize) -> str:
+def _pick_passage_span(
+    passage: str, stem: str, correct_text: str, student_text: str, tokenize
+) -> str:
     """Pick a bounded passage excerpt that still contains the cited
     support when the answer evidence is more than 240 chars into the
     text. Returns at most _EVIDENCE_MAX_CHARS characters."""
@@ -304,8 +340,7 @@ def _pick_passage_span(passage: str, stem: str, correct_text: str,
         return ""
     if len(passage) <= _EVIDENCE_MAX_CHARS:
         return passage
-    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", passage)
-                 if s.strip()]
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", passage) if s.strip()]
     if not sentences:
         # No sentence boundary - hard cap to keep the prompt bounded.
         return passage[:_EVIDENCE_MAX_CHARS]
@@ -351,6 +386,7 @@ def _pick_passage_span(passage: str, stem: str, correct_text: str,
 # ---------------------------------------------------------------------------
 # Deterministic (rule-only) explanation
 # ---------------------------------------------------------------------------
+
 
 def _rule_based_explanation(
     passage: str,
@@ -409,7 +445,8 @@ def _rule_based_explanation(
         correct_reasoning=correct_reasoning,
         kb_tactic_refs=[p.get("path", "") for p in kb_pages if p.get("path")],
         evidence_citations=_extract_evidence(
-            passage, stem, choices, student_letter, correct_letter),
+            passage, stem, choices, student_letter, correct_letter
+        ),
         confidence=confidence,
         mode="rule",
         model="",
@@ -420,6 +457,7 @@ def _rule_based_explanation(
 # ---------------------------------------------------------------------------
 # LLM call
 # ---------------------------------------------------------------------------
+
 
 def _llm_configured() -> tuple[str, str, str] | None:
     """Return (endpoint, model, api_key) if a usable config exists, else
@@ -441,14 +479,16 @@ def _llm_configured() -> tuple[str, str, str] | None:
         if not base:
             base = _DEFAULT_ENDPOINT
         endpoint = _normalize_openai_endpoint(base)
-    api_key = os.environ.get("SAT_EXPLAIN_API_KEY",
-                             os.environ.get("OPENAI_API_KEY", ""))
+    api_key = os.environ.get("SAT_EXPLAIN_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
     model = os.environ.get("SAT_EXPLAIN_MODEL", _DEFAULT_MODEL)
     if not api_key:
         return None
     if model not in _ALLOWED_MODELS:
-        log.warning("SAT_EXPLAIN_MODEL=%r is not on the allowlist %r; "
-                    "falling back to rule-based", model, sorted(_ALLOWED_MODELS))
+        log.warning(
+            "SAT_EXPLAIN_MODEL=%r is not on the allowlist %r; falling back to rule-based",
+            model,
+            sorted(_ALLOWED_MODELS),
+        )
         return None
     return endpoint.rstrip("/"), model, api_key
 
@@ -468,8 +508,9 @@ def _normalize_openai_endpoint(base: str) -> str:
     return base + "/v1" + _CHAT_COMPLETIONS_PATH
 
 
-def _call_llm(endpoint: str, model: str, api_key: str, messages: list[dict],
-              *, max_tokens: int = 700) -> str:
+def _call_llm(
+    endpoint: str, model: str, api_key: str, messages: list[dict], *, max_tokens: int = 700
+) -> str:
     """POST to an OpenAI-compatible /v1/chat/completions endpoint.
 
     PR-43 review: rather than assume the response has the canonical
@@ -477,13 +518,11 @@ def _call_llm(endpoint: str, model: str, api_key: str, messages: list[dict],
     KeyError / IndexError / TypeError on malformed-but-successful
     responses), raise ValueError on any structural mismatch so the
     caller's abstention handler can catch a uniform error class."""
-    payload = {"model": model, "messages": messages,
-               "max_tokens": max_tokens, "temperature": 0.2}
+    payload = {"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": 0.2}
     req = urllib.request.Request(
         endpoint,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json",
-                 "Authorization": f"Bearer {api_key}"},
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=20) as resp:
@@ -496,12 +535,12 @@ def _call_llm(endpoint: str, model: str, api_key: str, messages: list[dict],
         content = choices[0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as e:
         raise ValueError(
-            f"malformed OpenAI-compatible response: {e!r} "
-            "(expected choices[0].message.content)") from None
+            f"malformed OpenAI-compatible response: {e!r} (expected choices[0].message.content)"
+        ) from None
     if not isinstance(content, str):
         raise ValueError(
-            f"malformed OpenAI-compatible response: content is "
-            f"{type(content).__name__}, not str")
+            f"malformed OpenAI-compatible response: content is {type(content).__name__}, not str"
+        )
     return content
 
 
@@ -541,7 +580,7 @@ def _kb_body_excerpt(path: str, max_chars: int = 1200) -> str:
     if text.startswith("---"):
         end = text.find("\n---\n", 4)
         if end != -1:
-            text = text[end + 5:]
+            text = text[end + 5 :]
     return text if len(text) <= max_chars else text[:max_chars] + "…"
 
 
@@ -549,20 +588,24 @@ def _kb_body_excerpt(path: str, max_chars: int = 1200) -> str:
 REPO_ROOT_FOR_BODY = _repo_root()
 
 
-def _prompt_messages(rule_explanation: Explanation,
-                     kb_pages: list[dict],
-                     rationale: str = "") -> list[dict]:
+def _prompt_messages(
+    rule_explanation: Explanation, kb_pages: list[dict], rationale: str = ""
+) -> list[dict]:
     """Build the chat messages. The user message carries the structured
     inputs as JSON so the LLM doesn't have to parse them out of prose.
     The KB body excerpts (PR-43 round-3) give the model the actual
     tactics, not just the page title; the rationale (PR-43 round-3) is
     the most authoritative grounding source for College Board items."""
-    kb_brief = [{"path": p.get("path", ""),
-                 "title": p.get("title", ""),
-                 "tags": p.get("tags", []),
-                 "description": p.get("description", ""),
-                 "body_excerpt": _kb_body_excerpt(p.get("path", ""))}
-                for p in kb_pages]
+    kb_brief = [
+        {
+            "path": p.get("path", ""),
+            "title": p.get("title", ""),
+            "tags": p.get("tags", []),
+            "description": p.get("description", ""),
+            "body_excerpt": _kb_body_excerpt(p.get("path", "")),
+        }
+        for p in kb_pages
+    ]
     user_payload = {
         "tested_task": rule_explanation.tested_task,
         "rule_based_error_taxonomy": rule_explanation.error_taxonomy,
@@ -601,6 +644,7 @@ def _parse_llm_json(text: str) -> dict | None:
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def explain_error(
     *,
     question_id: int,
@@ -617,11 +661,9 @@ def explain_error(
     explanation. Never mutates `data/satprep.db`. Safe to call with no
     LLM configured (returns a deterministic rule-based explanation)."""
     # 1. Rule-based taxonomy (always; the LLM is constrained to this).
-    task_tags = reasoning_tags(passage, stem,
-                                [c.get("text", "") for c in choices or []])
+    task_tags = reasoning_tags(passage, stem, [c.get("text", "") for c in choices or []])
     cmap = {c.get("letter", ""): c.get("text", "") for c in choices or []}
-    error_taxonomy = diagnose_error(
-        cmap.get(correct_letter, ""), cmap.get(student_letter, ""))
+    error_taxonomy = diagnose_error(cmap.get(correct_letter, ""), cmap.get(student_letter, ""))
     # PR-43 round-3: prefer the persisted effective_tags (admin
     # suppressions and manual corrections) over the raw rule inference
     # when a connection is available. The raw inference still informs
@@ -639,13 +681,20 @@ def explain_error(
     # pages are excluded from the retrieved set; a review for a different
     # question would otherwise crowd out the more relevant tactic pages.
     index = _load_index(_repo_root())
-    kb_pages = _retrieve_pages(index, task_tags=effective,
-                                error_taxonomy=error_taxonomy,
-                                question_fingerprint=question_fingerprint)
+    kb_pages = _retrieve_pages(
+        index,
+        task_tags=effective,
+        error_taxonomy=error_taxonomy,
+        question_fingerprint=question_fingerprint,
+    )
 
     # 3. Deterministic base.
     base = _rule_based_explanation(
-        passage, stem, choices, student_letter, correct_letter,
+        passage,
+        stem,
+        choices,
+        student_letter,
+        correct_letter,
         effective_question_tags=effective,
         error_taxonomy=error_taxonomy,
         kb_pages=kb_pages,
@@ -655,27 +704,31 @@ def explain_error(
     # constrained to. If it is empty there is nothing to cite and the
     # LLM path should not be allowed to invent a failure mode.
     if not error_taxonomy:
-        return dataclasses.replace(base, mode="abstained", confidence="low",
-                                   model="")
+        return dataclasses.replace(base, mode="abstained", confidence="low", model="")
     # 4. Optional LLM upgrade.
     cfg = _llm_configured()
     if cfg is None:
         return base
     endpoint, model, api_key = cfg
     try:
-        content = _call_llm(endpoint, model, api_key,
-                              _prompt_messages(base, kb_pages,
-                                                rationale=rationale))
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
-            KeyError, IndexError, TypeError,
-            json.JSONDecodeError, ValueError) as e:
+        content = _call_llm(
+            endpoint, model, api_key, _prompt_messages(base, kb_pages, rationale=rationale)
+        )
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        TimeoutError,
+        KeyError,
+        IndexError,
+        TypeError,
+        json.JSONDecodeError,
+        ValueError,
+    ) as e:
         log.warning("LLM explanation call failed: %s; abstaining", e)
-        return dataclasses.replace(base, mode="abstained", confidence="low",
-                                   model=model)
+        return dataclasses.replace(base, mode="abstained", confidence="low", model=model)
     parsed = _parse_llm_json(content)
     if not isinstance(parsed, dict):
-        return dataclasses.replace(base, mode="abstained", confidence="low",
-                                   model=model)
+        return dataclasses.replace(base, mode="abstained", confidence="low", model=model)
     confidence = parsed.get("confidence", "low")
     if confidence not in {"high", "medium", "low"}:
         confidence = "low"

@@ -5,7 +5,7 @@ satprep.weakness and read through `risk_scores`; this module shapes those
 numbers for the dashboard and never computes a second opinion.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from . import config
 from .corpus.tags import tags_by_question
@@ -24,11 +24,15 @@ def skill_accuracy(conn) -> list[dict]:
     out = []
     for r in rows:
         n, c = r["n"], r["c"] or 0
-        out.append({
-            "skill": r["skill"], "seen": n, "correct": c,
-            "raw_accuracy": round(100 * c / n, 1),
-            "risk_score": model.get(r["skill"], 0.0),
-        })
+        out.append(
+            {
+                "skill": r["skill"],
+                "seen": n,
+                "correct": c,
+                "raw_accuracy": round(100 * c / n, 1),
+                "risk_score": model.get(r["skill"], 0.0),
+            }
+        )
     return sorted(out, key=lambda x: -x["risk_score"])
 
 
@@ -50,12 +54,17 @@ def tag_accuracy(conn) -> list[dict]:
         n = r["n"]
         if not n:
             continue
-        out.append({
-            "tag": r["tag"], "seen": n, "correct": r["c"], "wrong": r["w"],
-            "shaky_correct": r["shaky_correct"],
-            "raw_accuracy": round(100 * r["c"] / n, 1),
-            "risk_score": model.get(r["tag"], 0.0),
-        })
+        out.append(
+            {
+                "tag": r["tag"],
+                "seen": n,
+                "correct": r["c"],
+                "wrong": r["w"],
+                "shaky_correct": r["shaky_correct"],
+                "raw_accuracy": round(100 * r["c"] / n, 1),
+                "risk_score": model.get(r["tag"], 0.0),
+            }
+        )
     return sorted(out, key=lambda x: -x["risk_score"])
 
 
@@ -83,21 +92,23 @@ def high_value_misconceptions(conn) -> list[dict]:
         if r["id"] in seen_ids:
             continue
         seen_ids.add(r["id"])
-        out.append({
-            "question_id": r["id"],
-            "stem_excerpt": (r["stem"] or "")[:140],
-            "skill": r["official_skill"],
-            "chosen": r["chosen_letter"], "key": r["correct_letter"],
-            "error_tags": (r["error_tags"] or "").split(",") if r["error_tags"] else [],
-        })
+        out.append(
+            {
+                "question_id": r["id"],
+                "stem_excerpt": (r["stem"] or "")[:140],
+                "skill": r["official_skill"],
+                "chosen": r["chosen_letter"],
+                "key": r["correct_letter"],
+                "error_tags": (r["error_tags"] or "").split(",") if r["error_tags"] else [],
+            }
+        )
     return out[:20]
 
 
 def transfer_performance(conn) -> dict:
     """Separate accuracy: exact old items vs new items sharing weak tags vs benchmark."""
     weak_tag_names = {
-        tag for tag, score in risk_scores(conn, "tag").items()
-        if score >= config.WEAK_TAG_THRESHOLD
+        tag for tag, score in risk_scores(conn, "tag").items() if score >= config.WEAK_TAG_THRESHOLD
     }
     tag_map = tags_by_question(conn)
 
@@ -136,16 +147,25 @@ def transfer_performance(conn) -> dict:
         return round(100 * c / n, 1) if n else None
 
     return {
-        "old_exact_questions": {"n": buckets["old_exact"][1], "accuracy": pct(buckets["old_exact"])},
-        "new_questions_sharing_weak_tags": {"n": buckets["new_same_weak_tag"][1], "accuracy": pct(buckets["new_same_weak_tag"])},
+        "old_exact_questions": {
+            "n": buckets["old_exact"][1],
+            "accuracy": pct(buckets["old_exact"]),
+        },
+        "new_questions_sharing_weak_tags": {
+            "n": buckets["new_same_weak_tag"][1],
+            "accuracy": pct(buckets["new_same_weak_tag"]),
+        },
         "fresh_other": {"n": buckets["fresh_other"][1], "accuracy": pct(buckets["fresh_other"])},
-        "protected_benchmark": {"n": buckets["protected_benchmark"][1], "accuracy": pct(buckets["protected_benchmark"])},
+        "protected_benchmark": {
+            "n": buckets["protected_benchmark"][1],
+            "accuracy": pct(buckets["protected_benchmark"]),
+        },
     }
 
 
 def trend_by_tag(conn, window: int = 30) -> list[dict]:
     """Rolling recent performance by reasoning tag across in-app sessions."""
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=window)).isoformat()
+    cutoff = (datetime.now(UTC) - timedelta(days=window)).isoformat()
     rows = conn.execute(
         """SELECT qt.tag AS tag,
                   SUM(a.correct) AS c, COUNT(*) AS n
@@ -168,14 +188,17 @@ def corpus_summary(conn) -> dict:
         "questions_total": q("SELECT COUNT(*) FROM questions WHERE active=1"),
         "rw_historical": q("SELECT COUNT(*) FROM questions WHERE pool='historical'"),
         "fresh_training": q("SELECT COUNT(*) FROM questions WHERE pool='fresh_training'"),
-        "protected_benchmark_unseen": q("SELECT COUNT(*) FROM questions WHERE pool='protected_benchmark' AND seen_benchmark=0"),
+        "protected_benchmark_unseen": q(
+            "SELECT COUNT(*) FROM questions WHERE pool='protected_benchmark' AND seen_benchmark=0"
+        ),
         "attempts_total": q("SELECT COUNT(*) FROM attempts"),
         "sessions_total": q("SELECT COUNT(*) FROM sessions WHERE status='completed'"),
     }
 
 
-def recent_session_scores(conn, limit: int | None = 10, exclude: str | None = None,
-                          before: tuple[str, int] | None = None) -> list[dict]:
+def recent_session_scores(
+    conn, limit: int | None = 10, exclude: str | None = None, before: tuple[str, int] | None = None
+) -> list[dict]:
     """Completed in-app sessions, most recently finished first, as accuracy.
 
     Bare counts on the results screen ("8/12") say nothing about whether that
@@ -223,10 +246,15 @@ def recent_session_scores(conn, limit: int | None = 10, exclude: str | None = No
         params.append(limit)
     rows = conn.execute(sql, params).fetchall()
     return [
-        {"id": r["id"], "mode": r["mode"], "created_at": r["created_at"],
-         "finished_at": r["finished_at"],
-         "n": r["n"], "correct": r["c"],
-         "accuracy": round(100 * r["c"] / r["n"], 1)}
+        {
+            "id": r["id"],
+            "mode": r["mode"],
+            "created_at": r["created_at"],
+            "finished_at": r["finished_at"],
+            "n": r["n"],
+            "correct": r["c"],
+            "accuracy": round(100 * r["c"] / r["n"], 1),
+        }
         for r in rows
     ]
 
@@ -247,22 +275,24 @@ def session_comparison(conn, session_id: str, summary: dict) -> dict:
         (session_id,),
     ).fetchone()
     previous = recent_session_scores(
-        conn, limit=5, exclude=session_id,
-        before=((anchor["finished_at"], anchor["last_attempt_id"])
-                if anchor and anchor["finished_at"] else None),
+        conn,
+        limit=5,
+        exclude=session_id,
+        before=(
+            (anchor["finished_at"], anchor["last_attempt_id"])
+            if anchor and anchor["finished_at"]
+            else None
+        ),
     )
-    baseline = (round(sum(p["accuracy"] for p in previous) / len(previous), 1)
-                if previous else None)
-    delta = (round(accuracy - baseline, 1)
-             if accuracy is not None and baseline is not None else None)
+    baseline = round(sum(p["accuracy"] for p in previous) / len(previous), 1) if previous else None
+    delta = round(accuracy - baseline, 1) if accuracy is not None and baseline is not None else None
     best = max((p["accuracy"] for p in previous), default=None)
     return {
         "accuracy": accuracy,
         "baseline": baseline,
         "delta": delta,
         "previous": previous,
-        "is_personal_best": (accuracy is not None and best is not None
-                             and accuracy > best),
+        "is_personal_best": (accuracy is not None and best is not None and accuracy > best),
     }
 
 
@@ -304,13 +334,15 @@ def practice_profile(conn, entity_type: str) -> list[dict]:
         wrong = stats.get("wrong", 0)
         correct = stats.get("correct", 0)
         seen = wrong + correct
-        out.append({
-            "name": entity,
-            "risk_score": stats.get("score", 0.0),
-            "wrong": wrong,
-            "correct": correct,
-            "seen": seen,
-        })
+        out.append(
+            {
+                "name": entity,
+                "risk_score": stats.get("score", 0.0),
+                "wrong": wrong,
+                "correct": correct,
+                "seen": seen,
+            }
+        )
     return sorted(out, key=lambda x: -x["risk_score"])
 
 

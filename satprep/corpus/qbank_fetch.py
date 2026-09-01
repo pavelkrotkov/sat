@@ -16,22 +16,23 @@ import base64
 import html as html_mod
 import json
 import re
+import sqlite3
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from bs4 import BeautifulSoup
 
 from .. import config
-from ..config import SKILL_TO_DOMAIN
 from ..clock import utc_now
+from ..config import SKILL_TO_DOMAIN
 from . import fingerprint as fpmod
 
 BASE = "https://qbank-api.collegeboard.org/msreportingquestionbank-prod/questionbank"
-SAT_RW_ASMT = 99   # SAT
-SAT_RW_TEST = 1    # Reading and Writing
+SAT_RW_ASMT = 99  # SAT
+SAT_RW_TEST = 1  # Reading and Writing
 DOMAINS = ["INI", "CAS", "EOI", "SEC"]
 
 # Inline figures (EQB embeds graphs/diagrams in the stimulus HTML) are written
@@ -64,8 +65,16 @@ _ANY_FIGURE_RE = re.compile(
 #: table html with |safe — sanitization here is the ONLY reason that is
 #: acceptable, so the output must be structurally limited to the allowlist.
 _TABLE_ALLOWED_TAGS = {
-    "table", "caption", "thead", "tbody", "tfoot",
-    "tr", "th", "td", "col", "colgroup",
+    "table",
+    "caption",
+    "thead",
+    "tbody",
+    "tfoot",
+    "tr",
+    "th",
+    "td",
+    "col",
+    "colgroup",
 }
 _TABLE_ALLOWED_ATTRS = {
     "th": {"scope"},
@@ -80,7 +89,9 @@ def _post(url: str, payload: dict, retries: int = 3) -> object:
     for attempt in range(retries):
         try:
             req = urllib.request.Request(
-                url, data=body, headers={"Content-Type": "application/json"},
+                url,
+                data=body,
+                headers={"Content-Type": "application/json"},
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=30) as resp:
@@ -99,8 +110,7 @@ def _clean_html(html: str | None) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _save_figure(ext_id: str, index: int, content: bytes, suffix: str,
-                 image_dir: Path) -> str:
+def _save_figure(ext_id: str, index: int, content: bytes, suffix: str, image_dir: Path) -> str:
     """Write one figure into image_dir; returns the bare filename stored in
     images_json (the template renders /figures/<name> via the basename filter)."""
     image_dir.mkdir(parents=True, exist_ok=True)
@@ -182,8 +192,9 @@ def sanitize_table(html: str) -> str | None:
     return str(table)
 
 
-def _extract_visuals(ext_id: str, html: str, image_dir: Path,
-                     start_index: int = 1) -> tuple[str, list[dict], int]:
+def _extract_visuals(
+    ext_id: str, html: str, image_dir: Path, start_index: int = 1
+) -> tuple[str, list[dict], int]:
     """Pull inline visuals (figures AND data tables) out of EQB HTML.
 
     Returns (remaining_html, visual_records, next_index). One
@@ -244,7 +255,7 @@ def _extract_visuals(ext_id: str, html: str, image_dir: Path,
         b64 = re.sub(r"\s+", "", data.split(",", 1)[1])
         if not b64:  # whitespace-only payload: nothing to save, skip
             return None
-        mime = data[len("data:image/"):].split(";", 1)[0].lower()
+        mime = data[len("data:image/") :].split(";", 1)[0].lower()
         suffix = {"jpeg": "jpg", "svg+xml": "svg"}.get(mime) or mime
         suffix = suffix.rsplit("/", 1)[-1].split("+", 1)[-1]
         if not suffix.isalnum() or len(suffix) > 5:
@@ -272,10 +283,11 @@ def _extract_visuals(ext_id: str, html: str, image_dir: Path,
     return remaining, visuals, index
 
 
-def list_questions(domains: list[str] | None = None,
-                   assessment: int = SAT_RW_ASMT, test: int = SAT_RW_TEST) -> list[dict]:
+def list_questions(
+    domains: list[str] | None = None, assessment: int = SAT_RW_ASMT, test: int = SAT_RW_TEST
+) -> list[dict]:
     out: list[dict] = []
-    for cd in (domains or DOMAINS):
+    for cd in domains or DOMAINS:
         rows = _post(
             f"{BASE}/digital/get-questions",
             {"asmtEventId": assessment, "test": test, "domain": cd},
@@ -287,7 +299,8 @@ def list_questions(domains: list[str] | None = None,
 
 def fetch_question(external_id: str) -> dict | None:
     try:
-        return _post(f"{BASE}/digital/get-question", {"external_id": external_id})
+        result = _post(f"{BASE}/digital/get-question", {"external_id": external_id})
+        return result if isinstance(result, dict) else None
     except RuntimeError:
         return None
 
@@ -316,8 +329,9 @@ def _normalize(detail: dict, meta: dict, image_dir: Path | None = None) -> dict 
     for c in choices:
         c["is_correct"] = c["letter"] == correct_letter
     difficulty = meta.get("difficulty") or ""
-    difficulty = _DIFFICULTY_MAP.get(str(difficulty).strip().upper(),
-                                     str(difficulty).strip().lower())
+    difficulty = _DIFFICULTY_MAP.get(
+        str(difficulty).strip().upper(), str(difficulty).strip().lower()
+    )
     # Visuals (graphs/diagrams/tables) live inline in the stem and stimulus
     # HTML. Save them before _clean_html strips markup; their visible text
     # (labels, captions, cell text) is left in place so the stored text still
@@ -327,8 +341,9 @@ def _normalize(detail: dict, meta: dict, image_dir: Path | None = None) -> dict 
     # One numbering across both fields so stem+stimulus visuals never
     # collide on a filename, in document order within each field.
     stem_html, stem_visuals, nxt = _extract_visuals(ext_id, detail.get("stem") or "", image_dir)
-    stim_html, stim_visuals, _ = _extract_visuals(ext_id, detail.get("stimulus") or "",
-                                                  image_dir, start_index=nxt)
+    stim_html, stim_visuals, _ = _extract_visuals(
+        ext_id, detail.get("stimulus") or "", image_dir, start_index=nxt
+    )
     visuals = stem_visuals + stim_visuals
     images = [v["file"] for v in visuals if v.get("kind") == "image"]
     return {
@@ -374,8 +389,7 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
                 return  # already has figures
         except ValueError:
             pass
-        conn.execute("UPDATE questions SET images_json=? WHERE id=?",
-                     (images_json, target_id))
+        conn.execute("UPDATE questions SET images_json=? WHERE id=?", (images_json, target_id))
 
     def _backfill_visuals(target_id: int, current: str) -> None:
         if not visuals:
@@ -385,11 +399,12 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
                 return  # already has visuals
         except ValueError:
             pass
-        conn.execute("UPDATE questions SET visuals_json=? WHERE id=?",
-                     (visuals_json, target_id))
+        conn.execute("UPDATE questions SET visuals_json=? WHERE id=?", (visuals_json, target_id))
 
     def _reconcile(target_id: int) -> str:
-        skill = exists_row["official_skill"] or row.get("skill", "")
+        row_ = exists_row
+        assert row_ is not None
+        skill = row_["official_skill"] or row.get("skill", "")
         domain = SKILL_TO_DOMAIN.get(skill, "") if skill else ""
         diff = (row.get("difficulty") or "").strip().lower()
         conn.execute(
@@ -398,17 +413,24 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
                    official_skill=?, official_domain=?,
                    skill_source=CASE WHEN ?!='' THEN 'reconciled' ELSE skill_source END,
                    rationale=CASE WHEN rationale='' THEN ? ELSE rationale END
-               WHERE id=?""",  # noqa: E501
-            (json.dumps(choices), row["correct"], diff, diff,
-             skill, domain,
-             exists_row["official_skill"] == "" and bool(skill),
-             row.get("rationale", ""), target_id),
+               WHERE id=?""",
+            (
+                json.dumps(choices),
+                row["correct"],
+                diff,
+                diff,
+                skill,
+                domain,
+                row_["official_skill"] == "" and bool(skill),
+                row.get("rationale", ""),
+                target_id,
+            ),
         )
-        _backfill_images(target_id, exists_row["images_json"] or "")
-        _backfill_visuals(target_id, exists_row["visuals_json"] or "")
+        _backfill_images(target_id, row_["images_json"] or "")
+        _backfill_visuals(target_id, row_["visuals_json"] or "")
         return "duplicate"
 
-    exists_row = None
+    exists_row: sqlite3.Row | None = None
     if exists:
         # Cross-source match (spec section 2): never counted as fresh.
         exists_row = exists
@@ -425,8 +447,17 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
                   official_domain=CASE WHEN official_skill='' AND ?!='' THEN ? ELSE official_domain END,
                   rationale=CASE WHEN rationale='' AND ?!='' THEN ? ELSE rationale END
               WHERE id=?""",
-            (diff, diff, skill, skill, skill, SKILL_TO_DOMAIN.get(skill, ""),
-             row.get("rationale", ""), row.get("rationale", ""), exists["id"]),
+            (
+                diff,
+                diff,
+                skill,
+                skill,
+                skill,
+                SKILL_TO_DOMAIN.get(skill, ""),
+                row.get("rationale", ""),
+                row.get("rationale", ""),
+                exists["id"],
+            ),
         )
         _backfill_images(exists["id"], exists["images_json"] or "")
         _backfill_visuals(exists["id"], exists["visuals_json"] or "")
@@ -465,8 +496,17 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
                       official_domain=CASE WHEN official_skill='' AND ?!='' THEN ? ELSE official_domain END,
                       rationale=CASE WHEN rationale='' AND ?!='' THEN ? ELSE rationale END
                   WHERE id=?""",
-                (diff, diff, skill, skill, skill, SKILL_TO_DOMAIN.get(skill, ""),
-                 row.get("rationale", ""), row.get("rationale", ""), ext_row["id"]),
+                (
+                    diff,
+                    diff,
+                    skill,
+                    skill,
+                    skill,
+                    SKILL_TO_DOMAIN.get(skill, ""),
+                    row.get("rationale", ""),
+                    row.get("rationale", ""),
+                    ext_row["id"],
+                ),
             )
             _backfill_images(ext_row["id"], ext_row["images_json"] or "")
             _backfill_visuals(ext_row["id"], ext_row["visuals_json"] or "")
@@ -494,13 +534,25 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
            pool, seen_benchmark, is_new_bank, import_batch, imported_at, provenance_json)
           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,1,?,?,?)""",
         (
-            fp, "college_board_question_bank", batch, row.get("ext_id", ""), "",
-            row["passage"], row["stem"], json.dumps(choices), correct,
-            row.get("rationale", ""), images_json, visuals_json,
-            row.get("domain", ""), row.get("skill", ""),
+            fp,
+            "college_board_question_bank",
+            batch,
+            row.get("ext_id", ""),
+            "",
+            row["passage"],
+            row["stem"],
+            json.dumps(choices),
+            correct,
+            row.get("rationale", ""),
+            images_json,
+            visuals_json,
+            row.get("domain", ""),
+            row.get("skill", ""),
             "metadata" if row.get("skill") else "unknown",
             diff if diff in ("easy", "medium", "hard") else "",
-            pool, batch, utc_now(),
+            pool,
+            batch,
+            utc_now(),
             json.dumps(row.get("_provenance") or {"external_id": row.get("ext_id", "")}),
         ),
     )
@@ -531,13 +583,25 @@ def known_external_ids(conn) -> set[str]:
     return ids
 
 
-def fetch_qbank(conn, hard_only: bool = False, domains: list[str] | None = None,
-                limit: int = 0, sleep_s: float = 0.25) -> dict:
+def fetch_qbank(
+    conn,
+    hard_only: bool = False,
+    domains: list[str] | None = None,
+    limit: int = 0,
+    sleep_s: float = 0.25,
+) -> dict:
     """Pull SAT R&W items from the public EQB into the corpus. Idempotent."""
     have = known_external_ids(conn)
-    batch = f"eqb-{datetime.now(timezone.utc).strftime('%Y%m%d')}"
-    stats = {"listed": 0, "skipped_known": 0, "fetched": 0,
-             "added": 0, "duplicates": 0, "invalid": 0, "failed": 0}
+    batch = f"eqb-{datetime.now(UTC).strftime('%Y%m%d')}"
+    stats = {
+        "listed": 0,
+        "skipped_known": 0,
+        "fetched": 0,
+        "added": 0,
+        "duplicates": 0,
+        "invalid": 0,
+        "failed": 0,
+    }
 
     metas = list_questions(domains)
     stats["listed"] = len(metas)
@@ -553,8 +617,10 @@ def fetch_qbank(conn, hard_only: bool = False, domains: list[str] | None = None,
     if limit:
         todo = todo[:limit]
 
-    print(f"eqb: {stats['listed']} listed, {len(todo)} to fetch "
-          f"(batch {batch}, hard_only={hard_only})")
+    print(
+        f"eqb: {stats['listed']} listed, {len(todo)} to fetch "
+        f"(batch {batch}, hard_only={hard_only})"
+    )
     for i, m in enumerate(todo, 1):
         detail = fetch_question(str(m["external_id"]))
         if detail is None:
@@ -579,8 +645,9 @@ def fetch_qbank(conn, hard_only: bool = False, domains: list[str] | None = None,
     return stats
 
 
-def backfill_visuals(conn, hint: bool = True, limit: int = 0,
-                     sleep_s: float = 0.25, audit_only: bool = False) -> dict:
+def backfill_visuals(
+    conn, hint: bool = True, limit: int = 0, sleep_s: float = 0.25, audit_only: bool = False
+) -> dict:
     """Re-fetch bank questions whose visuals (figures/tables) were dropped at
     ingest time and attach them.
 
@@ -604,21 +671,33 @@ def backfill_visuals(conn, hint: bool = True, limit: int = 0,
     if hint:
         # Stems that name the embedded asset in any common word; the full
         # sweep (hint=False) is the only one that can't miss any.
-        sql += (" AND (stem LIKE '%graph%' OR stem LIKE '%figure%' OR stem LIKE '%diagram%'"
-                " OR stem LIKE '%table%' OR stem LIKE '%chart%' OR stem LIKE '%scatterplot%'"
-                " OR stem LIKE '%map%' OR stem LIKE '%illustration%' OR stem LIKE '%plot%')")
+        sql += (
+            " AND (stem LIKE '%graph%' OR stem LIKE '%figure%' OR stem LIKE '%diagram%'"
+            " OR stem LIKE '%table%' OR stem LIKE '%chart%' OR stem LIKE '%scatterplot%'"
+            " OR stem LIKE '%map%' OR stem LIKE '%illustration%' OR stem LIKE '%plot%')"
+        )
     sql += " ORDER BY id"
     rows = conn.execute(sql).fetchall()
     if limit:
         rows = rows[:limit]
-    stats = {"candidate": 0, "fetched": 0, "failed": 0, "now_visuals": 0,
-             "now_images": 0, "now_tables": 0, "still_empty": 0,
-             "unsupported_markup": 0, "missing_files": 0}
+    stats = {
+        "candidate": 0,
+        "fetched": 0,
+        "failed": 0,
+        "now_visuals": 0,
+        "now_images": 0,
+        "now_tables": 0,
+        "still_empty": 0,
+        "unsupported_markup": 0,
+        "missing_files": 0,
+    }
     for i, r in enumerate(rows, 1):
         stats["candidate"] += 1
         try:
-            ext = json.loads(r["provenance_json"] or "{}").get("external_id") \
+            ext = (
+                json.loads(r["provenance_json"] or "{}").get("external_id")
                 or r["source_question_number"]
+            )
         except json.JSONDecodeError:
             ext = r["source_question_number"]
         if not ext:
@@ -656,8 +735,10 @@ def backfill_visuals(conn, hint: bool = True, limit: int = 0,
                 print(f"  backfill {i}/{len(rows)} … {stats}")
             time.sleep(sleep_s)
             continue
-        conn.execute("UPDATE questions SET images_json=?, visuals_json=? WHERE id=?",
-                     (json.dumps(images), json.dumps(visuals), r["id"]))
+        conn.execute(
+            "UPDATE questions SET images_json=?, visuals_json=? WHERE id=?",
+            (json.dumps(images), json.dumps(visuals), r["id"]),
+        )
         stats["now_visuals"] += 1
         stats["now_images"] += len(images)
         stats["now_tables"] += sum(1 for v in visuals if v.get("kind") == "table")
@@ -670,11 +751,11 @@ def backfill_visuals(conn, hint: bool = True, limit: int = 0,
 
 
 #: Backward-compatible alias: figure-only backfill is now the visual sweep.
-def backfill_figures(conn, figure_hint: bool = True, limit: int = 0,
-                     sleep_s: float = 0.25, **kwargs) -> dict:
+def backfill_figures(
+    conn, figure_hint: bool = True, limit: int = 0, sleep_s: float = 0.25, **kwargs
+) -> dict:
     """Legacy name for `backfill_visuals` (issue #46 unified the sweep)."""
-    return backfill_visuals(conn, hint=figure_hint, limit=limit,
-                            sleep_s=sleep_s, **kwargs)
+    return backfill_visuals(conn, hint=figure_hint, limit=limit, sleep_s=sleep_s, **kwargs)
 
 
 if __name__ == "__main__":

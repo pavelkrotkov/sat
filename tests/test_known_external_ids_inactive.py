@@ -9,25 +9,30 @@ blocks the re-fetch.
 This test pins the contract: known_external_ids() must exclude inactive rows
 so that a deactivated item can be re-fetched as fresh.
 """
-from satprep.corpus.qbank_fetch import insert_qbank_row, known_external_ids, _normalize
-from conftest import add_question
 
+from satprep.corpus.qbank_fetch import _normalize, insert_qbank_row, known_external_ids
 
 DETAIL = {
     "type": "mcq",
     "stem": "<p>Which choice most logically completes the text?</p>",
     "stimulus": "<p>A stimulus &mdash; with entities.</p>",
-    "answerOptions": [{"id": "k1", "content": "<p>opt A</p>"},
-                      {"id": "k2", "content": "<p>opt B</p>"},
-                      {"id": "k3", "content": "<p>opt C</p>"},
-                      {"id": "k4", "content": "<p>opt D</p>"}],
+    "answerOptions": [
+        {"id": "k1", "content": "<p>opt A</p>"},
+        {"id": "k2", "content": "<p>opt B</p>"},
+        {"id": "k3", "content": "<p>opt C</p>"},
+        {"id": "k4", "content": "<p>opt D</p>"},
+    ],
     "keys": ["k2"],
     "rationale": "<p>Choice B is the best answer.</p>",
     "externalid": "ext-1",
 }
 
-META = {"external_id": "ext-1", "primary_class_cd_desc": "Information and Ideas",
-        "skill_desc": "Inferences", "difficulty": "H"}
+META = {
+    "external_id": "ext-1",
+    "primary_class_cd_desc": "Information and Ideas",
+    "skill_desc": "Inferences",
+    "difficulty": "H",
+}
 
 
 def test_known_external_ids_excludes_inactive(db):

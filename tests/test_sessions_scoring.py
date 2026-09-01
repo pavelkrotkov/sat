@@ -1,30 +1,57 @@
 import pytest
-
-from satprep.training.sessions import complete_session, create_session, review_payload, submit_answer
 from conftest import add_question
+
+from satprep.training.sessions import (
+    complete_session,
+    create_session,
+    review_payload,
+    submit_answer,
+)
 
 
 def _setup(db):
-    conn, path = db
+    conn, _path = db
     # historical errors + rights + fresh pool
     wq = []
     for i in range(5):
-        qid = add_question(conn, passage=f"wp{i}", stem=f"ws{i}?",
-                           choices=[f"a{i}", f"b{i}", f"c{i}", f"d{i}"], correct="A",
-                           source="bluebook_test", pool="historical",
-                           tags=("qualifier_strength",))
-        conn.execute("INSERT INTO attempts (session_id, question_id, chosen_letter, correct, confidence, time_ms, mode, attempted_at) VALUES (?,?,?,?,0,0,'historical','2026-03-01')",
-                     (f"sw{i}", qid, "C", 0))
+        qid = add_question(
+            conn,
+            passage=f"wp{i}",
+            stem=f"ws{i}?",
+            choices=[f"a{i}", f"b{i}", f"c{i}", f"d{i}"],
+            correct="A",
+            source="bluebook_test",
+            pool="historical",
+            tags=("qualifier_strength",),
+        )
+        conn.execute(
+            "INSERT INTO attempts (session_id, question_id, chosen_letter, correct, confidence, time_ms, mode, attempted_at) VALUES (?,?,?,?,0,0,'historical','2026-03-01')",
+            (f"sw{i}", qid, "C", 0),
+        )
         wq.append(qid)
     for i in range(8):
-        add_question(conn, passage=f"rp{i}", stem=f"rs{i}?",
-                     choices=["ra", "rb", "rc", "rd"], correct="B",
-                     source="bluebook_test", pool="historical", tags=("qualifier_strength",))
+        add_question(
+            conn,
+            passage=f"rp{i}",
+            stem=f"rs{i}?",
+            choices=["ra", "rb", "rc", "rd"],
+            correct="B",
+            source="bluebook_test",
+            pool="historical",
+            tags=("qualifier_strength",),
+        )
     for i in range(10):
-        add_question(conn, passage=f"fp{i}", stem=f"fs{i}?",
-                     choices=["fa", "fb", "fc", "fd"], correct="D",
-                     source="college_board_question_bank", pool="fresh_training",
-                     difficulty="hard", tags=("qualifier_strength",))
+        add_question(
+            conn,
+            passage=f"fp{i}",
+            stem=f"fs{i}?",
+            choices=["fa", "fb", "fc", "fd"],
+            correct="D",
+            source="college_board_question_bank",
+            pool="fresh_training",
+            difficulty="hard",
+            tags=("qualifier_strength",),
+        )
     conn.commit()
     return conn
 
@@ -49,7 +76,6 @@ def test_full_lifecycle_records_scores_and_review(db):
 
 
 def test_benchmark_answer_marks_seen(db):
-    from satprep.db import connect
 
     conn = _setup(db)
     sess = create_session(conn, "fresh_benchmark", count=4, seed="b")
@@ -58,8 +84,9 @@ def test_benchmark_answer_marks_seen(db):
     sid = sess["plan"]["session_id"]
     q = sess["questions"][0]
     submit_answer(conn, sid, q["id"], "Z", 2, 1000)
-    row = conn.execute("SELECT pool, seen_benchmark FROM questions WHERE id=?",
-                       (q["id"],)).fetchone()
+    row = conn.execute(
+        "SELECT pool, seen_benchmark FROM questions WHERE id=?", (q["id"],)
+    ).fetchone()
     assert row["seen_benchmark"] == 1 and row["pool"] != "protected_benchmark"
 
 
@@ -67,9 +94,17 @@ def test_confidence_clamped(db):
     conn = _setup(db)
     sess = create_session(conn, "error_clinic", count=3, seed="c")
     q = sess["questions"][0]
-    submit_answer(conn, sid := sess["plan"]["session_id"], q["id"],
-                  sess["questions"][0]["choices"][0]["letter"], 9, 5)
-    row = conn.execute("SELECT MAX(confidence) FROM attempts WHERE session_id=?", (sid,)).fetchone()[0]
+    submit_answer(
+        conn,
+        sid := sess["plan"]["session_id"],
+        q["id"],
+        sess["questions"][0]["choices"][0]["letter"],
+        9,
+        5,
+    )
+    row = conn.execute(
+        "SELECT MAX(confidence) FROM attempts WHERE session_id=?", (sid,)
+    ).fetchone()[0]
     assert row <= 3
 
 
@@ -78,26 +113,30 @@ def test_duplicate_submission_does_not_double_count(db):
     sess = create_session(conn, "error_clinic", count=3, seed="dup")
     sid = sess["plan"]["session_id"]
     q = sess["questions"][0]
-    r1 = submit_answer(conn, sid, q["id"], "Z", 2, 100)
+    submit_answer(conn, sid, q["id"], "Z", 2, 100)
     r2 = submit_answer(conn, sid, q["id"], "Z", 2, 100)
     assert r2.get("duplicate") is True
     n = conn.execute(
         "SELECT COUNT(*) FROM attempts WHERE session_id=? AND question_id=?",
         (sid, q["id"]),
     ).fetchone()[0]
-    st = conn.execute("SELECT times_seen FROM question_state WHERE question_id=?", (q["id"],)).fetchone()
+    st = conn.execute(
+        "SELECT times_seen FROM question_state WHERE question_id=?", (q["id"],)
+    ).fetchone()
     conn.close()
     assert n == 1 and (st is None or st["times_seen"] <= 1)
 
 
 def test_submission_outside_session_plan_rejected(db):
     from conftest import add_question
+
     conn = _setup(db)
     sess = create_session(conn, "targeted_drill", count=4, seed="rogue")
     sid = sess["plan"]["session_id"]
     rogue = add_question(db[0], passage="X", stem="x?", choices=["1", "2"], correct="A")
     db[0].commit()
     import pytest
+
     with pytest.raises(ValueError):
         submit_answer(conn, sid, rogue, "A", 3, 10)
 
@@ -105,21 +144,34 @@ def test_submission_outside_session_plan_rejected(db):
 def test_benchmark_release_requires_plan_membership(db):
     """Greptile P1: protected items can only be released via their own session plan."""
     from conftest import add_question
+
     conn, path = db
     fp = __import__("satprep.corpus.fingerprint", fromlist=["fingerprint"]).fingerprint(
-        "prot-p", "prot-s?", ["pa", "pb", "pc", "pd"])
-    pid = add_question(conn, passage="prot-p", stem="prot-s?",
-                       choices=["pa", "pb", "pc", "pd"],
-                       source="college_board_question_bank",
-                       pool="protected_benchmark", fingerprint=fp)
+        "prot-p", "prot-s?", ["pa", "pb", "pc", "pd"]
+    )
+    pid = add_question(
+        conn,
+        passage="prot-p",
+        stem="prot-s?",
+        choices=["pa", "pb", "pc", "pd"],
+        source="college_board_question_bank",
+        pool="protected_benchmark",
+        fingerprint=fp,
+    )
     conn.commit()
     sess = create_session(conn, "targeted_drill", count=2, seed="leak")
     sid = sess["plan"]["session_id"]
     import pytest
+
     with pytest.raises(ValueError):
         submit_answer(conn, sid, pid, "A", 3, 10)
     from satprep.db import connect
-    row = connect(path).execute("SELECT pool, seen_benchmark FROM questions WHERE id=?", (pid,)).fetchone()
+
+    row = (
+        connect(path)
+        .execute("SELECT pool, seen_benchmark FROM questions WHERE id=?", (pid,))
+        .fetchone()
+    )
     assert row["pool"] == "protected_benchmark" and row["seen_benchmark"] == 0
 
 
@@ -135,21 +187,27 @@ def test_interrupted_drill_rolls_back_as_a_unit(db, tmp_path):
 
     conn, path = db
     for i in range(6):
-        add_question(conn, passage=f"p{i}", stem=f"s{i}?",
-                     choices=[f"c{i}{l}" for l in "abcd"],
-                     source="bluebook_test", pool="historical")
+        add_question(
+            conn,
+            passage=f"p{i}",
+            stem=f"s{i}?",
+            choices=[f"c{i}{c}" for c in "abcd"],
+            source="bluebook_test",
+            pool="historical",
+        )
     conn.commit()
     conn.close()
 
-    with pytest.raises(RuntimeError, match="interrupted"):
-        with db_context(path) as tx:
-            sess = create_session(tx, "error_clinic", count=3, seed="boom")
-            sid = sess["plan"]["session_id"]
-            submit_answer(tx, sid, sess["questions"][0]["id"], "A", 2, 100)
-            raise RuntimeError("interrupted")
+    with pytest.raises(RuntimeError, match="interrupted"), db_context(path) as tx:
+        sess = create_session(tx, "error_clinic", count=3, seed="boom")
+        sid = sess["plan"]["session_id"]
+        submit_answer(tx, sid, sess["questions"][0]["id"], "A", 2, 100)
+        raise RuntimeError("interrupted")
 
     after = connect(path)
     assert after.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
     assert after.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 0
-    assert after.execute("SELECT COUNT(*) FROM question_state WHERE times_seen > 0").fetchone()[0] == 0
+    assert (
+        after.execute("SELECT COUNT(*) FROM question_state WHERE times_seen > 0").fetchone()[0] == 0
+    )
     after.close()
