@@ -58,9 +58,16 @@ def _historical_correctness(rec: dict) -> int | None:
 
 def ingest_bluebook(conn) -> dict:
     """Ingest the scraped 8-test history. Idempotent."""
-    stats = {"records_seen": 0, "rw_records": 0, "questions_added": 0,
-             "attempts_added": 0, "parse_fallbacks": 0, "skipped_existing": 0,
-             "field_warnings": [], "occurrences_upserted": 0}
+    stats = {
+        "records_seen": 0,
+        "rw_records": 0,
+        "questions_added": 0,
+        "attempts_added": 0,
+        "parse_fallbacks": 0,
+        "skipped_existing": 0,
+        "field_warnings": [],
+        "occurrences_upserted": 0,
+    }
     if not config.BLUEBOOK_JSON.exists():
         return stats
 
@@ -191,10 +198,15 @@ def ingest_bluebook(conn) -> dict:
                  fingerprint=excluded.fingerprint,
                  answer_status=excluded.answer_status""",
             (
-                rec.get("uid") or "", rec.get("test_name") or "",
-                rec.get("module") or "", str(rec.get("question_number") or ""),
-                config.SUBJECT, fp, qid,
-                rec.get("answer_status") or "", rec.get("scraped_at") or "",
+                rec.get("uid") or "",
+                rec.get("test_name") or "",
+                rec.get("module") or "",
+                str(rec.get("question_number") or ""),
+                config.SUBJECT,
+                fp,
+                qid,
+                rec.get("answer_status") or "",
+                rec.get("scraped_at") or "",
             ),
         )
         stats["occurrences_upserted"] = stats.get("occurrences_upserted", 0) + 1

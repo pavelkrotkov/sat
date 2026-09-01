@@ -57,6 +57,7 @@ from .training.sessions import (
     submit_answer,
 )
 from .training.weakness import compute_weakness
+<<<<<<< HEAD
 
 
 def _cell_text(table_html: str) -> list[str]:
@@ -73,6 +74,8 @@ def _cell_text(table_html: str) -> list[str]:
         if cells:
             out.append(" | ".join(cells))
     return out
+=======
+>>>>>>> f7dba6c (chore(quality): comply with ruff + ty gates on touched files (issue #49))
 
 
 def _auto_export(conn) -> None:
@@ -119,8 +122,7 @@ def cmd_audit_bluebook(args) -> None:
         report = audit_bluebook(conn)
     print(json.dumps(report, indent=2, ensure_ascii=False))
     if not audit_passes(report):
-        raise SystemExit(
-            f"audit failed: {len(report['failures'])} gate(s) not met")
+        raise SystemExit(f"audit failed: {len(report['failures'])} gate(s) not met")
     print("audit: PASS")
 
 
@@ -143,6 +145,7 @@ def cmd_restore(args) -> None:
     # Resolved and checked before db_context, which would otherwise create an
     # empty database on the way to reporting a missing archive - and that
     # empty database then satisfies cmd_export's guard.
+<<<<<<< HEAD
     explicit = pathlib.Path(args.file) if args.file else None
     if explicit is not None:
         archive = explicit
@@ -156,6 +159,13 @@ def cmd_restore(args) -> None:
             legacy = config.REPO_ROOT / "exports" / f"corpus-v{min(LEGACY_ARCHIVE_VERSIONS)}.jsonl"
             if legacy.exists():
                 archive = legacy
+=======
+    archive = (
+        pathlib.Path(args.file)
+        if args.file
+        else config.REPO_ROOT / "exports" / f"corpus-v{ARCHIVE_VERSION}.jsonl"
+    )
+>>>>>>> f7dba6c (chore(quality): comply with ruff + ty gates on touched files (issue #49))
     if not archive.exists():
         raise SystemExit(f"No archive at {archive}")
     with db_context() as conn:
@@ -274,6 +284,7 @@ def cmd_fetch_qbank(args) -> None:
             conn, hard_only=args.hard_only, domains=domains, limit=args.limit, sleep_s=args.sleep
         )
         print("done:", json.dumps(stats))
+<<<<<<< HEAD
         # Repair rows whose visuals were dropped before extraction existed:
         # re-fetch the stored imageless/visual-less bank questions and attach
         # them. Default is the stem-hint sweep; --full-sweep checks every one.
@@ -283,6 +294,13 @@ def cmd_fetch_qbank(args) -> None:
             limit=args.limit,
             sleep_s=args.sleep,
             audit_only=False,
+=======
+        # Repair rows whose figures were dropped before extraction existed:
+        # re-fetch the stored imageless bank questions and attach figures.
+        # Default is the stem-hint sweep; --full-sweep checks every one.
+        bstats = backfill_figures(
+            conn, figure_hint=not args.full_sweep, limit=args.limit, sleep_s=args.sleep
+>>>>>>> f7dba6c (chore(quality): comply with ruff + ty gates on touched files (issue #49))
         )
         print("backfill:", json.dumps(bstats))
         # tag BEFORE snapshotting so the archive never stores tag-less rows
@@ -714,14 +732,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("ingest", help="rebuild corpus from raw sources (idempotent)")
     sp.set_defaults(func=cmd_ingest)
 
-    sp = sub.add_parser("repair-bluebook",
-                        help="reconcile historical Bluebook rows from snapshots "
-                             "(issue #49; idempotent)")
+    sp = sub.add_parser(
+        "repair-bluebook",
+        help="reconcile historical Bluebook rows from snapshots (issue #49; idempotent)",
+    )
     sp.set_defaults(func=cmd_repair_bluebook)
 
-    sp = sub.add_parser("audit-bluebook",
-                        help="audit Bluebook history against acceptance gates "
-                             "(issue #49; read-only)")
+    sp = sub.add_parser(
+        "audit-bluebook",
+        help="audit Bluebook history against acceptance gates (issue #49; read-only)",
+    )
     sp.set_defaults(func=cmd_audit_bluebook)
 
     sp = sub.add_parser("analyze", help="compute weakness profile")
@@ -753,6 +773,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--full-sweep",
         action="store_true",
+<<<<<<< HEAD
         help="backfill visuals on ALL imageless bank rows, not just stems that name a figure/table",
     )
     sp.add_argument(
@@ -760,6 +781,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="run the visual backfill sweep read-only and report "
         "what would change (issue #46 audit); no rows written",
+=======
+        help="backfill figures on ALL imageless bank rows, not just stems that name a figure",
+>>>>>>> f7dba6c (chore(quality): comply with ruff + ty gates on touched files (issue #49))
     )
     sp.set_defaults(func=cmd_fetch_qbank)
 
