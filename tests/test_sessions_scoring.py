@@ -279,6 +279,27 @@ def test_excerpt_sentences_capitalized_abbreviation_variants():
     assert "E.g." in out and len(out.split("E.g.", 1)[1].strip()) > 0
 
 
+def test_excerpt_sentences_abbreviation_does_not_match_word_suffixes():
+    """PR-50 round-10 finding: 'St.' must not match the suffix of 'best.'
+    (and 'Ms.' the suffix of 'claims.'). A real sentence-ending period
+    stays a boundary."""
+    s1 = "Choice B is best."
+    s2 = ("Choice A is wrong because it overstates the evidence and does "
+          "not stay within the scope of the passage.")
+    out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
+    assert out == s1
+
+
+def test_excerpt_sentences_quoted_question_stays_inside_sentence():
+    """PR-50 round-10 finding: an embedded quoted question ('asks "Why?"
+    before explaining') with a lowercase continuation is not a boundary."""
+    text = ("The author asks \u201cWhy?\u201d before explaining the result in "
+            "detail and continuing with the full explanation. " * 10)
+    out = excerpt_sentences(text, max_chars=40)
+    assert out.startswith("The author asks \u201cWhy?\u201d before")
+    assert "Why?" in out and len(out.split("Why?", 1)[1].strip()) > 0
+
+
 def test_excerpt_sentences_still_splits_on_real_periods():
     s1 = "First sentence ends here."
     s2 = "Second sentence starts here."
