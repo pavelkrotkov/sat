@@ -25,7 +25,7 @@
 <div class="key-line">
   <span class="label">Key — {{ fb.key_letter }}</span>
   <p>{{ fb.key_text }}</p>
-  {% if fb.why_key_works %}<p class="muted">{{ fb.why_key_works }}</p>{% endif %}
+  {% if fb.why_key_works %}<p class="muted">why the key works (excerpt) — {{ fb.why_key_works }}</p>{% endif %}
   {% if not fb.correct and fb.chosen_text %}
     <span class="label">Your answer — {{ fb.chosen_letter }}</span>
     <p>{{ fb.chosen_text }}</p>

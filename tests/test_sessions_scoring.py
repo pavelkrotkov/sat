@@ -1,6 +1,10 @@
+import re
+
 import pytest
 
-from satprep.training.sessions import complete_session, create_session, review_payload, submit_answer
+from satprep.training.sessions import (complete_session, create_session,
+                                       excerpt_sentences, review_payload,
+                                       submit_answer)
 from conftest import add_question
 
 
@@ -153,3 +157,60 @@ def test_interrupted_drill_rolls_back_as_a_unit(db, tmp_path):
     assert after.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 0
     assert after.execute("SELECT COUNT(*) FROM question_state WHERE times_seen > 0").fetchone()[0] == 0
     after.close()
+
+
+# ------------------------------------------------------- excerpt helpers -- #
+# Issue #48: the compact "why the key works" preview must never cut the
+# official rationale mid-sentence, and the full rationale is rendered
+# verbatim on the review page (see test_drill_ui render tests).
+
+def test_excerpt_sentences_never_cuts_mid_sentence():
+    s1 = "Choice B is best because it stays within the passage's scope."
+    s2 = "The other choices introduce claims the passage never makes."
+    out = excerpt_sentences(f"{s1} {s2} {s2} {s2} {s2} {s2}", max_chars=200)
+    # whole sentences only: the last included sentence ends at a boundary
+    assert out.endswith(("scope.", "makes."))
+    assert out not in (s1, s2)  # a real excerpt, not the whole first sentence alone
+    # and it never ends mid-word with a clipped tail
+    assert re.search(r"\S\.$", out)
+
+
+def test_excerpt_sentences_single_overlong_sentence_cuts_at_word_boundary():
+    long = "word " * 300 + "tail."
+    out = excerpt_sentences(long, max_chars=600)
+    assert len(out) <= 600
+    assert not out.endswith(" ")           # no dangling space at the cut
+    assert out.count(" ") > 0              # word boundary kept, not mid-word
+
+
+def test_excerpt_sentences_includes_whole_sentences_that_fit():
+    s1 = "First sentence of the rationale."
+    s2 = "Second sentence of the rationale."
+    out = excerpt_sentences(f"{s1} {s2}", max_chars=100)
+    assert out == f"{s1} {s2}"
+
+
+def test_excerpt_sentences_empty_input():
+    assert excerpt_sentences("", max_chars=600) == ""
+    assert excerpt_sentences("   ", max_chars=600) == ""
+
+
+def test_why_key_works_uses_first_paragraph_only():
+    from satprep.training.sessions import _why_key_works
+    para1 = "The key works because it matches the passage."
+    para2 = "A second paragraph with more official detail."
+    out = _why_key_works(f"{para1}\n\n{para2}")
+    assert para1 in out
+    assert "A second paragraph" not in out
+
+
+def test_why_key_works_empty_rationale():
+    from satprep.training.sessions import _why_key_works
+    assert _why_key_works("") == ""
+
+
+def test_paragraphs_preserve_boundaries_and_drop_blanks():
+    from satprep.training.sessions import _paragraphs
+    assert _paragraphs("first\n\nsecond\nthird") == ["first", "second", "third"]
+    assert _paragraphs("") == []
+    assert _paragraphs("single block, no newlines") == ["single block, no newlines"]

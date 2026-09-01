@@ -198,6 +198,7 @@ def review_payload(conn, session_id: str) -> list[dict]:
             "reasoning_tags": tags,
             "trap_tags": trap_tags,
             "rationale_official": question.rationale,
+            "rationale_paragraphs": _paragraphs(question.rationale),
             "rationale_is_official": bool(question.rationale),
             "passage_skeleton": skeleton,
             "lesson": lesson,
@@ -210,12 +211,45 @@ def _infer_trap(tags):
     return tags[:2]
 
 
+def excerpt_sentences(text: str, max_chars: int) -> str:
+    """Whole sentences from the start of ``text``, capped at ``max_chars``.
+
+    A preview never cuts mid-sentence when a shorter sentence boundary
+    exists; a single over-long sentence is cut at a word boundary. The
+    authoritative text itself is always rendered in full elsewhere — this
+    is only for compact excerpts.
+    """
+    if not text:
+        return ""
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    excerpt: list[str] = []
+    total = 0
+    for s in sentences:
+        if excerpt and total + len(s) + 1 > max_chars:
+            break
+        excerpt.append(s)
+        total += len(s) + 1
+    out = " ".join(excerpt)
+    if len(out) > max_chars:
+        out = out[:max_chars].rsplit(" ", 1)[0]
+    return out.strip()
+
+
 def _why_key_works(rationale: str) -> str:
-    """First paragraph of the official rationale states why the key works."""
+    """First paragraph of the official rationale: why the key works."""
     if not rationale:
         return ""
-    first = rationale.split("\n")[0]
-    return first[:600]
+    return excerpt_sentences(rationale.split("\n")[0], max_chars=600)
+
+
+def _paragraphs(text: str) -> list[str]:
+    """Non-empty paragraphs of a stored text, preserving author boundaries.
+
+    Rationales are stored newline-separated. Rendering each paragraph as
+    its own block keeps the official text intact — no character-level
+    truncation anywhere on the review page.
+    """
+    return [p.strip() for p in text.split("\n") if p.strip()]
 
 
 def _logical_skeleton(passage: str) -> list[str]:
