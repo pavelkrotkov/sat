@@ -326,13 +326,18 @@ def test_excerpt_sentences_sentence_starting_with_digit_still_splits():
 
 
 def test_excerpt_sentences_non_ascii_uppercase_sentence_start():
-    """PR-50 round-12 finding: a sentence starting with an accented
-    uppercase letter ('Émile Zola') is a real boundary."""
+    """PR-50 round-12/13 findings: a sentence starting with an accented
+    uppercase letter ('Émile Zola', 'Čapek') is a real boundary. The
+    boundary check is Unicode-aware (isupper), not a Latin-1 whitelist."""
     s1 = "The claim is supported."
     s2 = ("\u00c9mile Zola provides the evidence and the conclusion follows "
           "directly from the passage.")
     out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
     assert out == s1
+
+    s3 = "\u010capek provides the evidence and the conclusion follows."
+    out2 = excerpt_sentences(f"{s1} {s3} {s3}", max_chars=len(s1) + 20)
+    assert out2 == s1
 
 
 def test_excerpt_sentences_still_splits_on_real_periods():

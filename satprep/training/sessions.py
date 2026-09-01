@@ -235,17 +235,25 @@ _OTHER_ABBREVIATIONS = ("etc.", "Inc.", "Co.", "Jr.", "Sr.", "U.S.",
 # capitalized sentence ("inconclusive... Choice B") stays a boundary
 # (PR-50 round-8 finding), mirroring the etc./Inc. conditional rule.
 _ELLIPSIS = re.compile(r"\.(?:\s*\.)+(?=\s+[a-z])")
-# Sentence terminator, optional closing quotes/brackets, then whitespace,
-# then the start of a new sentence (capitalized word, digit, or a
-# quote/bracket). Requiring a continuation keeps an embedded quoted
-# question ("asks "Why?" before explaining") inside its sentence
-# (PR-50 round-10); a digit start ("1990. 200 participants") is a real
-# boundary (PR-50 round-11); Latin-1 uppercase covers accented sentence
-# starts ("Émile Zola", PR-50 round-12); a lowercase continuation is an
-# abbreviation/quote already protected.
-_SENTENCE_SPLIT = re.compile(
-    r"(?<=[.!?])([\"'\u201d\u2019)\]]*)\s+"
-    r"(?=[A-Z0-9\u00c0-\u00d6\u00d8-\u00de\u201c\"'(\[])")
+# Sentence terminator, optional closing quotes/brackets, then whitespace.
+# Whether it is a real boundary is decided per-split by
+# _is_sentence_start(): a new sentence starts with an uppercase letter
+# (Unicode-aware, so "Émile", "Čapek"), a digit, or a quote/bracket.
+# A lowercase continuation is an embedded quote/abbreviation already
+# protected (PR-50 rounds 10-13).
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])([\"'\u201d\u2019)\]]*)\s+")
+
+# Characters that start a sentence even without an uppercase letter.
+_NON_LETTER_STARTS = frozenset("\u201c\"'([")
+
+
+def _is_sentence_start(text: str) -> bool:
+    """True when ``text`` begins a new sentence: an uppercase letter
+    (Unicode-aware), a digit, or an opening quote/bracket."""
+    if not text:
+        return False
+    first = text[0]
+    return first.isupper() or first.isdigit() or first in _NON_LETTER_STARTS
 
 
 def _protect_abbreviations(text: str) -> str:
@@ -277,11 +285,27 @@ def _protect_abbreviations(text: str) -> str:
 
 def _split_sentences(text: str) -> list[str]:
     """Split on sentence terminators, keeping closing quotes/brackets with
-    the sentence they close."""
+    the sentence they close. A terminator is a boundary only when the
+    following text starts a new sentence (Unicode-aware)."""
+    # _SENTENCE_SPLIT.split yields [seg0, close0, seg1, close1, ...]:
+    # even indices are sentence text, odd indices the closing punctuation
+    # captured between the terminator and the whitespace.
     parts = _SENTENCE_SPLIT.split(_protect_abbreviations(text))
     sentences: list[str] = []
-    for i in range(0, len(parts), 2):
-        sentences.append(parts[i] + (parts[i + 1] if i + 1 < len(parts) else ""))
+    buf = parts[0]
+    for i in range(1, len(parts), 2):
+        closing = parts[i]
+        nxt = parts[i + 1] if i + 1 < len(parts) else ""
+        if nxt and _is_sentence_start(nxt):
+            # real boundary: close the current sentence, start the next
+            sentences.append(buf + closing)
+            buf = nxt
+        else:
+            # embedded quote/continuation: the closing punctuation and the
+            # following text belong to the current sentence (re-add the
+            # space the split consumed)
+            buf += closing + " " + nxt
+    sentences.append(buf)
     return sentences
 
 
