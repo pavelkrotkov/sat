@@ -35,6 +35,7 @@ def create_session(conn, mode: str, count: int | None = None, seed: str | None =
             "stem": q.stem or "Select the best answer.",
             "choices": [c.as_dict() for c in q.choices],
             "images": list(q.images),
+            "visuals": [dict(v) for v in q.visuals],
         })
     return {"plan": plan, "questions": questions}
 
@@ -118,6 +119,7 @@ def answer_feedback(conn, session_id: str, question_id: int) -> dict | None:
         "key_text": question.text_of(question.correct_letter),
         "why_key_works": _why_key_works(question.rationale),
         "official_skill": question.official_skill,
+        "visuals": [dict(v) for v in question.visuals],
         "streak": current_streak(conn, session_id),
     }
 
@@ -200,6 +202,7 @@ def review_payload(conn, session_id: str) -> list[dict]:
             "rationale_official": question.rationale,
             "rationale_is_official": bool(question.rationale),
             "passage_skeleton": skeleton,
+            "visuals": [dict(v) for v in question.visuals],
             "lesson": lesson,
             "lesson_source": "derived rule" if lesson else "",
         })

@@ -61,6 +61,7 @@ class Question:
     skill_source: str = "unknown"
     import_batch: str = ""
     images: tuple[str, ...] = ()
+    visuals: tuple[dict, ...] = ()
     provenance: dict = field(default_factory=dict)
     is_new_bank: int = 0
     seen_benchmark: int = 0
@@ -131,6 +132,7 @@ class Question:
             skill_source=get("skill_source", "unknown"),
             import_batch=get("import_batch", ""),
             images=tuple(json.loads(get("images_json", "[]") or "[]")),
+            visuals=tuple(json.loads(get("visuals_json", "[]") or "[]")),
             provenance=json.loads(get("provenance_json", "{}") or "{}"),
             is_new_bank=int(get("is_new_bank", 0)),
             seen_benchmark=int(get("seen_benchmark", 0)),

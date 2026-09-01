@@ -2,6 +2,7 @@
 {% set nav = 'drill' %}
 {% block title %}Question {{ idx + 1 }} of {{ total }} · satprep{% endblock %}
 {% block content %}
+{% import "_visuals.html" as vx %}
 <div class="progress"><div style="width: {{ (idx * 100 / total)|round(0) }}%"></div></div>
 <p class="drill-meta">
   <span>Question {{ idx + 1 }} of {{ total }}</span>
@@ -12,11 +13,7 @@
   <input type="hidden" name="question_id" value="{{ q.id }}">
   <input type="hidden" name="elapsed_ms" id="elapsed_ms" value="0">
   {% if q.passage %}<div class="passage">{% for p in q.passage.split('\n') %}<p>{{ p }}</p>{% endfor %}</div>{% endif %}
-  {% if q.images %}
-    <div class="figures">
-    {% for img in q.images %}<img src="/figures/{{ img|basename }}" alt="question figure {{ loop.index }}" loading="lazy">{% endfor %}
-    </div>
-  {% endif %}
+  {{ vx.visuals_block(q.visuals) }}
   <p class="stem">{{ q.stem }}</p>
   <div class="choices">
   {% for c in q.choices %}

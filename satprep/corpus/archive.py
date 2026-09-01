@@ -34,6 +34,7 @@ def _question_line(conn, question: Question) -> dict:
         "correct_letter": question.correct_letter,
         "rationale": question.rationale,
         "images": list(question.images),
+        "visuals": [dict(v) for v in question.visuals],
         "official_domain": question.official_domain,
         "official_skill": question.official_skill,
         "skill_source": question.skill_source,
@@ -112,17 +113,19 @@ def _restore_lines(conn, archive_path: Path, stats: dict) -> None:
         # (recomputing would break reconciled rows whose content changed).
         cur = conn.execute(
             """INSERT OR IGNORE INTO questions
-               (fingerprint, source, source_test, source_question_number, module,
-                passage, stem, choices_json, correct_letter, rationale, images_json,
-                official_domain, official_skill, skill_source, difficulty,
-                pool, seen_benchmark, is_new_bank, import_batch, imported_at, provenance_json)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)""",
+              (fingerprint, source, source_test, source_question_number, module,
+               passage, stem, choices_json, correct_letter, rationale, images_json,
+               visuals_json,
+               official_domain, official_skill, skill_source, difficulty,
+               pool, seen_benchmark, is_new_bank, import_batch, imported_at, provenance_json)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)""",
             (
                 rec["fingerprint"], rec.get("source", ""), rec.get("source_test", ""),
                 str(rec.get("source_question_number", "")), rec.get("module", ""),
                 rec.get("passage", ""), rec.get("stem", ""),
                 json.dumps(rec.get("choices", [])), rec["correct_letter"],
                 rec.get("rationale", ""), json.dumps(rec.get("images", [])),
+                json.dumps(rec.get("visuals", [])),
                 rec.get("official_domain", ""), rec.get("official_skill", ""),
                 rec.get("skill_source") or ("archive" if rec.get("official_skill") else "unknown"),
                 rec.get("difficulty", ""), rec.get("pool", "historical"),

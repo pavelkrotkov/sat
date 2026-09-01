@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS questions (
     correct_letter TEXT NOT NULL,
     rationale TEXT DEFAULT '',
     images_json TEXT DEFAULT '[]',
+    visuals_json TEXT DEFAULT '[]',     -- first-class non-image visuals (tables)
     official_domain TEXT DEFAULT '',
     official_skill TEXT DEFAULT '',
     skill_source TEXT DEFAULT 'unknown',   -- metadata | derived | manual | unknown
@@ -201,6 +202,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(attempts)")}
     if "error_tags" not in cols:
         conn.execute("ALTER TABLE attempts ADD COLUMN error_tags TEXT NOT NULL DEFAULT '[]'")
+    qcols = {r[1] for r in conn.execute("PRAGMA table_info(questions)")}
+    if "visuals_json" not in qcols:
+        conn.execute("ALTER TABLE questions ADD COLUMN visuals_json TEXT DEFAULT '[]'")
 
 
 @contextmanager

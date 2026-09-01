@@ -114,17 +114,18 @@ def ingest_bluebook(conn) -> dict:
             }
             cur = conn.execute(
                 """INSERT INTO questions
-                   (fingerprint, source, source_test, source_question_number, module,
-                    passage, stem, choices_json, correct_letter, rationale, images_json,
-                    official_domain, official_skill, skill_source, difficulty,
-                    pool, seen_benchmark, is_new_bank, import_batch, imported_at, provenance_json)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,'',?,?)""",
+                  (fingerprint, source, source_test, source_question_number, module,
+                   passage, stem, choices_json, correct_letter, rationale, images_json,
+                   visuals_json,
+                   official_domain, official_skill, skill_source, difficulty,
+                   pool, seen_benchmark, is_new_bank, import_batch, imported_at, provenance_json)
+                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,'',?,?)""",
                 (
                     fp, "bluebook_test", rec.get("test_name") or "", str(rec.get("question_number") or ""),
                     rec.get("module") or "",
                     passage, stem, json.dumps(parsed.choices), correct_letter,
                     parsed.rationale or rec.get("explanation") or "",
-                    json.dumps(rec.get("images") or []),
+                    json.dumps(rec.get("images") or []), json.dumps(rec.get("visuals") or []),
                     rec.get("domain") or "", rec.get("skill") or "",
                     "metadata" if rec.get("skill") else "unknown",
                     "",  # difficulty unknown for bluebook history

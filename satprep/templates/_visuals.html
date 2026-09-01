@@ -1,0 +1,16 @@
+{# Shared rendering for persisted question visuals (issue #46).
+   visual records are {'kind': 'image', 'file': ...} or
+   {'kind': 'table', 'html': '<table ...>'}. Table html is sanitized at
+   ingest time by satprep.corpus.qbank_fetch.sanitize_table — the |safe
+   below is ONLY safe because of that allowlist. #}
+{% macro visuals_block(visuals) %}
+{% if visuals %}
+  <div class="visuals">
+  {% for v in visuals %}
+    {% if v.kind == 'image' %}<img src="/figures/{{ v.file|basename }}" alt="question figure {{ loop.index }}" loading="lazy">
+    {% elif v.kind == 'table' %}{{ v.html|safe }}
+    {% endif %}
+  {% endfor %}
+  </div>
+{% endif %}
+{% endmacro %}

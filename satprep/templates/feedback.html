@@ -2,6 +2,7 @@
 {% set nav = 'drill' %}
 {% block title %}{{ 'Correct' if fb.correct else 'Incorrect' }} · satprep{% endblock %}
 {% block content %}
+{% import "_visuals.html" as vx %}
 <div class="progress"><div style="width: {{ ((idx + 1) * 100 / total)|round(0) }}%"></div></div>
 <p class="drill-meta">
   <span>Question {{ idx + 1 }} of {{ total }}</span>
@@ -21,6 +22,8 @@
     </span>
   </span>
 </div>
+
+{{ vx.visuals_block(fb.visuals) }}
 
 <div class="key-line">
   <span class="label">Key — {{ fb.key_letter }}</span>

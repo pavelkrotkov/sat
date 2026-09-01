@@ -17,12 +17,14 @@ import sys
 from datetime import datetime
 from urllib.parse import quote
 
+from bs4 import BeautifulSoup
+
 from . import config
 from .db import db_context
 from .analytics import full_dashboard
 from .corpus.archive import ARCHIVE_VERSION, export_corpus, restore_corpus
 from .corpus.ingest import ingest_bluebook, ingest_qbank
-from .corpus.qbank_fetch import backfill_figures, fetch_qbank
+from .corpus.qbank_fetch import backfill_visuals, fetch_qbank
 from .corpus.tagger import run_full_tagging
 from .explanations import explain_error
 from .reviews import (APPROVED, REJECTED, ReviewStateError, delete_review,
@@ -33,6 +35,12 @@ from .training.sessions import (complete_session, create_session, review_payload
                                 submit_answer)
 from .training.weakness import compute_weakness
 from .training.remediation import build_remediation_plan, explain_selection
+
+
+def _cell_text(table_html: str) -> list[str]:
+    """Visible cell texts of a sanitized table, for the terminal drill."""
+    soup = BeautifulSoup(table_html, "html.parser")
+    return [c.get_text(strip=True) for c in soup.find_all(["th", "td"])][:8]
 
 
 def _auto_export(conn) -> None:
@@ -127,6 +135,9 @@ def _run_drill(conn, mode: str, args) -> None:
             print()
         for img in q.get("images") or []:
             print(f"  [figure: {img}]")
+        for v in q.get("visuals") or []:
+            if v.get("kind") == "table":
+                print(f"  [table: {' | '.join(_cell_text(v.get('html', '')))}]")
         print(q["stem"])
         for c in sorted(q["choices"], key=lambda c: c["letter"]):
             print(f"  {c['letter']}. {c['text'][:300]}")
@@ -161,17 +172,20 @@ def cmd_fetch_qbank(args) -> None:
     with db_context() as conn:
         # NB: args.limit caps BOTH the fetch and the backfill. A `--limit 10`
         # fetch therefore caps the subsequent backfill at the same 10 rows
-        # (in addition to any figure_hint filter). Pass --full-sweep + a larger
+        # (in addition to any hint filter). Pass --full-sweep + a larger
         # --limit if you need a separate backfill scope.
         stats = fetch_qbank(conn, hard_only=args.hard_only, domains=domains,
                             limit=args.limit, sleep_s=args.sleep)
         print("done:", json.dumps(stats))
-        # Repair rows whose figures were dropped before extraction existed:
-        # re-fetch the stored imageless bank questions and attach figures.
-        # Default is the stem-hint sweep; --full-sweep checks every one.
-        bstats = backfill_figures(conn, figure_hint=not args.full_sweep,
-                                  limit=args.limit, sleep_s=args.sleep)
-        print("backfill:", json.dumps(bstats))
+        # Repair rows whose visuals were dropped before extraction existed:
+        # re-fetch the stored imageless/visual-less bank questions and attach
+        # them. Default is the stem-hint sweep; --full-sweep checks every one.
+        # --audit-visuals runs the same sweep read-only and reports what WOULD
+        # change (issue #46 acceptance audit) instead of writing.
+        bstats = backfill_visuals(conn, hint=not args.full_sweep,
+                                  limit=args.limit, sleep_s=args.sleep,
+                                  audit_only=args.audit_visuals)
+        print(("audit" if args.audit_visuals else "backfill") + ":", json.dumps(bstats))
         # tag BEFORE snapshotting so the archive never stores tag-less rows
         print(f"tagging: {run_full_tagging(conn)}")
         _auto_export(conn)
@@ -563,8 +577,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--limit", type=int, default=0, help="cap number fetched (0 = all)")
     sp.add_argument("--sleep", type=float, default=0.25, help="politeness delay seconds")
     sp.add_argument("--full-sweep", action="store_true",
-                    help="backfill figures on ALL imageless bank rows, "
-                         "not just stems that name a figure")
+                    help="backfill visuals on ALL imageless bank rows, "
+                         "not just stems that name a figure/table")
+    sp.add_argument("--audit-visuals", action="store_true",
+                    help="run the visual backfill sweep read-only and report "
+                         "what would change (issue #46 audit); no rows written")
     sp.set_defaults(func=cmd_fetch_qbank)
 
     sp = sub.add_parser("export", help="write the JSONL corpus archive")
