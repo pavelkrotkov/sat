@@ -211,12 +211,41 @@ def _infer_trap(tags):
     return tags[:2]
 
 
-# Periods that are not sentence boundaries: abbreviations and initials.
-# Protected before splitting so "e.g.", "Dr.", "U.S.", "J. K. Rowling"
-# do not end the excerpt mid-sentence (PR-50 review finding).
-_ABBREVIATIONS = ("e.g.", "i.e.", "Dr.", "Mr.", "Mrs.", "Ms.", "St.",
-                  "vs.", "U.S.", "U.K.", "etc.", "Inc.", "Co.", "Jr.",
-                  "Sr.", "A.D.", "B.C.", "Ph.D.", "M.D.")
+# Periods that are not sentence boundaries. Protected before splitting so
+# they do not end the excerpt mid-sentence (PR-50 review findings):
+#   - title abbreviations (Dr., Mr., ...) are always non-terminal;
+#   - initials ("J. K. Rowling") are non-terminal when a capital follows;
+#   - other abbreviations (e.g., U.S., Inc., ...) are non-terminal only
+#     when a lowercase continuation follows, so "Acme Inc. Choice B..."
+#     still splits at the real sentence end.
+_TITLE_ABBREVIATIONS = ("Dr.", "Mr.", "Mrs.", "Ms.", "St.", "Jr.", "Sr.")
+_OTHER_ABBREVIATIONS = ("e.g.", "i.e.", "vs.", "etc.", "Inc.", "Co.",
+                        "U.S.", "U.K.", "A.D.", "B.C.", "Ph.D.", "M.D.")
+_INITIAL_PERIOD = re.compile(r"\b[A-Z]\.(?=\s+[A-Z])")
+# Sentence terminator, optional closing quotes/brackets, then whitespace.
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])([\"'\u201d\u2019)\]]*)\s+")
+
+
+def _protect_abbreviations(text: str) -> str:
+    """Replace non-boundary periods with a placeholder so the sentence
+    splitter skips them; restored before returning the excerpt."""
+    for abbr in _TITLE_ABBREVIATIONS:
+        text = text.replace(abbr, abbr.replace(".", "\x00"))
+    text = _INITIAL_PERIOD.sub(lambda m: m.group(0).replace(".", "\x00"), text)
+    for abbr in _OTHER_ABBREVIATIONS:
+        text = re.sub(re.escape(abbr) + r"(?=\s+[a-z])",
+                      abbr.replace(".", "\x00"), text)
+    return text
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split on sentence terminators, keeping closing quotes/brackets with
+    the sentence they close."""
+    parts = _SENTENCE_SPLIT.split(_protect_abbreviations(text))
+    sentences: list[str] = []
+    for i in range(0, len(parts), 2):
+        sentences.append(parts[i] + (parts[i + 1] if i + 1 < len(parts) else ""))
+    return sentences
 
 
 def excerpt_sentences(text: str, max_chars: int) -> str:
@@ -225,15 +254,13 @@ def excerpt_sentences(text: str, max_chars: int) -> str:
     A preview never cuts mid-sentence when a shorter sentence boundary
     exists; a single over-long sentence is cut at a word boundary. Common
     abbreviations and initials (``e.g.``, ``Dr.``, ``U.S.``) are not
-    treated as boundaries. The authoritative text itself is always
+    treated as boundaries, and closing quotes/brackets stay attached to
+    the sentence they close. The authoritative text itself is always
     rendered in full elsewhere — this is only for compact excerpts.
     """
     if not text:
         return ""
-    protected = text.strip()
-    for abbr in _ABBREVIATIONS:
-        protected = protected.replace(abbr, abbr.replace(".", "\x00"))
-    sentences = re.split(r"(?<=[.!?])\s+", protected)
+    sentences = _split_sentences(text.strip())
     excerpt: list[str] = []
     total = 0
     for s in sentences:

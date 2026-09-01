@@ -222,6 +222,34 @@ def test_excerpt_sentences_still_splits_on_real_periods():
     assert out == f"{s1} {s2}"
 
 
+def test_excerpt_sentences_terminal_abbreviation_still_splits():
+    """PR-50 round-2 finding: 'Acme Inc.' at a real sentence end is a
+    boundary — protecting it unconditionally hid the boundary and the
+    fallback cut the next sentence midstream."""
+    s1 = "The company is Acme Inc."
+    s2 = ("Choice B is the best answer because it stays within the scope "
+          "of the passage and does not overstate the evidence.")
+    out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
+    # the first (complete) sentence fits; the excerpt must stop there,
+    # not word-cut into the second sentence
+    assert out == s1
+
+
+def test_excerpt_sentences_terminator_before_closing_punctuation():
+    """PR-50 round-2 finding: a sentence ending with quoted or
+    parenthesized text ('unexpected.") must still be recognized as a
+    boundary even though whitespace follows the quote, not the period."""
+    s1 = "The result was \u201cunexpected.\u201d"
+    s2 = ("Choice B is the best answer because it stays within the scope "
+          "of the passage and does not overstate the evidence.")
+    out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
+    assert out == s1
+
+    paren = "The answer is correct (as shown)."
+    out2 = excerpt_sentences(f"{paren} {s2} {s2}", max_chars=len(paren) + 20)
+    assert out2 == paren
+
+
 def test_why_key_works_uses_first_paragraph_only():
     from satprep.training.sessions import _why_key_works
     para1 = "The key works because it matches the passage."
