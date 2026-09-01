@@ -28,6 +28,12 @@ MODE_COMPOSITIONS: dict[str, dict[str, int | None]] = {
     "transfer_drill": {"old_correct_transfer": 6, "fresh_weak": 6},
     "hard_mixed": {"hard_any": 27},
     "fresh_benchmark": {"protected_unseen": None},  # size set by caller
+    # Issue #38: remediation re-aims the sampler at the student's
+    # recurring error patterns. Same bucket mix as a targeted drill —
+    # previously-missed items that are due, plus fresh items sharing
+    # the weak error tags. Protected-benchmark leakage is still
+    # structurally impossible (pool filter).
+    "remediation": {"old_wrong_due": 4, "old_correct_transfer": 3, "fresh_weak": 5},
 }
 
 #: mode -> pools the sampler may load. The filter that makes protected
@@ -37,6 +43,11 @@ POOLS_BY_MODE: dict[str, tuple[str, ...]] = {
     "error_clinic": ("historical",),
     "transfer_drill": ("historical", "fresh_training"),
     "hard_mixed": ("historical", "fresh_training"),
+    # Issue #38: remediation targets the student's recurring error
+    # patterns. Same pool eligibility as a targeted drill (historical
+    # due items + fresh training items) — the protected benchmark pool
+    # is structurally excluded, so leakage protections are unchanged.
+    "remediation": ("historical", "fresh_training"),
 }
 
 FALLBACK_BUCKET = "best_available"

@@ -19,6 +19,7 @@ Recent confident-correct streaks subtract a mastery discount.
 
 import json
 import math
+from collections import defaultdict
 from datetime import datetime
 
 from .. import config
@@ -177,13 +178,46 @@ def compute_weakness(conn, now: datetime | None = None) -> dict:
 
     # diagnosed student error tags
     err_rows = conn.execute(
-        """SELECT set_.tag AS tag, COUNT(*) AS cnt FROM (
+        """SELECT set_.tag AS tag, set_.qid AS qid FROM (
                SELECT setag.tag AS tag, setag.question_id AS qid
                FROM student_error_tags setag
-           ) set_ GROUP BY set_.tag"""
+           ) set_ GROUP BY set_.tag, set_.qid"""
     ).fetchall()
+    # Score error tags from actual attempt outcomes on questions that
+    # carry the diagnosis. This makes the error-tag weakness signal
+    # real (not a constant 0.0), so remediation can differentiate
+    # candidates by the student's actual error pattern.
+    tag_qids: dict[str, list[int]] = defaultdict(list)
     for r in err_rows:
-        out["error_tag"][r["tag"]] = {"score": 0.0, "occurrences": r["cnt"]}
+        tag_qids[r["tag"]].append(r["qid"])
+    for tag, qids in tag_qids.items():
+        alpha_wrong = alpha_right = 0.0
+        wrong = correct = 0
+        now_decayed_n = 0.0
+        for r in conn.execute(
+            """SELECT a.correct AS correct, a.confidence AS confidence,
+                      a.attempted_at AS attempted_at, a.time_ms AS time_ms
+               FROM attempts a
+               JOIN questions q ON q.id=a.question_id AND q.active=1
+               WHERE a.question_id IN (%s)"""
+            % ",".join("?" * len(qids)), qids,
+        ).fetchall():
+            w = _weight_for(r["correct"], r["confidence"] or 0)
+            decay = _recency(r["attempted_at"], now)
+            now_decayed_n += decay
+            if r["correct"]:
+                alpha_right += w * decay
+                correct += 1
+            else:
+                alpha_wrong += w * decay
+                wrong += 1
+        stats = {"n": round(now_decayed_n, 3), "wrong": wrong, "correct": correct,
+                 "alpha_wrong": round(alpha_wrong, 3),
+                 "alpha_right": round(alpha_right, 3)}
+        if wrong + correct == 0:
+            continue
+        sc, st = score_from(stats, 0.0)
+        out["error_tag"][tag] = {"score": sc, **stats, "question_ids": qids}
 
     # persist cache
     conn.execute("DELETE FROM weakness_cache")
