@@ -25,8 +25,9 @@ from .corpus.ingest import ingest_bluebook, ingest_qbank
 from .corpus.qbank_fetch import backfill_figures, fetch_qbank
 from .corpus.tagger import run_full_tagging
 from .explanations import explain_error
-from .reviews import (APPROVED, REJECTED, delete_review, edit_review,
-                      ensure_review_schema, export_review, list_reviews,
+from .reviews import (APPROVED, REJECTED, ReviewStateError, delete_review,
+                      edit_review, ensure_review_schema, export_review,
+                      get_review, list_deletions, list_reviews,
                       transition, upsert_draft)
 from .training.sessions import (complete_session, create_session, review_payload,
                                 submit_answer)
@@ -302,7 +303,16 @@ def cmd_review_generate(args) -> None:
             exact_failure=ex.exact_failure, correct_reasoning=ex.correct_reasoning,
             kb_tactic_refs=ex.kb_tactic_refs, error_taxonomy=ex.error_taxonomy,
             evidence=ex.evidence_citations,
-            generator_notes={"confidence": ex.confidence},
+            # PR-44 round-1 P1: persist the join keys the KB export
+            # frontmatter needs (the canonical question/choice text is
+            # not stored — `evidence_refs` collapses to non-canonical
+            # {role, letter?, ref?} refs).
+            student_answer=attempt["chosen_letter"] or "",
+            correct_answer=row["correct_letter"] or "",
+            confidence=ex.confidence,
+            generator_notes={"confidence": ex.confidence,
+                             "actor": "cli",
+                             "question_id": qid},
         )
     print(json.dumps({
         "review_id": rev.id, "question_id": qid, "state": rev.state,
@@ -311,11 +321,52 @@ def cmd_review_generate(args) -> None:
     }, indent=2))
 
 
+def cmd_review_show(args) -> None:
+    """Show a single review by id — the same shape `generate` produced,
+    plus the diagnosis fields. PR-44 round-1 P1: the only path that
+    exposes the full draft/approved/edited body to the operator before
+    they decide whether to advance the state machine."""
+    with db_context() as conn:
+        ensure_review_schema(conn)
+        try:
+            rev = get_review(conn, args.id)
+        except KeyError as e:
+            raise SystemExit(str(e))
+    payload = {
+        "id": rev.id, "question_id": rev.question_id,
+        "question_fingerprint": rev.question_fingerprint,
+        "state": rev.state, "stale": rev.stale,
+        "generator": rev.generator, "model": rev.model,
+        "tested_task": rev.tested_task,
+        "tempting_answer": rev.tempting_answer,
+        "exact_failure": rev.exact_failure,
+        "correct_reasoning": rev.correct_reasoning,
+        "kb_tactic_refs": rev.kb_tactic_refs,
+        "error_taxonomy": rev.error_taxonomy,
+        "evidence": json.loads(rev.evidence_json or "[]"),
+        "provenance": json.loads(rev.provenance_json or "{}"),
+        "student_answer": rev.student_answer,
+        "correct_answer": rev.correct_answer,
+        "confidence": rev.confidence,
+        "created_at": rev.created_at,
+        "updated_at": rev.updated_at,
+        "approved_at": rev.approved_at,
+        "exported_at": rev.exported_at,
+    }
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+
+
 def cmd_review_list(args) -> None:
     with db_context() as conn:
         ensure_review_schema(conn)
+        # PR-44 round-1 P2: surface stale rows by default; the queue
+        # is the operator's primary signal that a corpus change has
+        # orphaned reviews.
+        include_stale = (
+            True if args.include_stale else
+            False if args.exclude_stale else True)
         rows = list_reviews(conn, state=args.state,
-                            include_stale=args.include_stale)
+                            include_stale=include_stale)
     print(json.dumps([{
         "id": r.id, "question_id": r.question_id, "state": r.state,
         "generator": r.generator, "model": r.model,
@@ -366,8 +417,22 @@ def cmd_review_export(args) -> None:
 def cmd_review_delete(args) -> None:
     with db_context() as conn:
         ensure_review_schema(conn)
-        delete_review(conn, args.id)
+        # PR-44 round-1 P2: capture the actor/reason on the tombstone
+        # so the audit log records who deleted what and why.
+        try:
+            delete_review(conn, args.id,
+                          actor="cli", reason=args.reason or "")
+        except ReviewStateError as e:
+            raise SystemExit(str(e))
     print(json.dumps({"deleted": True, "review_id": args.id}, indent=2))
+
+
+def cmd_review_deletions(args) -> None:
+    """Print the audit tombstones for review deletions (PR-44 P2)."""
+    with db_context() as conn:
+        ensure_review_schema(conn)
+        rows = list_deletions(conn, question_id=args.question_id)
+    print(json.dumps(rows, indent=2))
 
 
 def cmd_stats(args) -> None:
@@ -503,11 +568,21 @@ def build_parser() -> argparse.ArgumentParser:
     rsp.add_argument("--question-id", type=int, required=True)
     rsp.set_defaults(func=cmd_review_generate)
 
+    rsp = rv_sub.add_parser("show", help="show one review's full body "
+                             "(diagnosis + provenance + evidence refs)")
+    rsp.add_argument("--id", type=int, required=True)
+    rsp.set_defaults(func=cmd_review_show)
+
     rsp = rv_sub.add_parser("list", help="list reviews (draft/approved/... )")
     rsp.add_argument("--state", default=None,
                      choices=["draft", "approved", "rejected", "edited"])
-    rsp.add_argument("--include-stale", action="store_true",
-                     help="show stale reviews too")
+    # PR-44 round-1 P2: stale rows are shown by default; use
+    # --exclude-stale to opt out, --include-stale to make the
+    # default explicit.
+    rsp.add_argument("--include-stale", action="store_true", default=True,
+                     help="(default) include stale reviews in the list")
+    rsp.add_argument("--exclude-stale", action="store_true",
+                     help="omit stale reviews from the list")
     rsp.set_defaults(func=cmd_review_list)
 
     rsp = rv_sub.add_parser("approve", help="approve a draft review "
@@ -538,7 +613,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     rsp = rv_sub.add_parser("delete", help="delete a draft/rejected review")
     rsp.add_argument("--id", type=int, required=True)
+    rsp.add_argument("--reason", default="",
+                     help="audit reason (recorded on the tombstone)")
     rsp.set_defaults(func=cmd_review_delete)
+
+    rsp = rv_sub.add_parser("deletions",
+                            help="list review-deletion tombstones "
+                                 "(PR-44 audit log)")
+    rsp.add_argument("--question-id", type=int, default=None,
+                     help="filter to a single question_id")
+    rsp.set_defaults(func=cmd_review_deletions)
 
     sp = sub.add_parser("restore", help="rebuild questions from a JSONL archive")
     sp.add_argument("--file", default=None)
