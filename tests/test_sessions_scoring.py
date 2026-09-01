@@ -1,6 +1,10 @@
+import re
+
 import pytest
 
-from satprep.training.sessions import complete_session, create_session, review_payload, submit_answer
+from satprep.training.sessions import (complete_session, create_session,
+                                       excerpt_sentences, review_payload,
+                                       submit_answer)
 from conftest import add_question
 
 
@@ -153,3 +157,280 @@ def test_interrupted_drill_rolls_back_as_a_unit(db, tmp_path):
     assert after.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 0
     assert after.execute("SELECT COUNT(*) FROM question_state WHERE times_seen > 0").fetchone()[0] == 0
     after.close()
+
+
+# ------------------------------------------------------- excerpt helpers -- #
+# Issue #48: the compact "why the key works" preview must never cut the
+# official rationale mid-sentence, and the full rationale is rendered
+# verbatim on the review page (see test_drill_ui render tests).
+
+def test_excerpt_sentences_never_cuts_mid_sentence():
+    s1 = "Choice B is best because it stays within the passage's scope."
+    s2 = "The other choices introduce claims the passage never makes."
+    out = excerpt_sentences(f"{s1} {s2} {s2} {s2} {s2} {s2}", max_chars=200)
+    # whole sentences only: the last included sentence ends at a boundary
+    assert out.endswith(("scope.", "makes."))
+    assert out not in (s1, s2)  # a real excerpt, not the whole first sentence alone
+    # and it never ends mid-word with a clipped tail
+    assert re.search(r"\S\.$", out)
+
+
+def test_excerpt_sentences_single_overlong_sentence_cuts_at_word_boundary():
+    long = "word " * 300 + "tail."
+    out = excerpt_sentences(long, max_chars=600)
+    assert len(out) <= 600
+    assert not out.endswith(" ")           # no dangling space at the cut
+    assert out.count(" ") > 0              # word boundary kept, not mid-word
+
+
+def test_excerpt_sentences_includes_whole_sentences_that_fit():
+    s1 = "First sentence of the rationale."
+    s2 = "Second sentence of the rationale."
+    out = excerpt_sentences(f"{s1} {s2}", max_chars=100)
+    assert out == f"{s1} {s2}"
+
+
+def test_excerpt_sentences_empty_input():
+    assert excerpt_sentences("", max_chars=600) == ""
+    assert excerpt_sentences("   ", max_chars=600) == ""
+
+
+def test_excerpt_sentences_does_not_split_on_abbreviations():
+    """PR-50 review finding: 'e.g.', 'Dr.', 'U.S.' are not sentence
+    boundaries. The preview must continue past the abbreviation rather
+    than end the excerpt there."""
+    text = ("Some claim e.g. that the evidence overwhelmingly supports the "
+            "treatment in every case observed so far and the results are "
+            "consistent with the hypothesis. " * 10)
+    out = excerpt_sentences(text, max_chars=90)
+    assert "e.g." in out
+    # the excerpt continues past the abbreviation, it does not stop at it
+    assert out.split("e.g.", 1)[1].strip()
+
+
+def test_excerpt_sentences_etc_terminal_still_splits():
+    """PR-50 round-4 finding: a sentence ending in 'etc.' must still be a
+    boundary. 'etc.' is conditional (like Inc.), so '..., etc. Choice B...'
+    splits at the real sentence end."""
+    s1 = "The examples include apples, pears, etc."
+    s2 = ("Choice B is the best answer because it stays within the scope "
+          "of the passage and does not overstate the evidence.")
+    out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
+    assert out == s1
+
+
+def test_excerpt_sentences_etc_nonterminal_kept():
+    """'etc.' followed by a lowercase continuation stays protected."""
+    out = excerpt_sentences("The list includes apples, pears, etc. and other fruit.",
+                            max_chars=200)
+    assert "etc." in out and "other fruit" in out
+
+
+def test_excerpt_sentences_sentence_exactly_filling_the_cap():
+    """PR-50 round-5 finding: 'One. Two.' at exactly max_chars must both
+    fit — the separator was double-counted, dropping the second sentence."""
+    assert excerpt_sentences("One. Two.", max_chars=9) == "One. Two."
+
+
+def test_excerpt_sentences_suffix_abbreviation_terminal_still_splits():
+    """PR-50 round-5 finding: 'Jr.' at a real sentence end is a boundary —
+    suffix abbreviations are terminal-aware like Inc./etc."""
+    s1 = "The speaker was Martin Luther King Jr."
+    s2 = ("Choice B is the best answer because it stays within the scope "
+          "of the passage and does not overstate the evidence.")
+    out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
+    assert out == s1
+
+
+def test_excerpt_sentences_ellipsis_is_not_a_boundary():
+    """PR-50 round-7 finding: nonterminal ellipses ('...' and '. . .')
+    followed by a lowercase continuation must not split the sentence."""
+    text = ("The evidence suggests ... a stronger conclusion than previously "
+            "thought and the data support this in every case observed. " * 10)
+    out = excerpt_sentences(text, max_chars=40)
+    assert out.startswith("The evidence suggests ...")
+    assert "..." in out and len(out.split("...", 1)[1].strip()) > 0
+
+    spaced = ("One . . . two . . . three and the rest of the sentence "
+              "continues well past the cap. " * 10)
+    out2 = excerpt_sentences(spaced, max_chars=30)
+    assert "One . . ." in out2
+
+
+def test_excerpt_sentences_sentence_final_ellipsis_still_splits():
+    """PR-50 round-8 finding: an ellipsis ending a sentence before a
+    capitalized sentence ('inconclusive... Choice B') is a boundary."""
+    s1 = "The evidence remains inconclusive..."
+    s2 = ("Choice B is correct because it stays within the scope of the "
+          "passage and does not overstate the evidence.")
+    out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
+    assert out == s1
+
+
+def test_excerpt_sentences_capitalized_abbreviation_variants():
+    """PR-50 round-9 finding: capitalized variants ('E.g.', 'I.e.') at
+    sentence start must be protected case-insensitively, preserving
+    their casing."""
+    text = ("E.g. the evidence overwhelmingly supports the treatment in "
+            "every case observed so far and the results are consistent "
+            "with the hypothesis. " * 10)
+    out = excerpt_sentences(text, max_chars=25)
+    assert out.startswith("E.g. the evidence")
+    assert "E.g." in out and len(out.split("E.g.", 1)[1].strip()) > 0
+
+
+def test_excerpt_sentences_abbreviation_does_not_match_word_suffixes():
+    """PR-50 round-10 finding: 'St.' must not match the suffix of 'best.'
+    (and 'Ms.' the suffix of 'claims.'). A real sentence-ending period
+    stays a boundary."""
+    s1 = "Choice B is best."
+    s2 = ("Choice A is wrong because it overstates the evidence and does "
+          "not stay within the scope of the passage.")
+    out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
+    assert out == s1
+
+
+def test_excerpt_sentences_quoted_question_stays_inside_sentence():
+    """PR-50 round-10 finding: an embedded quoted question ('asks "Why?"
+    before explaining') with a lowercase continuation is not a boundary."""
+    text = ("The author asks \u201cWhy?\u201d before explaining the result in "
+            "detail and continuing with the full explanation. " * 10)
+    out = excerpt_sentences(text, max_chars=40)
+    assert out.startswith("The author asks \u201cWhy?\u201d before")
+    assert "Why?" in out and len(out.split("Why?", 1)[1].strip()) > 0
+
+
+def test_excerpt_sentences_abbreviation_before_whitespace_protected():
+    """PR-50 round-11 finding: the trailing \\b from the round-10 fix
+    broke 'Dr. Smith' / 'St. Louis' (a space follows the abbreviation).
+    The leading-boundary + whitespace-lookahead pattern protects them."""
+    s1 = "Dr. Smith concluded the study."
+    s2 = ("The data support the conclusion in every case observed and the "
+          "results are consistent with the hypothesis.")
+    out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
+    assert out == s1
+
+    st = "St. Louis is a city."
+    out2 = excerpt_sentences(f"{st} {s2} {s2}", max_chars=len(st) + 20)
+    assert out2 == st
+
+
+def test_excerpt_sentences_sentence_starting_with_digit_still_splits():
+    """PR-50 round-11 finding: a sentence beginning with a number
+    ('1990. 200 participants') is a real boundary."""
+    s1 = "The study began in 1990."
+    s2 = ("200 participants were enrolled and the results support the "
+          "hypothesis strongly.")
+    out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
+    assert out == s1
+
+
+def test_excerpt_sentences_non_ascii_uppercase_sentence_start():
+    """PR-50 round-12/13 findings: a sentence starting with an accented
+    uppercase letter ('Émile Zola', 'Čapek') is a real boundary. The
+    boundary check is Unicode-aware (isupper), not a Latin-1 whitelist."""
+    s1 = "The claim is supported."
+    s2 = ("\u00c9mile Zola provides the evidence and the conclusion follows "
+          "directly from the passage.")
+    out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
+    assert out == s1
+
+    s3 = "\u010capek provides the evidence and the conclusion follows."
+    out2 = excerpt_sentences(f"{s1} {s3} {s3}", max_chars=len(s1) + 20)
+    assert out2 == s1
+
+
+def test_excerpt_sentences_still_splits_on_real_periods():
+    s1 = "First sentence ends here."
+    s2 = "Second sentence starts here."
+    out = excerpt_sentences(f"{s1} {s2}", max_chars=100)
+    assert out == f"{s1} {s2}"
+
+
+def test_excerpt_sentences_curly_single_quote_sentence_start():
+    """PR-50 round-14 finding: a sentence beginning with a curly single
+    quote ('‘Choice B’ follows') is a real boundary."""
+    s1 = "The claim is supported."
+    s2 = ("\u2018Choice B\u2019 follows because the evidence is clear and "
+          "the conclusion is direct.")
+    out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
+    assert out == s1
+
+
+def test_excerpt_sentences_terminal_abbreviation_still_splits():
+    """PR-50 round-2 finding: 'Acme Inc.' at a real sentence end is a
+    boundary — protecting it unconditionally hid the boundary and the
+    fallback cut the next sentence midstream."""
+    s1 = "The company is Acme Inc."
+    s2 = ("Choice B is the best answer because it stays within the scope "
+          "of the passage and does not overstate the evidence.")
+    out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
+    # the first (complete) sentence fits; the excerpt must stop there,
+    # not word-cut into the second sentence
+    assert out == s1
+
+
+def test_excerpt_sentences_terminator_before_closing_punctuation():
+    """PR-50 round-2 finding: a sentence ending with quoted or
+    parenthesized text ('unexpected.") must still be recognized as a
+    boundary even though whitespace follows the quote, not the period."""
+    s1 = "The result was \u201cunexpected.\u201d"
+    s2 = ("Choice B is the best answer because it stays within the scope "
+          "of the passage and does not overstate the evidence.")
+    out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
+    assert out == s1
+
+    paren = "The answer is correct (as shown)."
+    out2 = excerpt_sentences(f"{paren} {s2} {s2}", max_chars=len(paren) + 20)
+    assert out2 == paren
+
+
+def test_excerpt_sentences_answer_label_is_not_an_initial():
+    """PR-50 round-3 finding: 'The correct answer is A. Choice B...' —
+    the lone capital-period answer label is a real boundary, not a name
+    initial, so the excerpt must stop at the complete first sentence."""
+    s1 = "The correct answer is A."
+    s2 = ("Choice B is the best answer because it stays within the scope "
+          "of the passage and does not overstate the evidence.")
+    out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
+    assert out == s1
+
+
+def test_excerpt_sentences_abbreviation_before_uppercase_word():
+    """PR-50 round-3 finding: 'Brown vs. Board' — a nonterminal
+    abbreviation before an uppercase proper noun must stay protected, not
+    split the sentence at the abbreviation."""
+    s1 = "Brown vs. Board of Education established the principle."
+    s2 = ("The second sentence is long and continues well past the cap "
+          "to test the boundary logic.")
+    out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
+    assert out == s1
+
+
+def test_why_key_works_uses_first_paragraph_only():
+    from satprep.training.sessions import _why_key_works
+    para1 = "The key works because it matches the passage."
+    para2 = "A second paragraph with more official detail."
+    out = _why_key_works(f"{para1}\n\n{para2}")
+    assert para1 in out
+    assert "A second paragraph" not in out
+
+
+def test_why_key_works_empty_rationale():
+    from satprep.training.sessions import _why_key_works
+    assert _why_key_works("") == ""
+
+
+def test_paragraphs_preserve_boundaries_and_drop_blanks():
+    from satprep.training.sessions import _paragraphs
+    assert _paragraphs("first\n\nsecond\nthird") == ["first", "second", "third"]
+    assert _paragraphs("") == []
+    assert _paragraphs("single block, no newlines") == ["single block, no newlines"]
+
+
+def test_paragraphs_null_rationale_does_not_crash():
+    """PR-50 round-6 finding: the rationale column is nullable (TEXT
+    DEFAULT ''), so a NULL must not raise AttributeError in the review
+    payload."""
+    from satprep.training.sessions import _paragraphs
+    assert _paragraphs(None) == []

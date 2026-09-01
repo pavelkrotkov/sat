@@ -198,6 +198,7 @@ def review_payload(conn, session_id: str) -> list[dict]:
             "reasoning_tags": tags,
             "trap_tags": trap_tags,
             "rationale_official": question.rationale,
+            "rationale_paragraphs": _paragraphs(question.rationale),
             "rationale_is_official": bool(question.rationale),
             "passage_skeleton": skeleton,
             "lesson": lesson,
@@ -210,12 +211,154 @@ def _infer_trap(tags):
     return tags[:2]
 
 
+# Periods that are not sentence boundaries. Protected before splitting so
+# they do not end the excerpt mid-sentence (PR-50 review findings):
+#   - title abbreviations (Dr., Mr., ...) and always-nonterminal ones
+#     (vs., e.g., i.e.) are protected unconditionally — in the corpus
+#     (1,965 rationales) these never occur sentence-final;
+#   - other abbreviations (etc., Inc., U.S., Co., Jr., Sr., ...) are
+#     non-terminal only when a lowercase continuation follows, so
+#     "..., etc. Choice B...", "Acme Inc. Choice B..." and
+#     "Martin Luther King Jr. Choice B..." still split at the real
+#     sentence end.
+# Name initials ("J. K. Rowling") are deliberately not special-cased:
+# they do not occur in the corpus, and a lone capital-period there would
+# be indistinguishable from an answer label ("The correct answer is A.").
+_TITLE_ABBREVIATIONS = ("Dr.", "Mr.", "Mrs.", "Ms.", "St.")
+_ALWAYS_ABBREVIATIONS = ("e.g.", "i.e.", "vs.")
+_OTHER_ABBREVIATIONS = ("etc.", "Inc.", "Co.", "Jr.", "Sr.", "U.S.",
+                        "U.K.", "A.D.", "B.C.", "Ph.D.", "M.D.")
+# Ellipsis runs (compact "...", spaced ". . .", ".. ..") are protected
+# only when a lowercase continuation follows — in the corpus (1,965
+# rationales, 257 ellipsis occurrences) every ellipsis is mid-sentence
+# inside a quote ("In...walls"). A sentence-final ellipsis before a
+# capitalized sentence ("inconclusive... Choice B") stays a boundary
+# (PR-50 round-8 finding), mirroring the etc./Inc. conditional rule.
+_ELLIPSIS = re.compile(r"\.(?:\s*\.)+(?=\s+[a-z])")
+# Sentence terminator, optional closing quotes/brackets, then whitespace.
+# Whether it is a real boundary is decided per-split by
+# _is_sentence_start(): a new sentence starts with an uppercase letter
+# (Unicode-aware, so "Émile", "Čapek"), a digit, or a quote/bracket.
+# A lowercase continuation is an embedded quote/abbreviation already
+# protected (PR-50 rounds 10-13).
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])([\"'\u201d\u2019)\]]*)\s+")
+
+# Characters that start a sentence even without an uppercase letter.
+# Both curly double and single opening quotes are included (PR-50 round-14).
+_NON_LETTER_STARTS = frozenset("\u201c\u2018\"'([")
+
+
+def _is_sentence_start(text: str) -> bool:
+    """True when ``text`` begins a new sentence: an uppercase letter
+    (Unicode-aware), a digit, or an opening quote/bracket."""
+    if not text:
+        return False
+    first = text[0]
+    return first.isupper() or first.isdigit() or first in _NON_LETTER_STARTS
+
+
+def _protect_abbreviations(text: str) -> str:
+    """Replace non-boundary periods with a placeholder so the sentence
+    splitter skips them; restored before returning the excerpt.
+
+    Title and always-nonterminal abbreviations are matched
+    case-insensitively so capitalized variants ("E.g. the evidence...",
+    "I.E. this means") are protected too (PR-50 round-9 finding); the
+    conditional list keeps exact-case matching because its entries are
+    already case-distinctive (Inc. vs inc. is not a boundary question).
+    """
+    text = _ELLIPSIS.sub(lambda m: m.group(0).replace(".", "\x00"), text)
+    for abbr in _TITLE_ABBREVIATIONS + _ALWAYS_ABBREVIATIONS:
+        # protect only the dots in the matched abbreviation, preserving
+        # the original casing ("E.g." stays "E.g." after restore).
+        # A leading \b (word-start) with a whitespace/end lookahead makes
+        # "St." match only as a standalone token followed by a space —
+        # never the suffix of "best." nor broken by a trailing \b before
+        # whitespace ("Dr. Smith" stays protected; PR-50 round-10/11).
+        pattern = re.compile(
+            r"\b" + re.escape(abbr) + r"(?=[\s\x00])", re.IGNORECASE)
+        text = pattern.sub(lambda m: m.group(0).replace(".", "\x00"), text)
+    for abbr in _OTHER_ABBREVIATIONS:
+        text = re.sub(re.escape(abbr) + r"(?=\s+[a-z])",
+                      abbr.replace(".", "\x00"), text)
+    return text
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split on sentence terminators, keeping closing quotes/brackets with
+    the sentence they close. A terminator is a boundary only when the
+    following text starts a new sentence (Unicode-aware)."""
+    # _SENTENCE_SPLIT.split yields [seg0, close0, seg1, close1, ...]:
+    # even indices are sentence text, odd indices the closing punctuation
+    # captured between the terminator and the whitespace.
+    parts = _SENTENCE_SPLIT.split(_protect_abbreviations(text))
+    sentences: list[str] = []
+    buf = parts[0]
+    for i in range(1, len(parts), 2):
+        closing = parts[i]
+        nxt = parts[i + 1] if i + 1 < len(parts) else ""
+        if nxt and _is_sentence_start(nxt):
+            # real boundary: close the current sentence, start the next
+            sentences.append(buf + closing)
+            buf = nxt
+        else:
+            # embedded quote/continuation: the closing punctuation and the
+            # following text belong to the current sentence (re-add the
+            # space the split consumed)
+            buf += closing + " " + nxt
+    sentences.append(buf)
+    return sentences
+
+
+def excerpt_sentences(text: str, max_chars: int) -> str:
+    """Whole sentences from the start of ``text``, capped at ``max_chars``.
+
+    A preview never cuts mid-sentence when a shorter sentence boundary
+    exists; a single over-long sentence is cut at a word boundary. Common
+    abbreviations and initials (``e.g.``, ``Dr.``, ``U.S.``) are not
+    treated as boundaries, and closing quotes/brackets stay attached to
+    the sentence they close. The authoritative text itself is always
+    rendered in full elsewhere — this is only for compact excerpts.
+    """
+    if not text:
+        return ""
+    sentences = _split_sentences(text.strip())
+    excerpt: list[str] = []
+    total = 0
+    for s in sentences:
+        # total already includes the separator after the previous sentence,
+        # so a sentence that would land the joined excerpt exactly on
+        # max_chars still fits (PR-50 round-5 finding).
+        if excerpt and total + len(s) > max_chars:
+            break
+        excerpt.append(s)
+        total += len(s) + 1
+    out = " ".join(excerpt).replace("\x00", ".")
+    if len(out) > max_chars:
+        out = out[:max_chars].rsplit(" ", 1)[0]
+    return out.strip()
+
+
 def _why_key_works(rationale: str) -> str:
-    """First paragraph of the official rationale states why the key works."""
+    """First paragraph of the official rationale: why the key works."""
     if not rationale:
         return ""
-    first = rationale.split("\n")[0]
-    return first[:600]
+    return excerpt_sentences(rationale.split("\n")[0], max_chars=600)
+
+
+def _paragraphs(text: str | None) -> list[str]:
+    """Non-empty paragraphs of a stored text, preserving author boundaries.
+
+    Rationales are stored newline-separated. Rendering each paragraph as
+    its own block keeps the official text intact — no character-level
+    truncation anywhere on the review page. A NULL/empty rationale
+    (the column is nullable) yields no paragraphs (PR-50 round-6
+    finding): the template's ``{% if r.rationale_official %}`` guard
+    handles the absence.
+    """
+    if not text:
+        return []
+    return [p.strip() for p in text.split("\n") if p.strip()]
 
 
 def _logical_skeleton(passage: str) -> list[str]:
