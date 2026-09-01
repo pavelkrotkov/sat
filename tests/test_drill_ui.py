@@ -73,8 +73,11 @@ def test_confidence_controls_are_submit_buttons():
 
 def test_the_question_form_still_works_without_javascript():
     """Progressive enhancement, not a rewrite: the form posts to the same
-    handler with every field it needs already in the markup."""
+    handler with every field it needs already in the markup. The choices
+    now render through the shared question-context partial (issue #47), so
+    the radio that carries `letter` lives there."""
     markup = (TEMPLATES / "question.html").read_text()
+    partial = (TEMPLATES / "_question_context.html").read_text()
 
     assert 'method="post"' in markup
     assert 'action="/answer/{{ sid }}/{{ idx }}"' in markup
@@ -82,7 +85,7 @@ def test_the_question_form_still_works_without_javascript():
     # rather than dropping the timing the sampler reads
     assert 'name="elapsed_ms"' in markup and 'value="0"' in markup
     assert 'name="question_id"' in markup
-    assert 'name="letter"' in markup
+    assert 'name="letter"' in partial
 
 
 def test_no_page_depends_on_javascript_to_navigate():

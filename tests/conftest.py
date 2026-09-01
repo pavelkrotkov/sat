@@ -28,6 +28,11 @@ def add_question(
     tags=(),
     fingerprint=None,
     import_batch="batch1",
+    images=(),
+    source_test="SAT Practice Test 1",
+    source_question_number="1",
+    module="Module 1",
+    rationale="rationale",
 ):
     from satprep.corpus import fingerprint as fpmod
 
@@ -39,13 +44,13 @@ def add_question(
              module, passage, stem, choices_json, correct_letter, rationale, images_json,
              official_domain, official_skill, skill_source, difficulty, pool, seen_benchmark,
              is_new_bank, import_batch, imported_at, provenance_json)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?,?)""",
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?,?)""",
         (
             fp,
             source,
-            "SAT Practice Test 1",
-            "1",
-            "Module 1",
+            source_test,
+            source_question_number,
+            module,
             passage,
             stem,
             json.dumps(
@@ -55,8 +60,8 @@ def add_question(
                 ]
             ),
             correct,
-            "rationale",
-            "[]",
+            rationale,
+            json.dumps(list(images)),
             "",
             skill,
             "metadata" if skill else "unknown",

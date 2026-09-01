@@ -23,7 +23,18 @@
   </span>
 </div>
 
-{{ vx.visuals_block(fb.visuals, fb.images) }}
+{% set ctx = {
+    'passage': fb.question.passage,
+    'stem': fb.question.stem,
+    'choices': fb.question.choices,
+    'images': fb.question.images,
+    'visuals': fb.question.visuals,
+    'chosen_letter': fb.chosen_letter,
+    'key_letter': fb.key_letter,
+    'source_label': fb.question.source_label,
+    'selectable': False,
+} %}
+{% include '_question_context.html' %}
 
 <div class="key-line">
   <span class="label">Key — {{ fb.key_letter }}</span>
