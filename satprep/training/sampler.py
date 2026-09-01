@@ -11,15 +11,14 @@ import json
 import random
 from datetime import datetime
 
-from .. import ALGO_VERSION
-from .. import config
+from .. import ALGO_VERSION, config
 from ..clock import utc_now
+from ..corpus.questions import iter_active
+from ..corpus.tags import tags_by_question
 from ..ids import session_id
 from .candidates import Candidate, row_field
 from .composition import MODE_COMPOSITIONS, compose, pools_for
 from .spacing import is_due
-from ..corpus.questions import iter_active
-from ..corpus.tags import tags_by_question
 from .weakness import cached_profile, compute_weakness
 
 
@@ -72,18 +71,20 @@ def score_candidate(cand: Candidate, weakness: dict, focus_tags: list[str] | Non
     # ERROR tag (the classifier's output from #36). error_tags come
     # from the student_error_tags table and live under
     # weakness['error_tag']; they are distinct from demand tags but
-    # get the same additive scoring treatment.
+    # get the same additive scoring treatment. A candidate is boosted
+    # only when IT carries the weak error tag — the profile records
+    # which question_ids each error tag applies to.
     error_weak = weakness.get("error_tag", {})
-    if error_weak and focus_tags:
-        for t in error_weak:
-            if t in focus_tags:
-                cand.add(f"remediation:error-tag:{t}",
-                         config.W_WEAK_TAG_MATCH * (error_weak[t]["score"] / 100.0))
-    elif error_weak:
-        for t in tags:
-            if t in error_weak:
-                cand.add(f"remediation:error-tag:{t}",
-                         config.W_WEAK_TAG_MATCH * (error_weak[t]["score"] / 100.0))
+    for t, payload in error_weak.items():
+        score = payload.get("score", 0) or 0
+        if score <= 0:
+            continue
+        qids = payload.get("question_ids") or []
+        if qids and cand.question.id in qids:
+            bonus = config.W_WEAK_TAG_MATCH * (score / 100.0)
+            if focus_tags and t in focus_tags:
+                bonus *= 1.35
+            cand.add(f"remediation:error-tag:{t}", bonus)
     skill = q.official_skill
     if skill and skill in weak_skills:
         cand.add(f"skill-weakness:{skill}", config.W_SKILL_WEAKNESS * weak_skills[skill]["score"] / 100.0)
@@ -131,16 +132,22 @@ def score_candidate(cand: Candidate, weakness: dict, focus_tags: list[str] | Non
 
 
 def select_drill(conn, mode: str, count: int | None = None, seed: str | None = None,
-                 focus_tag: str | None = None) -> dict:
+                 focus_tag: str | None = None, now: datetime | None = None) -> dict:
     """Build a drill plan. Returns {'session_id', 'items': [...], 'seed'}.
 
     items: [{'question_id', 'weight', 'why': [(component, delta)], 'bucket'}]
     Protected benchmark leakage is structurally impossible outside
     fresh_benchmark mode because candidates are filtered by pool.
+
+    `now` is the reference time for due-date eligibility and
+    candidate recency. Defaults to wall-clock when omitted, but
+    callers that have already captured a timestamp for
+    reproducibility (e.g. remediation plans) should pass it through
+    so the drill is consistent with the rest of the plan.
     """
     seed = seed or utc_now()
     rng = random.Random(seed)
-    now = datetime.now().astimezone()
+    now = now or datetime.now().astimezone()
 
     weakness = cached_profile(conn)
     if not weakness.get("tag") and not weakness.get("skill"):

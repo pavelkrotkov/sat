@@ -7,8 +7,6 @@ import sqlite3
 import pytest
 
 from satprep.training.remediation import (
-    ErrorPattern,
-    RemediationPlan,
     _recommended_tags,
     build_remediation_plan,
     compute_patterns,
@@ -78,6 +76,13 @@ def memdb():
         due_at TEXT,
         last_attempted_at TEXT
     );
+    CREATE TABLE effective_question_tags (
+        question_id INTEGER NOT NULL,
+        tag TEXT NOT NULL,
+        origin TEXT NOT NULL DEFAULT 'rule',
+        created_at TEXT NOT NULL,
+        UNIQUE(question_id, tag)
+    );
     CREATE TABLE student_error_tags (
         question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
         tag TEXT NOT NULL,
@@ -121,20 +126,37 @@ def _add_question(conn, qid, *, pool="fresh_training", difficulty="medium",
 
 
 def _add_attempt(conn, qid, *, correct=0, confidence=3, days_ago=5,
-                 error_tags=("qualifier_strength",)):
+                 error_tags=("qualifier_strength",), per_attempt=None):
     when = (datetime.datetime.now() - datetime.timedelta(days=days_ago)).isoformat()
+    # per_attempt (when not None) overrides the student_error_tags snapshot
+    # for THIS row only — simulates the per-attempt JSON written by
+    # the live session pipeline. Falls back to the legacy INSERT into
+    # student_error_tags otherwise.
+    if per_attempt is not None:
+        import json as _json
+        et_json = _json.dumps(list(per_attempt))
+    else:
+        et_json = "[]"
     conn.execute(
         """INSERT INTO attempts (session_id, question_id, chosen_letter,
              correct, confidence, attempted_at, error_tags)
            VALUES ('s', ?, 'A', ?, ?, ?, ?)""",
-        (qid, correct, confidence, when, "[]"),
+        (qid, correct, confidence, when, et_json),
     )
-    for t in error_tags:
-        conn.execute(
-            """INSERT OR REPLACE INTO student_error_tags
-                 (question_id, tag, created_at) VALUES (?, ?, '2026-01-01')""",
-            (qid, t),
-        )
+    if per_attempt is None:
+        for t in error_tags:
+            conn.execute(
+                """INSERT OR REPLACE INTO student_error_tags
+                     (question_id, tag, created_at) VALUES (?, ?, '2026-01-01')""",
+                (qid, t),
+            )
+    else:
+        for t in per_attempt:
+            conn.execute(
+                """INSERT OR REPLACE INTO student_error_tags
+                     (question_id, tag, created_at) VALUES (?, ?, '2026-01-01')""",
+                (qid, t),
+            )
     conn.commit()
 
 
@@ -220,7 +242,7 @@ def test_recommended_tags_skips_cold_start_noise(db):
     """One cold-start tag with a single attempt should not be recommended
     at high priority."""
     from conftest import add_question
-    conn, path = db
+    conn, _ = db
     add_question(conn, stem="q1", correct="B")
     qid = conn.execute("SELECT id FROM questions LIMIT 1").fetchone()[0]
     _add_attempt(conn, qid, error_tags=("qualifier_strength",), days_ago=2)
@@ -236,7 +258,7 @@ def test_recommended_tags_skips_cold_start_noise(db):
 def test_build_remediation_plan_no_match_is_explicit(db):
     """No matching questions -> drill None, recommended_tags empty,
     explain_selection says so. Never a crash."""
-    conn, path = db
+    conn, _ = db
     # No attempts at all -> no error patterns -> no tags -> no drill.
     plan = build_remediation_plan(conn, count=4)
     assert plan.patterns == []
@@ -248,10 +270,10 @@ def test_build_remediation_plan_no_match_is_explicit(db):
 
 def test_build_remediation_plan_with_weak_pattern(db):
     from conftest import add_question
-    conn, path = db
-    add_question(conn, stem="q1", correct="B")
-    add_question(conn, stem="q2", correct="B")
-    add_question(conn, stem="q3", correct="B")
+    conn, _ = db
+    add_question(conn, stem="q1", correct="B", tags=("qualifier_strength",))
+    add_question(conn, stem="q2", correct="B", tags=("qualifier_strength",))
+    add_question(conn, stem="q3", correct="B", tags=("qualifier_strength",))
     qids = [r["id"] for r in conn.execute("SELECT id FROM questions").fetchall()]
     for q in qids:
         _add_attempt(conn, q, error_tags=("qualifier_strength",))
@@ -260,6 +282,13 @@ def test_build_remediation_plan_with_weak_pattern(db):
     assert "qualifier_strength" in plan.recommended_tags
     assert plan.drill is not None
     assert len(plan.drill["items"]) > 0
+    # And every drill item should expose at least one explainable
+    # weak-tag / remediation reason in `why`.
+    for item in plan.drill["items"]:
+        labels = [label for label, _ in (item.get("why") or [])]
+        assert any(l.startswith("weak-tag:") or l.startswith("remediation:")
+                   for l in labels), \
+            f"expected explainable reason in {labels}"
     lines = explain_selection(plan)
     assert any("selected because" in l for l in lines)
 
@@ -269,8 +298,9 @@ def test_remediation_never_touches_protected_benchmark(db):
     — the pool filter in pools_for('remediation') excludes it
     structurally. This is the leakage invariant for #38."""
     from conftest import add_question
+
     from satprep.training.composition import pools_for
-    conn, path = db
+    conn, _ = db
     assert "protected_benchmark" not in pools_for("remediation")
     # And the sampler's plan can never carry a protected item.
     add_question(conn, stem="q1", correct="B")
@@ -287,9 +317,207 @@ def test_remediation_never_touches_protected_benchmark(db):
 
 def test_module_boundary_remediation_imports_trainer_only():
     import satprep.training.remediation as rem
-    src = open(rem.__file__).read()
+    with open(rem.__file__) as fh:
+        src = fh.read()
     # It lives in training/ and may import from training, but must not
     # import server/analytics/cli (those reach back up).
     assert "from ..server" not in src
     assert "from ..cli" not in src
     assert "from ..analytics" not in src
+
+
+# ---------------------------------------------------------------------------
+# Regression coverage for review-round-1 findings (issue #38 PR #45)
+# ---------------------------------------------------------------------------
+
+def test_error_tag_attempts_includes_question_id(memdb):
+    """P1: question_id must be selectable from _error_tag_attempts so the
+    conflicting status classifier sees real question_ids (not None)."""
+    _add_question(conn=memdb, qid=1)
+    _add_question(conn=memdb, qid=2)
+    _add_attempt(memdb, 1, error_tags=("qualifier_strength",))
+    _add_attempt(memdb, 2, error_tags=("qualifier_strength",))
+    from satprep.training.remediation import _error_tag_attempts
+    per_tag = _error_tag_attempts(memdb)
+    qids = {r["question_id"] for rows in per_tag.values() for r in rows}
+    assert qids == {1, 2}
+
+
+def test_pattern_status_conflicting_only_when_real(memdb):
+    """P1: with two distinct questions on the same tag, status must be
+    'ok', not 'conflicting'. The old code always reported 'conflicting'
+    because question_id was missing from the SELECT."""
+    _add_question(conn=memdb, qid=1)
+    _add_question(conn=memdb, qid=2)
+    _add_attempt(memdb, 1, error_tags=("qualifier_strength",))
+    _add_attempt(memdb, 2, error_tags=("qualifier_strength",))
+    patterns = compute_patterns(memdb)
+    assert patterns[0].status == "ok"
+
+
+def test_recent_error_rate_is_real_ratio_not_1(memdb):
+    """P1: 3 wrong + 7 correct recent attempts must NOT collapse to
+    rate 1.0. Old code filtered out correct attempts before computing
+    the rate, so any tag with a recent wrong answer always reported 1.0.
+    """
+    _add_question(conn=memdb, qid=1)
+    _add_question(conn=memdb, qid=2)
+    # 3 wrong on q1, 7 correct on q2 — all within the 30-day window.
+    for _ in range(3):
+        _add_attempt(memdb, 1, error_tags=("qualifier_strength",), days_ago=2)
+    for _ in range(7):
+        _add_attempt(memdb, 2, error_tags=("qualifier_strength",),
+                     days_ago=2, correct=1)
+    patterns = compute_patterns(memdb)
+    p = next(pp for pp in patterns if pp.tag == "qualifier_strength")
+    assert p.recent_total == 10
+    assert p.recent_wrong == 3
+    assert abs(p.recent_error_rate - 0.3) < 1e-6
+
+
+def test_per_attempt_error_tags_drive_aggregation(memdb):
+    """P1: per-attempt error_tags (written to attempts.error_tags JSON)
+    must drive aggregation, not the question-level student_error_tags
+    snapshot. A correct attempt's per-attempt tags should be visible."""
+    _add_question(conn=memdb, qid=1)
+    _add_question(conn=memdb, qid=2)
+    # q1's per-attempt diagnosis is "qualifier_strength"; q2 is unrelated.
+    _add_attempt(memdb, 1, error_tags=("qualifier_strength",),
+                 per_attempt=("qualifier_strength",), days_ago=2)
+    # Per-attempt tag differs from the snapshot — must use the JSON.
+    _add_attempt(memdb, 2, error_tags=("legacy_tag",),
+                 per_attempt=("over_inference",), days_ago=2)
+    patterns = compute_patterns(memdb)
+    tags = {p.tag for p in patterns}
+    assert "over_inference" in tags
+    assert "legacy_tag" not in tags  # snapshot alone is no longer authoritative
+
+
+def test_explain_selection_reads_sampler_why(db):
+    """P2: explain_selection must read the sampler's `why` field, not
+    `score_breakdown`. Old code always reported 'general weakness match'."""
+    from conftest import add_question
+    conn, _ = db
+    # Seed demand-tag rows so the candidate's `why` carries a weak-tag
+    # component for the explanation to surface (without any demand-tag
+    # match, every item legitimately falls back to general match).
+    add_question(conn, stem="q1", correct="B", tags=("qualifier_strength",))
+    add_question(conn, stem="q2", correct="B", tags=("qualifier_strength",))
+    add_question(conn, stem="q3", correct="B", tags=("qualifier_strength",))
+    qids = [r["id"] for r in conn.execute("SELECT id FROM questions").fetchall()]
+    for q in qids:
+        _add_attempt(conn, q, error_tags=("qualifier_strength",))
+    plan = build_remediation_plan(conn, count=4)
+    assert plan.drill is not None
+    items = plan.drill["items"]
+    # Each item must carry an explainable `why` list of (label, value) pairs
+    # (not a `score_breakdown` dict).
+    assert items, "expected at least one drill item"
+    assert all(isinstance(it.get("why"), list) for it in items), \
+        f"each item must store why as a list: {items[0]}"
+    lines = explain_selection(plan)
+    # At least one item should expose a real reason rather than the fallback.
+    non_fallback = [l for l in lines if "general weakness match" not in l]
+    assert non_fallback, f"all explanations fell back to 'general weakness match': {lines}"
+
+
+def test_drill_none_when_no_eligible_question(db):
+    """P2: build_remediation_plan with focus_tag and NO matching question
+    must return drill=None (documented contract), not a non-null dict
+    whose items came purely from the sampler's FALLBACK_BUCKET.
+
+    With no attempts, no error-tag profile exists, so the
+    remediation-specific boost yields nothing. The sampler still
+    produces a non-null dict with generic candidates; we collapse
+    that to honour the documented contract.
+    """
+    from conftest import add_question
+    conn, _ = db
+    add_question(conn, stem="q1", correct="B")
+    # No attempts → no pattern → focus_tag still triggers select_drill,
+    # but no candidate carries the tag.
+    plan = build_remediation_plan(conn, count=4, focus_tag="qualifier_strength")
+    assert plan.patterns == []
+    # With no error-tag profile, every drill item would be a generic
+    # fallback (no remediation component). The documented contract is
+    # drill=None in that case, which explain_selection already reports.
+    assert plan.drill is None, (
+        f"focus-tag drill with no eligible remediation candidates must be None, "
+        f"got drill with items: {plan.drill.get('items') if plan.drill else None}"
+    )
+    lines = explain_selection(plan)
+    assert any("no matching" in l for l in lines)
+
+
+def test_measure_improvement_delta_none_for_empty_windows(db):
+    """P2: when either window is empty, delta must be None, not a
+    misleading 0.0 / recent_rate. Both empty-older and empty-recent
+    cases must withhold."""
+    from conftest import add_question
+    conn, _ = db
+    add_question(conn, stem="q1", correct="B")
+    qid = conn.execute("SELECT id FROM questions LIMIT 1").fetchone()[0]
+    # recent-only attempt (days_ago=2, so < 30d window)
+    _add_attempt(conn, qid, error_tags=("qualifier_strength",), days_ago=2)
+    patterns = compute_patterns(conn)
+    impr = measure_improvement(conn, patterns)
+    d = impr["qualifier_strength"]
+    assert d["older_error_rate"] is None
+    assert d["delta"] is None
+
+
+def test_select_drill_accepts_now_for_reproducibility(db):
+    """P2: select_drill must honor a caller-supplied `now` so that
+    remediation plans that capture a reference time don't have the
+    drill selection drift to wall-clock."""
+    from conftest import add_question
+
+    from satprep.training.sampler import select_drill
+    conn, _ = db
+    add_question(conn, stem="q1", correct="B")
+    add_question(conn, stem="q2", correct="B")
+    add_question(conn, stem="q3", correct="B")
+    past = datetime.datetime(2024, 1, 1, tzinfo=datetime.UTC)
+    # Two calls with the same past `now` should agree on item set/ordering.
+    a = select_drill(conn, "targeted_drill", count=12, seed="x", now=past)
+    b = select_drill(conn, "targeted_drill", count=12, seed="x", now=past)
+    assert [i["question_id"] for i in a["items"]] == \
+           [i["question_id"] for i in b["items"]]
+
+
+def test_deactivated_question_excluded_from_remediation_evidence(memdb):
+    """P2: attempts on a deactivated (active=0) question must NOT
+    contribute to remediation evidence — only active questions count."""
+    # Same qid, but mark active=0 after the row exists.
+    _add_question(conn=memdb, qid=1)
+    memdb.execute("UPDATE questions SET active=0 WHERE id=1")
+    _add_attempt(memdb, 1, error_tags=("qualifier_strength",), days_ago=2)
+    patterns = compute_patterns(memdb)
+    # The attempt exists, but the question is deactivated → no evidence.
+    assert patterns == [] or all(p.evidence_count == 0 for p in patterns)
+
+
+def test_improvement_includes_correctly_answered_transfer(db):
+    """P1: a correctly-answered question that shares a demand tag with
+    a diagnosed question must contribute improvement evidence. Old
+    code only joined on student_error_tags, so transfer-correct
+    answers were invisible to the metric."""
+    from conftest import add_question
+    conn, _ = db
+    add_question(conn, stem="q1", correct="B")  # transfer target
+    add_question(conn, stem="q2", correct="B")
+    add_question(conn, stem="q3", correct="B")
+    # q1 has the diagnosis; q2 shares a demand tag in question_tags
+    # (effective_question_tags is a view over this in production).
+    conn.execute("""INSERT INTO question_tags (question_id, tag, origin, created_at)
+                    VALUES (1, 'inference', 'rule', '2026-01-01'),
+                           (2, 'inference', 'rule', '2026-01-01')""")
+    conn.commit()
+    _add_attempt(conn, 1, error_tags=("qualifier_strength",), days_ago=45)
+    _add_attempt(conn, 2, error_tags=("qualifier_strength",), days_ago=3,
+                 correct=1, per_attempt=())  # no per-attempt tag for transfer
+    patterns = compute_patterns(conn)
+    impr = measure_improvement(conn, patterns)
+    d = impr.get("qualifier_strength", {})
+    # recent_n now includes q2's correct transfer attempt (old code missed it).
+    assert d.get("recent_n", 0) >= 1

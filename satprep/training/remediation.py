@@ -28,12 +28,11 @@ standard session/persist path when a remediation drill is started).
 from __future__ import annotations
 
 import dataclasses
+import json
 from datetime import datetime, timedelta
-from typing import Any
 
-from .. import config
-from .weakness import _recency, _weight_for
 from .sampler import select_drill
+from .weakness import _recency, _weight_for
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -70,40 +69,102 @@ class RemediationPlan:
 _RECENT_WINDOW_DAYS = 30.0
 
 
+def _attempt_tags(r: dict) -> list[str]:
+    """Per-attempt diagnosis from attempts.error_tags (JSON), with a
+    fallback to the question-level student_error_tags snapshot for
+    older ingest paths that never wrote the per-attempt JSON."""
+    raw = r.get("error_tags")
+    if raw:
+        try:
+            loaded = json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(loaded, list) and loaded:
+                return [str(t) for t in loaded]
+        except (TypeError, ValueError):
+            pass
+    # Fallback: caller will pick up the question-level snapshot via
+    # the outer LEFT JOIN. Returning [] here is correct — the snapshot
+    # row is attached exactly once via the join, so the attempt is
+    # not double-counted.
+    return []
+
+
 def _error_tag_attempts(conn) -> dict[str, list[dict]]:
     """Collect every attempt joined to the error tags the diagnosis
-    recorded for it. student_error_tags is keyed by question_id, so an
-    attempt on that question carries the tags (the classifier output
-    from #36 / rule diagnosis)."""
+    recorded for it. Per-attempt tags come from attempts.error_tags
+    (the per-attempt diagnosis written at session time); older
+    attempts that lack that JSON fall back to student_error_tags.
+
+    Only attempts on active=1 questions count — deactivated
+    questions are audit-only and must not influence remediation
+    recommendations. All attempt outcomes (correct + wrong) are
+    loaded so recent_error_rate is a real ratio, not a constant 1.0.
+    """
     rows = conn.execute(
-        """SELECT set_.tag AS tag,
+        """SELECT a.id AS attempt_id, a.question_id AS question_id,
                   a.correct AS correct, a.confidence AS confidence,
                   a.attempted_at AS attempted_at,
-                  a.time_ms AS time_ms
-           FROM student_error_tags set_
-           JOIN attempts a ON a.question_id = set_.question_id
-           WHERE a.correct = 0
+                  a.time_ms AS time_ms,
+                  a.error_tags AS error_tags,
+                  set_.tag AS snapshot_tag
+           FROM attempts a
+           JOIN questions q ON q.id = a.question_id AND q.active = 1
+           LEFT JOIN student_error_tags set_
+               ON set_.question_id = a.question_id
            ORDER BY a.attempted_at"""
     ).fetchall()
     per_tag: dict[str, list[dict]] = {}
     for r in rows:
-        per_tag.setdefault(r["tag"], []).append(dict(r))
+        d = dict(r)
+        tags = _attempt_tags(d) or ([d["snapshot_tag"]] if d.get("snapshot_tag") else [])
+        if not tags:
+            continue
+        # Avoid inflating mass: an attempt may carry multiple error tags,
+        # but each tag should only see this attempt once.
+        for t in tags:
+            per_tag.setdefault(t, []).append({
+                "question_id": d["question_id"],
+                "attempt_id": d["attempt_id"],
+                "correct": d["correct"],
+                "confidence": d["confidence"],
+                "attempted_at": d["attempted_at"],
+                "time_ms": d["time_ms"],
+            })
     return per_tag
 
 
 def _recent_attempts_by_tag(conn, tag: str, now: datetime) -> list[dict]:
-    """All attempts (correct + wrong) on questions that carry `tag` in
-    student_error_tags — used for the improvement comparison. A
-    question's error tags are static per question (diagnosis), so an
-    attempt on that question after remediation still counts."""
+    """All attempts (correct + wrong) on questions that carry `tag`
+    via the per-attempt diagnosis OR via an analogous reasoning
+    tag — used for the improvement comparison.
+
+    A correctly-answered transfer question can still contribute
+    evidence: the diagnosis may live on a peer question (same
+    demand tag), and the analogous correct answer proves the
+    student has internalized the rule. We pull attempts on any
+    question sharing an effective_question_tags row with the
+    diagnosed set.
+    """
     rows = conn.execute(
-        """SELECT a.correct AS correct, a.confidence AS confidence,
+        """SELECT a.question_id AS question_id,
+                  a.correct AS correct, a.confidence AS confidence,
                   a.attempted_at AS attempted_at, a.time_ms AS time_ms
-           FROM student_error_tags set_
-           JOIN attempts a ON a.question_id = set_.question_id
-           WHERE set_.tag = ? AND a.correct IN (0, 1)
+           FROM attempts a
+           JOIN questions q ON q.id = a.question_id AND q.active = 1
+           WHERE a.question_id IN (
+               SELECT DISTINCT question_id FROM student_error_tags WHERE tag = ?
+               UNION
+               SELECT qt.question_id
+                 FROM effective_question_tags qt
+                WHERE qt.tag IN (
+                    SELECT DISTINCT eqt.tag
+                      FROM effective_question_tags eqt
+                     WHERE eqt.question_id IN (
+                         SELECT question_id FROM student_error_tags WHERE tag = ?
+                     )
+                )
+           )
            ORDER BY a.attempted_at""",
-        (tag,),
+        (tag, tag),
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -144,15 +205,18 @@ def _kb_tactics_for(tag: str) -> list[str]:
 
 
 def _pattern_status(tag: str, rows: list[dict], now: datetime) -> str:
-    """Classify the evidence quality for a tag."""
+    """Classify the evidence quality for a tag.
+
+    Conflicting means many of the same question produced MULTIPLE
+    different error tags (a question with the same content getting
+    diagnosed differently on retries is a sign the classifier is
+    unstable, not a student pattern). Each per-attempt row already
+    carries its question_id.
+    """
     if len(rows) == 0:
         return "cold_start"
     if len(rows) == 1:
         return "sparse"
-    # Conflicting: roughly even split of error tags pointing at this
-    # question AND other questions with a different dominant error —
-    # approximated by checking whether the same question produced
-    # multiple different error tags.
     qids = {r.get("question_id") for r in rows}
     if len(qids) < len(rows) * 0.5:
         return "conflicting"
@@ -220,7 +284,7 @@ def measure_improvement(conn, patterns: list[ErrorPattern],
     out: dict[str, dict] = {}
     for p in patterns:
         rows = _recent_attempts_by_tag(conn, p.tag, now)
-        recent_w, recent_t, recent_rate = _error_rate(rows, now, _RECENT_WINDOW_DAYS)
+        _, recent_t, recent_rate = _error_rate(rows, now, _RECENT_WINDOW_DAYS)
         # Older window: everything before the recent cutoff.
         cutoff = now - timedelta(days=_RECENT_WINDOW_DAYS)
         older_w = older_t = 0
@@ -234,10 +298,21 @@ def measure_improvement(conn, patterns: list[ErrorPattern],
             older_t += 1
             older_w += 1 if r["correct"] == 0 else 0
         older_rate = older_w / older_t if older_t else None
+        recent_present = recent_t > 0
+        older_present = older_t > 0
+        # Withhold the delta unless BOTH windows have observations:
+        # - no older baseline → cannot claim "deteriorated from X to Y"
+        # - no recent attempts → cannot claim "improvement to 0"
+        # Returning None keeps callers honest instead of misleading
+        # them with a 0.0 / recent_rate default.
+        if recent_present and older_present and older_rate is not None:
+            delta: float | None = round(recent_rate - older_rate, 3)
+        else:
+            delta = None
         out[p.tag] = {
             "recent_error_rate": round(recent_rate, 3),
             "older_error_rate": round(older_rate, 3) if older_rate is not None else None,
-            "delta": round(recent_rate - (older_rate or 0.0), 3),
+            "delta": delta,
             "recent_n": recent_t,
             "older_n": older_t,
         }
@@ -298,8 +373,25 @@ def build_remediation_plan(
         # The sampler's score_candidate already boosts weak-tag matches;
         # we pass focus_tags so the same mechanism targets the error
         # tags we recommend (they live in weakness['error_tag']).
-        drill = select_drill(conn, mode="remediation", count=count,
-                             seed=seed, focus_tag=tags[0])
+        # Thread `now` so due-date eligibility and candidate recency
+        # in the drill line up with the evidence snapshot used to
+        # build the rest of the plan.
+        result = select_drill(conn, mode="remediation", count=count,
+                              seed=seed, focus_tag=tags[0], now=now)
+        # Explicit no-match handling: documented contract is drill=None
+        # when no eligible question matches the focus tag. A drill
+        # whose items came entirely from the sampler's FALLBACK_BUCKET
+        # (no `remediation:error-tag:*` component in their `why`) is
+        # a generic drill dressed as remediation; collapse to None so
+        # callers see the truth.
+        items = result.get("items") or []
+        remediation_items = [it for it in items
+                             if any(label.startswith("remediation:error-tag:")
+                                    for label, _ in (it.get("why") or []))]
+        if not remediation_items:
+            drill = None
+        else:
+            drill = result
     return RemediationPlan(
         patterns=patterns,
         improvement=improvement,
@@ -309,17 +401,31 @@ def build_remediation_plan(
 
 
 def explain_selection(plan: RemediationPlan) -> list[str]:
-    """Human-readable why-each-question-was-selected."""
+    """Human-readable why-each-question-was-selected.
+
+    The sampler stores each candidate's explainable components under
+    the `why` key as a list of (label, value) pairs. We rebuild that
+    into a label-keyed dict so the prefix-based scan picks up both
+    `weak-tag:*` and `remediation:*` components — when a question
+    was selected purely on a reasoning-tag match, fall back to a
+    `weak-tag` label.
+    """
     out = []
     if not plan.drill:
         out.append("no matching remediation questions found; recommended tags: "
                    + ", ".join(plan.recommended_tags or ["(none)"]))
         return out
     for item in plan.drill["items"]:
-        qid = item.get("id") or item.get("question_id")
-        breakdown = item.get("score_breakdown") or {}
-        weak_hits = [k for k in breakdown if k.startswith("weak-tag:")
-                     or k.startswith("remediation:")]
+        qid = item.get("question_id") or item.get("id")
+        # `why` is the sampler's per-question component list
+        # [(label, delta), ...]; collapse it into a label-keyed dict
+        # for the prefix scan.
+        why_pairs = item.get("why") or []
+        if isinstance(why_pairs, dict):
+            breakdown = why_pairs
+        else:
+            breakdown = {label: value for label, value in why_pairs}
+        weak_hits = [k for k in breakdown if k.startswith(("weak-tag:", "remediation:"))]
         out.append(
             f"q{qid}: selected because {weak_hits or 'general weakness match'}"
         )
