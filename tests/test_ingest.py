@@ -99,7 +99,9 @@ def test_duplicate_content_dedupes_by_fingerprint(tmp_path, monkeypatch):
 def test_identical_content_occurrences_keep_placement(tmp_path, monkeypatch):
     """Issue #49: same content at different placements must not erase
     the source occurrence's test/module/question identity."""
-    monkeypatch.setattr("satprep.config.BLUEBOOK_JSON", tmp_path / "outputs" / "wrong_questions.json")
+    monkeypatch.setattr(
+        "satprep.config.BLUEBOOK_JSON", tmp_path / "outputs" / "wrong_questions.json"
+    )
     r1 = _rec("a1")
     r2 = _rec("a2", num=2)
     r2["question_text"] = r1["question_text"]

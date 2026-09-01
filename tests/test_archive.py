@@ -275,8 +275,15 @@ def test_archive_preserves_bluebook_occurrences(db, tmp_path):
     """T4: bluebook_occurrences (source UID + placement) survive an
     export/restore round trip, including deduplicated occurrences."""
     conn, _ = db
-    qid = add_question(conn, passage="P", stem="Q?", choices=["a", "b"],
-                       correct="A", source="bluebook_test", pool="historical")
+    qid = add_question(
+        conn,
+        passage="P",
+        stem="Q?",
+        choices=["a", "b"],
+        correct="A",
+        source="bluebook_test",
+        pool="historical",
+    )
     occs = [
         (f"uid-{qid}-1", "SAT Practice Test 4", "Module 1", "1", "fp1"),
         (f"uid-{qid}-2", "SAT Practice Test 4", "Module 1", "2", "fp2"),

@@ -2,12 +2,8 @@
 
 import json
 
-import pytest
-
-from satprep.db import connect, db_context
-from satprep.corpus.audit import audit_bluebook, audit_passes, _has_determinable_correctness
-from satprep.corpus.repair import repair_bluebook
-from tests.conftest import add_question  # noqa: F401  (fixture helper)
+from satprep.corpus.audit import _has_determinable_correctness, audit_bluebook, audit_passes
+from tests.conftest import add_question
 
 
 def _seed_sources(tmp_path, monkeypatch, records):
@@ -17,12 +13,17 @@ def _seed_sources(tmp_path, monkeypatch, records):
     monkeypatch.setattr("satprep.config.BLUEBOOK_JSON", out / "wrong_questions.json")
 
 
-def _rec(uid, *, test="SAT Practice Test 4", module="Module 1", num="1",
-         status="Correct"):
+def _rec(uid, *, test="SAT Practice Test 4", module="Module 1", num="1", status="Correct"):
     return {
-        "uid": uid, "test_name": test, "subject_bucket": "Reading and Writing",
-        "module": module, "question_number": str(num), "answer_status": status,
-        "my_answer": "A; Correct", "correct_answer": "A", "scraped_at": "2026-01-01",
+        "uid": uid,
+        "test_name": test,
+        "subject_bucket": "Reading and Writing",
+        "module": module,
+        "question_number": str(num),
+        "answer_status": status,
+        "my_answer": "A; Correct",
+        "correct_answer": "A",
+        "scraped_at": "2026-01-01",
     }
 
 
@@ -30,18 +31,35 @@ def _seed_occurrences(conn, records, qid_for=None):
     """Insert an occurrence per record, resolving to a question row, plus the
     matching historical attempt (per-occurrence preservation gate T3)."""
     for rec in records:
-        qid = qid_for(rec) if qid_for else add_question(
-            conn, passage=f"P{rec['uid']}", stem=f"Q{rec['uid']}?",
-            choices=("a", "b", "c", "d"), correct="A",
-            source="bluebook_test", pool="historical")
+        qid = (
+            qid_for(rec)
+            if qid_for
+            else add_question(
+                conn,
+                passage=f"P{rec['uid']}",
+                stem=f"Q{rec['uid']}?",
+                choices=("a", "b", "c", "d"),
+                correct="A",
+                source="bluebook_test",
+                pool="historical",
+            )
+        )
         conn.execute(
             """INSERT INTO bluebook_occurrences
                  (bluebook_uid, test_name, module, question_number, subject,
                   fingerprint, question_id, answer_status, scraped_at)
                VALUES (?,?,?,?,?,?,?,?,?)""",
-            (rec["uid"], rec["test_name"], rec["module"], rec["question_number"],
-             "Reading and Writing", f"fp{qid}", qid, rec["answer_status"],
-             rec["scraped_at"]),
+            (
+                rec["uid"],
+                rec["test_name"],
+                rec["module"],
+                rec["question_number"],
+                "Reading and Writing",
+                f"fp{qid}",
+                qid,
+                rec["answer_status"],
+                rec["scraped_at"],
+            ),
         )
         if _has_determinable_correctness(rec):
             conn.execute(
@@ -55,7 +73,8 @@ def _seed_occurrences(conn, records, qid_for=None):
 def test_audit_counts_source_occurrences(db, tmp_path, monkeypatch):
     conn, _ = db
     recs = [
-        _rec("u1"), _rec("u2", num="2"),
+        _rec("u1"),
+        _rec("u2", num="2"),
         _rec("u3", module="Module 2", num="7"),
         # duplicate placement: same test/module/qn as u1
         _rec("u1-dup", num="1", status="Incorrect"),
@@ -89,16 +108,31 @@ def test_audit_flags_missing_fields(db, tmp_path, monkeypatch):
     recs = [_rec("u1")]
     _seed_sources(tmp_path, monkeypatch, recs)
     # question with no choices is a gap
-    qid = add_question(conn, passage="P", stem="Q?", choices=(), correct="A",
-                       source="bluebook_test", pool="historical")
+    qid = add_question(
+        conn,
+        passage="P",
+        stem="Q?",
+        choices=(),
+        correct="A",
+        source="bluebook_test",
+        pool="historical",
+    )
     conn.execute(
         """INSERT INTO bluebook_occurrences
              (bluebook_uid, test_name, module, question_number, subject,
               fingerprint, question_id, answer_status, scraped_at)
            VALUES (?,?,?,?,?,?,?,?,?)""",
-        (recs[0]["uid"], recs[0]["test_name"], recs[0]["module"],
-         recs[0]["question_number"], "Reading and Writing", "fp", qid,
-         recs[0]["answer_status"], recs[0]["scraped_at"]),
+        (
+            recs[0]["uid"],
+            recs[0]["test_name"],
+            recs[0]["module"],
+            recs[0]["question_number"],
+            "Reading and Writing",
+            "fp",
+            qid,
+            recs[0]["answer_status"],
+            recs[0]["scraped_at"],
+        ),
     )
     report = audit_bluebook(conn)
     assert any("choices" in g["missing"] for g in report["question_gaps"])
@@ -126,7 +160,9 @@ def test_audit_rejects_missing_source(db, tmp_path, monkeypatch):
     """T5: a missing source scrape must fail the audit, never report PASS."""
     conn, _ = db
     # Do not write outputs/wrong_questions.json at all.
-    monkeypatch.setattr("satprep.config.BLUEBOOK_JSON", tmp_path / "outputs" / "wrong_questions.json")
+    monkeypatch.setattr(
+        "satprep.config.BLUEBOOK_JSON", tmp_path / "outputs" / "wrong_questions.json"
+    )
     report = audit_bluebook(conn)
     assert not audit_passes(report)
     assert report["failures"]
