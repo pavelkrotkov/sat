@@ -44,13 +44,17 @@ def test_parses_incorrect_review_snapshot():
     not _FIXTURE_CORRECT.exists(),
     reason="parse_snapshot fixture not in working tree (artifacts/html/ is gitignored; see #36)",
 )
-def test_parses_correct_review_snapshot_without_choices():
+def test_parses_correct_review_snapshot_with_choices():
+    """Issue #49: correct reviews put the <ol> in .question-panel; the
+    parser must read it so the choices are recovered from the saved HTML."""
     p = parse_snapshot(_FIXTURE_CORRECT.read_text())
     assert p.question_number == "1"
     assert p.student_letter == "B"
     assert p.correct_letter == "B"
-    assert p.choices == []  # bluebook omits options on correct reviews
+    assert len(p.choices) == 4
+    assert [c["letter"] for c in p.choices] == list("ABCD")
     assert p.stem  # stem must still be recovered
+    assert p.rationale  # rationale present on correct reviews too
 
 
 @pytest.mark.skipif(

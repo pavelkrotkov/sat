@@ -591,7 +591,7 @@ class ReviewParser:
                     .filter(Boolean);
                   const questionBody = root.querySelector(".question-panel > div") || root.querySelector(".question-panel");
                   const questionHtml = (questionBody?.innerHTML || "").trim();
-                  const answerItems = Array.from(root.querySelectorAll(".answer-panel ol li"));
+                  const answerItems = Array.from(root.querySelectorAll(".question-panel ol.answer-options li, .answer-panel ol li"));
                   const answerChoices = answerItems.map((item, index) => {
                     const label = String.fromCharCode(65 + index);
                     return `${label}. ${normalize(item.innerText)}`;

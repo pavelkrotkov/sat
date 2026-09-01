@@ -1,12 +1,18 @@
 """Parser for saved Bluebook review-page HTML snapshots.
 
-Each snapshot under artifacts/html/ contains a self-contained review modal:
+Each snapshot under artifacts/html/ contains a self-contained review modal.
+Bluebook renders two DOM layouts depending on whether the question was
+answered correctly (issue #49):
 
     .question-panel  -> h3 heading ("Reading and Writing: Question 7"),
-                        passage div(s), and a final div holding the stem
-    .answer-panel    -> <ol type="A"> choices (li.correct marks the key),
-                        optional status line ("You selected answer B. ..."),
-                        and a Rationale section
+                        passage div(s), a final div holding the stem, and —
+                        on correct-answer reviews — the choices
+                        (<ol class="answer-options">) with li.correct
+                        marking the key
+    .answer-panel    -> on incorrect reviews, the <ol type="A"> choices
+                        (li.correct marks the key), an optional status line
+                        ("You selected answer B. ..."), and a Rationale
+                        section
 
 This is the richest available representation of each historical question;
 the scraped JSON often lacks answer choices, so ingestion rebuilds from
@@ -51,6 +57,28 @@ _SELECTED_RE = re.compile(r"You selected answer\s+([A-H])", re.IGNORECASE)
 _CORRECT_IS_RE = re.compile(r"correct answer is\s+([A-H])", re.IGNORECASE)
 
 
+def _find_choice_list(soup) -> Tag | None:
+    """Locate the answer <ol> in either Bluebook modal layout (issue #49).
+
+    Correct reviews keep the choices inside .question-panel
+    (<ol class="answer-options">); incorrect reviews put them in
+    .answer-panel. The question-panel list is preferred when both exist
+    because it is the fuller representation on correct reviews.
+    """
+    question_panel = soup.select_one(".question-panel")
+    if question_panel is not None:
+        for selector in ("ol.answer-options", "ol"):
+            found = question_panel.select_one(selector)
+            if found is not None:
+                return found
+    answer_panel = soup.select_one(".answer-panel")
+    if answer_panel is not None:
+        found = answer_panel.find("ol")
+        if isinstance(found, Tag):
+            return found
+    return None
+
+
 def parse_snapshot(html: str) -> ParsedQuestion:
     soup = BeautifulSoup(html, "html.parser")
     out = ParsedQuestion()
@@ -80,15 +108,16 @@ def parse_snapshot(html: str) -> ParsedQuestion:
         passage_parts = [_node_text(d) for d in body_divs[:stem_idx]]
         out.passage = "\n".join(p for p in passage_parts if p)
 
-    answer_panel = soup.select_one(".answer-panel")
-    if answer_panel is None:
-        return out
-
-    ol = answer_panel.find("ol")
-    if isinstance(ol, Tag):
-        start = ol.get("type")
+    # Choices live in two possible places (issue #49):
+    #  - correct reviews: .question-panel ol.answer-options
+    #  - incorrect reviews: .answer-panel ol
+    # Prefer the question-panel list when present (it is the fuller one on
+    # correct reviews); fall back to the answer panel otherwise.
+    choice_ol = _find_choice_list(soup)
+    if choice_ol is not None:
+        start = choice_ol.get("type")
         start_letter = start.upper() if isinstance(start, str) and len(start) == 1 else "A"
-        for offset, li in enumerate(ol.find_all("li", recursive=False)):
+        for offset, li in enumerate(choice_ol.find_all("li", recursive=False)):
             classes = li.get("class") or []
             out.choices.append(
                 {
@@ -101,6 +130,10 @@ def parse_snapshot(html: str) -> ParsedQuestion:
         if c["is_correct"]:
             out.correct_letter = c["letter"]
             break
+
+    answer_panel = soup.select_one(".answer-panel")
+    if answer_panel is None:
+        return out
 
     status_p = answer_panel.find(
         "p",
