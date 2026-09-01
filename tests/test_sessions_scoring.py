@@ -250,6 +250,28 @@ def test_excerpt_sentences_terminator_before_closing_punctuation():
     assert out2 == paren
 
 
+def test_excerpt_sentences_answer_label_is_not_an_initial():
+    """PR-50 round-3 finding: 'The correct answer is A. Choice B...' —
+    the lone capital-period answer label is a real boundary, not a name
+    initial, so the excerpt must stop at the complete first sentence."""
+    s1 = "The correct answer is A."
+    s2 = ("Choice B is the best answer because it stays within the scope "
+          "of the passage and does not overstate the evidence.")
+    out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
+    assert out == s1
+
+
+def test_excerpt_sentences_abbreviation_before_uppercase_word():
+    """PR-50 round-3 finding: 'Brown vs. Board' — a nonterminal
+    abbreviation before an uppercase proper noun must stay protected, not
+    split the sentence at the abbreviation."""
+    s1 = "Brown vs. Board of Education established the principle."
+    s2 = ("The second sentence is long and continues well past the cap "
+          "to test the boundary logic.")
+    out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
+    assert out == s1
+
+
 def test_why_key_works_uses_first_paragraph_only():
     from satprep.training.sessions import _why_key_works
     para1 = "The key works because it matches the passage."
