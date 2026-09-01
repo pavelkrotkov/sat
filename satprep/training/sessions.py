@@ -211,17 +211,29 @@ def _infer_trap(tags):
     return tags[:2]
 
 
+# Periods that are not sentence boundaries: abbreviations and initials.
+# Protected before splitting so "e.g.", "Dr.", "U.S.", "J. K. Rowling"
+# do not end the excerpt mid-sentence (PR-50 review finding).
+_ABBREVIATIONS = ("e.g.", "i.e.", "Dr.", "Mr.", "Mrs.", "Ms.", "St.",
+                  "vs.", "U.S.", "U.K.", "etc.", "Inc.", "Co.", "Jr.",
+                  "Sr.", "A.D.", "B.C.", "Ph.D.", "M.D.")
+
+
 def excerpt_sentences(text: str, max_chars: int) -> str:
     """Whole sentences from the start of ``text``, capped at ``max_chars``.
 
     A preview never cuts mid-sentence when a shorter sentence boundary
-    exists; a single over-long sentence is cut at a word boundary. The
-    authoritative text itself is always rendered in full elsewhere — this
-    is only for compact excerpts.
+    exists; a single over-long sentence is cut at a word boundary. Common
+    abbreviations and initials (``e.g.``, ``Dr.``, ``U.S.``) are not
+    treated as boundaries. The authoritative text itself is always
+    rendered in full elsewhere — this is only for compact excerpts.
     """
     if not text:
         return ""
-    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    protected = text.strip()
+    for abbr in _ABBREVIATIONS:
+        protected = protected.replace(abbr, abbr.replace(".", "\x00"))
+    sentences = re.split(r"(?<=[.!?])\s+", protected)
     excerpt: list[str] = []
     total = 0
     for s in sentences:
@@ -229,7 +241,7 @@ def excerpt_sentences(text: str, max_chars: int) -> str:
             break
         excerpt.append(s)
         total += len(s) + 1
-    out = " ".join(excerpt)
+    out = " ".join(excerpt).replace("\x00", ".")
     if len(out) > max_chars:
         out = out[:max_chars].rsplit(" ", 1)[0]
     return out.strip()

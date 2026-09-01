@@ -195,6 +195,33 @@ def test_excerpt_sentences_empty_input():
     assert excerpt_sentences("   ", max_chars=600) == ""
 
 
+def test_excerpt_sentences_does_not_split_on_abbreviations():
+    """PR-50 review finding: 'e.g.', 'Dr.', 'U.S.' are not sentence
+    boundaries. The preview must continue past the abbreviation rather
+    than end the excerpt there."""
+    text = ("Some claim e.g. that the evidence overwhelmingly supports the "
+            "treatment in every case observed so far and the results are "
+            "consistent with the hypothesis. " * 10)
+    out = excerpt_sentences(text, max_chars=90)
+    assert "e.g." in out
+    # the excerpt continues past the abbreviation, it does not stop at it
+    assert out.split("e.g.", 1)[1].strip()
+
+
+def test_excerpt_sentences_initials_are_not_boundaries():
+    text = ("J. K. Rowling wrote the series. The second sentence is long and "
+            "continues well past the cap to test the boundary logic. " * 10)
+    out = excerpt_sentences(text, max_chars=50)
+    assert out.startswith("J. K. Rowling wrote the series.")
+
+
+def test_excerpt_sentences_still_splits_on_real_periods():
+    s1 = "First sentence ends here."
+    s2 = "Second sentence starts here."
+    out = excerpt_sentences(f"{s1} {s2}", max_chars=100)
+    assert out == f"{s1} {s2}"
+
+
 def test_why_key_works_uses_first_paragraph_only():
     from satprep.training.sessions import _why_key_works
     para1 = "The key works because it matches the passage."
