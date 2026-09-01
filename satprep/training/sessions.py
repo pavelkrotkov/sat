@@ -228,6 +228,10 @@ _TITLE_ABBREVIATIONS = ("Dr.", "Mr.", "Mrs.", "Ms.", "St.")
 _ALWAYS_ABBREVIATIONS = ("e.g.", "i.e.", "vs.")
 _OTHER_ABBREVIATIONS = ("etc.", "Inc.", "Co.", "Jr.", "Sr.", "U.S.",
                         "U.K.", "A.D.", "B.C.", "Ph.D.", "M.D.")
+# Ellipsis runs (compact "...", spaced ". . .", ".. ..") are not sentence
+# boundaries; protect every period in them so "suggests ... a stronger
+# conclusion" and "one . . . two" stay one sentence (PR-50 round-7).
+_ELLIPSIS = re.compile(r"\.(?:\s*\.)+")
 # Sentence terminator, optional closing quotes/brackets, then whitespace.
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])([\"'\u201d\u2019)\]]*)\s+")
 
@@ -235,6 +239,7 @@ _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])([\"'\u201d\u2019)\]]*)\s+")
 def _protect_abbreviations(text: str) -> str:
     """Replace non-boundary periods with a placeholder so the sentence
     splitter skips them; restored before returning the excerpt."""
+    text = _ELLIPSIS.sub(lambda m: m.group(0).replace(".", "\x00"), text)
     for abbr in _TITLE_ABBREVIATIONS + _ALWAYS_ABBREVIATIONS:
         text = text.replace(abbr, abbr.replace(".", "\x00"))
     for abbr in _OTHER_ABBREVIATIONS:
