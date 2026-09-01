@@ -244,7 +244,7 @@ def test_excerpt_sentences_suffix_abbreviation_terminal_still_splits():
 
 def test_excerpt_sentences_ellipsis_is_not_a_boundary():
     """PR-50 round-7 finding: nonterminal ellipses ('...' and '. . .')
-    must not split the sentence."""
+    followed by a lowercase continuation must not split the sentence."""
     text = ("The evidence suggests ... a stronger conclusion than previously "
             "thought and the data support this in every case observed. " * 10)
     out = excerpt_sentences(text, max_chars=40)
@@ -254,9 +254,17 @@ def test_excerpt_sentences_ellipsis_is_not_a_boundary():
     spaced = ("One . . . two . . . three and the rest of the sentence "
               "continues well past the cap. " * 10)
     out2 = excerpt_sentences(spaced, max_chars=30)
-    assert "one . . ." in out2.lower() or "One . . ." in out2
-    # a single stray period must not end the excerpt either
-    assert not out2.rstrip().endswith(".") or "..." in out2 or ". . ." in out2
+    assert "One . . ." in out2
+
+
+def test_excerpt_sentences_sentence_final_ellipsis_still_splits():
+    """PR-50 round-8 finding: an ellipsis ending a sentence before a
+    capitalized sentence ('inconclusive... Choice B') is a boundary."""
+    s1 = "The evidence remains inconclusive..."
+    s2 = ("Choice B is correct because it stays within the scope of the "
+          "passage and does not overstate the evidence.")
+    out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
+    assert out == s1
 
 
 def test_excerpt_sentences_still_splits_on_real_periods():

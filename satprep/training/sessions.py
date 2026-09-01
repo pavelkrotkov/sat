@@ -228,10 +228,13 @@ _TITLE_ABBREVIATIONS = ("Dr.", "Mr.", "Mrs.", "Ms.", "St.")
 _ALWAYS_ABBREVIATIONS = ("e.g.", "i.e.", "vs.")
 _OTHER_ABBREVIATIONS = ("etc.", "Inc.", "Co.", "Jr.", "Sr.", "U.S.",
                         "U.K.", "A.D.", "B.C.", "Ph.D.", "M.D.")
-# Ellipsis runs (compact "...", spaced ". . .", ".. ..") are not sentence
-# boundaries; protect every period in them so "suggests ... a stronger
-# conclusion" and "one . . . two" stay one sentence (PR-50 round-7).
-_ELLIPSIS = re.compile(r"\.(?:\s*\.)+")
+# Ellipsis runs (compact "...", spaced ". . .", ".. ..") are protected
+# only when a lowercase continuation follows — in the corpus (1,965
+# rationales, 257 ellipsis occurrences) every ellipsis is mid-sentence
+# inside a quote ("In...walls"). A sentence-final ellipsis before a
+# capitalized sentence ("inconclusive... Choice B") stays a boundary
+# (PR-50 round-8 finding), mirroring the etc./Inc. conditional rule.
+_ELLIPSIS = re.compile(r"\.(?:\s*\.)+(?=\s+[a-z])")
 # Sentence terminator, optional closing quotes/brackets, then whitespace.
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])([\"'\u201d\u2019)\]]*)\s+")
 
