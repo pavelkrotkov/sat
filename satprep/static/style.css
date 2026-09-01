@@ -320,6 +320,10 @@ button[disabled], .btn[disabled] { opacity: .5; cursor: not-allowed; }
   color: var(--bad);
 }
 .choice-list .state.key { color: var(--accent); }
+/* A correct answer makes the chosen row the key too: the "your answer"
+   label must read as success, not as the wrong-answer red. (PR #51
+   round-1 Codex P2 — verified on the correct immediate-feedback page.) */
+.choice-list .choice.chosen.key .state:not(.key) { color: var(--accent); }
 .source-line { margin-top: var(--s-2); }
 
 /* Confidence: three large buttons, each of which submits. Two taps total,

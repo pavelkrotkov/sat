@@ -155,6 +155,21 @@ def test_feedback_page_marks_both_states_on_a_correct_answer(db):
     assert html.count(">key<") == 1
 
 
+def test_correct_answer_chosen_label_uses_the_success_color(db):
+    """Round-1 Codex P2: on a correct answer the chosen row is also the key,
+    but the 'your answer' label kept the wrong-answer red, visually saying a
+    correct selection was wrong. The CSS must override it to the accent."""
+    import pathlib
+
+    from satprep import server as server_mod
+
+    css = pathlib.Path(server_mod.__file__).parent / "static" / "style.css"
+    text = css.read_text()
+    # the override exists and targets exactly the chosen+key row
+    assert ".choice-list .choice.chosen.key .state:not(.key)" in text
+    assert "color: var(--accent)" in text
+
+
 def test_review_page_marks_chosen_and_key_choices(db):
     conn, sid = _render_review(db)
     html = server_review_body(conn, sid)
