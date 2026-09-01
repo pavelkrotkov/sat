@@ -29,7 +29,9 @@ def _load_candidates(conn, include_pools: tuple[str, ...]) -> list[Candidate]:
     tag_map = tags_by_question(conn)
     state_map = {r["question_id"]: r for r in conn.execute("SELECT * FROM question_state")}
     hist_map: dict[int, int] = {}
-    for r in conn.execute("SELECT question_id, MAX(correct) AS c FROM attempts WHERE mode='historical' GROUP BY question_id"):
+    for r in conn.execute(
+        "SELECT question_id, MAX(correct) AS c FROM attempts WHERE mode='historical' GROUP BY question_id"
+    ):
         hist_map[r["question_id"]] = r["c"]
     out = []
     for question in questions:
@@ -40,8 +42,12 @@ def _load_candidates(conn, include_pools: tuple[str, ...]) -> list[Candidate]:
     return out
 
 
-def score_candidate(cand: Candidate, weakness: dict, focus_tags: list[str] | None = None,
-                    now: datetime | None = None) -> Candidate:
+def score_candidate(
+    cand: Candidate,
+    weakness: dict,
+    focus_tags: list[str] | None = None,
+    now: datetime | None = None,
+) -> Candidate:
     """Additive explainable score (mirrors config weights)."""
     now = now or datetime.now().astimezone()
     q = cand.question
@@ -87,7 +93,9 @@ def score_candidate(cand: Candidate, weakness: dict, focus_tags: list[str] | Non
             cand.add(f"remediation:error-tag:{t}", bonus)
     skill = q.official_skill
     if skill and skill in weak_skills:
-        cand.add(f"skill-weakness:{skill}", config.W_SKILL_WEAKNESS * weak_skills[skill]["score"] / 100.0)
+        cand.add(
+            f"skill-weakness:{skill}", config.W_SKILL_WEAKNESS * weak_skills[skill]["score"] / 100.0
+        )
     if skill in config.SEMANTIC_SKILLS:
         # spec section 16: default bias toward hard semantic/reasoning content
         cand.add("semantic-content-bias", config.W_SEMANTIC_BIAS)
@@ -96,6 +104,7 @@ def score_candidate(cand: Candidate, weakness: dict, focus_tags: list[str] | Non
     cand.add("difficulty" + (f":{q.difficulty}" if q.difficulty else ":unknown"), diff_bonus)
 
     state = cand.state
+
     def _sget(key, default=0):
         return row_field(state, key, default)
 
@@ -113,7 +122,9 @@ def score_candidate(cand: Candidate, weakness: dict, focus_tags: list[str] | Non
     if q.pool == "historical" and hist_correct == 1 and matched:
         cand.add("transfer-correct-shares-weak-tag", config.W_TRANSFER_CORRECT)
 
-    exposure_penalty = min(config.PENALTY_EXPOSURE_CAP, config.PENALTY_EXPOSURE_PER_SEEN * seen_times)
+    exposure_penalty = min(
+        config.PENALTY_EXPOSURE_CAP, config.PENALTY_EXPOSURE_PER_SEEN * seen_times
+    )
     if exposure_penalty:
         cand.add("exposure-penalty", -exposure_penalty)
     last_attempted = _sget("last_attempted_at", None)
@@ -121,7 +132,7 @@ def score_candidate(cand: Candidate, weakness: dict, focus_tags: list[str] | Non
         try:
             days_since = (now - datetime.fromisoformat(last_attempted)).days
             if days_since >= 45:
-                cand.add(f"not-seen-in-{min(days_since,999)}-days", config.W_NOT_SEEN_LONG_AGO)
+                cand.add(f"not-seen-in-{min(days_since, 999)}-days", config.W_NOT_SEEN_LONG_AGO)
         except ValueError:
             pass
     times_correct = _sget("times_correct")
@@ -131,8 +142,14 @@ def score_candidate(cand: Candidate, weakness: dict, focus_tags: list[str] | Non
     return cand
 
 
-def select_drill(conn, mode: str, count: int | None = None, seed: str | None = None,
-                 focus_tag: str | None = None, now: datetime | None = None) -> dict:
+def select_drill(
+    conn,
+    mode: str,
+    count: int | None = None,
+    seed: str | None = None,
+    focus_tag: str | None = None,
+    now: datetime | None = None,
+) -> dict:
     """Build a drill plan. Returns {'session_id', 'items': [...], 'seed'}.
 
     items: [{'question_id', 'weight', 'why': [(component, delta)], 'bucket'}]
@@ -164,16 +181,25 @@ def select_drill(conn, mode: str, count: int | None = None, seed: str | None = N
         rng.shuffle(rows)
         rows = rows[:n]
         return {
-            "session_id": "", "mode": mode, "seed": seed, "algo_version": ALGO_VERSION,
+            "session_id": "",
+            "mode": mode,
+            "seed": seed,
+            "algo_version": ALGO_VERSION,
             "items": [
-                {"question_id": r["id"], "weight": None, "why": [["protected-benchmark-item", 0.0]], "bucket": "protected_unseen"}
+                {
+                    "question_id": r["id"],
+                    "weight": None,
+                    "why": [["protected-benchmark-item", 0.0]],
+                    "bucket": "protected_unseen",
+                }
                 for r in rows
             ],
         }
 
     include_pools = pools_for(mode)
-    scored = [score_candidate(c, weakness, focus_tags, now)
-              for c in _load_candidates(conn, include_pools)]
+    scored = [
+        score_candidate(c, weakness, focus_tags, now) for c in _load_candidates(conn, include_pools)
+    ]
 
     shares = MODE_COMPOSITIONS[mode]
     target = count or sum(v for v in shares.values() if v) or config.DEFAULT_DRILL_SIZE
@@ -184,17 +210,24 @@ def select_drill(conn, mode: str, count: int | None = None, seed: str | None = N
         cand = next((c for c in scored if c.question.id == qid), None)
         if cand is None:
             continue
-        plan_items.append({
-            "question_id": qid,
-            "weight": cand.score,
-            "why": cand.components,
-            "bucket": bucket,
-        })
+        plan_items.append(
+            {
+                "question_id": qid,
+                "weight": cand.score,
+                "why": cand.components,
+                "bucket": bucket,
+            }
+        )
     rng.shuffle(plan_items)  # spec section 10: randomize presentation order
 
     # seed reuse or same-second default seeds must never resurrect a session
-    sid = session_id(mode, seed, exists=lambda c: conn.execute(
-        "SELECT 1 FROM sessions WHERE id=?", (c,)).fetchone() is not None)
+    sid = session_id(
+        mode,
+        seed,
+        exists=lambda c: (
+            conn.execute("SELECT 1 FROM sessions WHERE id=?", (c,)).fetchone() is not None
+        ),
+    )
     result = {
         "session_id": sid,
         "mode": mode,
@@ -210,8 +243,12 @@ def persist_session(conn, plan: dict) -> str:
         """INSERT OR REPLACE INTO sessions (id, mode, created_at, seed, algo_version, plan_json, status)
            VALUES (?,?,?,?,?,?,'open')""",
         (
-            plan["session_id"] or utc_now(), plan["mode"], utc_now(), plan["seed"],
-            plan["algo_version"], json.dumps(plan["items"]),
+            plan["session_id"] or utc_now(),
+            plan["mode"],
+            utc_now(),
+            plan["seed"],
+            plan["algo_version"],
+            json.dumps(plan["items"]),
         ),
     )
     return plan["session_id"] or utc_now()

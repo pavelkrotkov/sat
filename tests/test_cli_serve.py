@@ -7,8 +7,7 @@ say something when it doesn't. These tests pin both halves.
 
 import pytest
 
-from satprep.cli import (build_parser, cmd_serve, exposure_notice, is_loopback,
-                         normalize_host)
+from satprep.cli import build_parser, cmd_serve, exposure_notice, is_loopback, normalize_host
 
 
 def parse(*argv):
@@ -34,6 +33,7 @@ def uvicorn(monkeypatch):
 
 # ------------------------------------------------------------- the default --
 
+
 def test_serve_binds_loopback_unless_told_otherwise():
     """The default must not change silently: it is the whole reason an
     unauthenticated admin UI has been safe to run so far."""
@@ -53,14 +53,17 @@ def test_host_and_port_reach_uvicorn(uvicorn):
 
 # ---------------------------------------------------------- loopback rules --
 
-@pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.53", "::1", "[::1]",
-                                  "localhost", "LocalHost"])
+
+@pytest.mark.parametrize(
+    "host", ["127.0.0.1", "127.0.0.53", "::1", "[::1]", "localhost", "LocalHost"]
+)
 def test_loopback_forms_are_recognised(host):
     assert is_loopback(host)
 
 
-@pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.42", "10.0.0.5",
-                                  "hermes.local", "", "   "])
+@pytest.mark.parametrize(
+    "host", ["0.0.0.0", "::", "192.168.1.42", "10.0.0.5", "hermes.local", "", "   "]
+)
 def test_routable_forms_are_not_mistaken_for_loopback(host):
     """0.0.0.0 is every interface, not this machine. An unresolvable name is
     assumed routable: a false warning costs a line of output, a missed one
@@ -69,6 +72,7 @@ def test_routable_forms_are_not_mistaken_for_loopback(host):
 
 
 # -------------------------------------------------------------- the notice --
+
 
 def test_binding_off_machine_warns_on_stderr(uvicorn, capsys):
     cmd_serve(parse("serve", "--host", "0.0.0.0"))
@@ -91,6 +95,7 @@ def test_notice_names_the_address_and_what_is_exposed():
 
 
 # ---------------------------------------------------- bracketed IPv6 form --
+
 
 def test_bracketed_ipv6_is_normalized_before_it_reaches_the_socket(uvicorn):
     """`[::1]` is URI syntax - brackets separate address from port in a URL,

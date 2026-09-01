@@ -7,10 +7,10 @@ per-request-connection refactor broke first.
 """
 
 import pytest
+from conftest import add_question
 
 from satprep import server as server_mod
 from satprep.db import connect, db_context
-from conftest import add_question
 
 
 @pytest.fixture()
@@ -18,9 +18,15 @@ def live(db, monkeypatch):
     """A corpus big enough to build a drill from, wired into the app."""
     conn, path = db
     for i in range(8):
-        add_question(conn, passage=f"passage {i}", stem=f"stem {i}?",
-                     choices=[f"q{i}-{letter}" for letter in "abcd"], correct="B",
-                     source="bluebook_test", pool="historical")
+        add_question(
+            conn,
+            passage=f"passage {i}",
+            stem=f"stem {i}?",
+            choices=[f"q{i}-{letter}" for letter in "abcd"],
+            correct="B",
+            source="bluebook_test",
+            pool="historical",
+        )
     conn.commit()
     conn.close()
 
@@ -58,8 +64,9 @@ def test_answer_handler_persists_an_attempt(live):
     qid = sess["questions"][0]["id"]
 
     with db_context(live) as conn:
-        server_mod.answer(None, sid, 0, question_id=qid, letter="B",
-                          confidence=3, elapsed_ms=4200, conn=conn)
+        server_mod.answer(
+            None, sid, 0, question_id=qid, letter="B", confidence=3, elapsed_ms=4200, conn=conn
+        )
 
     after = connect(live)
     attempt = after.execute(
@@ -80,12 +87,10 @@ def test_failed_request_leaves_nothing_behind(live):
     """get_conn wraps db_context, so a handler that raises rolls back."""
     from satprep.training.sessions import create_session, submit_answer
 
-    with pytest.raises(RuntimeError, match="boom"):
-        with db_context(live) as conn:
-            sess = create_session(conn, "error_clinic", count=2, seed="fail")
-            submit_answer(conn, sess["plan"]["session_id"],
-                          sess["questions"][0]["id"], "B", 2, 100)
-            raise RuntimeError("boom")
+    with pytest.raises(RuntimeError, match="boom"), db_context(live) as conn:
+        sess = create_session(conn, "error_clinic", count=2, seed="fail")
+        submit_answer(conn, sess["plan"]["session_id"], sess["questions"][0]["id"], "B", 2, 100)
+        raise RuntimeError("boom")
 
     after = connect(live)
     assert after.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
@@ -94,6 +99,7 @@ def test_failed_request_leaves_nothing_behind(live):
 
 
 # ------------------------------------------------------ connection hygiene --
+
 
 def test_foreign_keys_enforced_on_every_connection(tmp_path):
     """Regression: `PRAGMA foreign_keys=ON` lived in SCHEMA, which now runs
@@ -122,7 +128,7 @@ def test_replaced_database_is_reinitialised(tmp_path):
     import sqlite3
 
     path = tmp_path / "swap.db"
-    connect(path).close()          # caches the path, stamps user_version
+    connect(path).close()  # caches the path, stamps user_version
 
     # a partial database: has `questions`, but no view and no error_tags column
     path.unlink()
@@ -132,9 +138,10 @@ def test_replaced_database_is_reinitialised(tmp_path):
     raw.close()
 
     conn = connect(path)
-    assert conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE name='effective_question_tags'"
-    ).fetchone() is not None
+    assert (
+        conn.execute("SELECT 1 FROM sqlite_master WHERE name='effective_question_tags'").fetchone()
+        is not None
+    )
     assert "error_tags" in {r[1] for r in conn.execute("PRAGMA table_info(attempts)")}
     conn.close()
 
@@ -167,10 +174,9 @@ def test_keyboard_interrupt_rolls_back_and_propagates(tmp_path):
     still rolls back - and re-raises it, so termination stays clean."""
     path = tmp_path / "sig.db"
 
-    with pytest.raises(KeyboardInterrupt):
-        with db_context(path) as conn:
-            add_question(conn, passage="p", stem="s?", choices=["a", "b", "c", "d"])
-            raise KeyboardInterrupt
+    with pytest.raises(KeyboardInterrupt), db_context(path) as conn:
+        add_question(conn, passage="p", stem="s?", choices=["a", "b", "c", "d"])
+        raise KeyboardInterrupt
 
     after = connect(path)
     assert after.execute("SELECT COUNT(*) FROM questions").fetchone()[0] == 0
@@ -190,9 +196,7 @@ def test_write_handlers_commit_before_returning(live):
 
         # a separate connection, as the redirected request would use
         other = connect(live)
-        assert other.execute(
-            "SELECT COUNT(*) FROM sessions WHERE id=?", (sid,)
-        ).fetchone()[0] == 1
+        assert other.execute("SELECT COUNT(*) FROM sessions WHERE id=?", (sid,)).fetchone()[0] == 1
         other.close()
 
 

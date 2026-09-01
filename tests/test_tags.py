@@ -6,27 +6,34 @@ sampler and the weakness model, not just the admin screen.
 """
 
 import pytest
+from conftest import add_attempt, add_question
 
 from satprep.corpus import tags as tagmod
-from satprep.training.sampler import _load_candidates
 from satprep.corpus.tagger import run_full_tagging
+from satprep.training.sampler import _load_candidates
 from satprep.training.weakness import compute_weakness
-from conftest import add_question, add_attempt
 
 
 @pytest.fixture()
 def tagged(db):
     """One historical wrong answer on a question tagged qualifier_strength."""
     conn, path = db
-    qid = add_question(conn, passage="p", stem="s?", choices=["a", "b", "c", "d"],
-                       source="bluebook_test", pool="historical",
-                       tags=("qualifier_strength", "chronology"))
+    qid = add_question(
+        conn,
+        passage="p",
+        stem="s?",
+        choices=["a", "b", "c", "d"],
+        source="bluebook_test",
+        pool="historical",
+        tags=("qualifier_strength", "chronology"),
+    )
     add_attempt(conn, qid, correct=0)
     conn.commit()
     return conn, path, qid
 
 
 # ------------------------------------------------------------------ reads --
+
 
 def test_effective_tags_omits_suppressed(tagged):
     conn, _, qid = tagged
@@ -38,8 +45,9 @@ def test_effective_tags_omits_suppressed(tagged):
 
 def test_tags_by_question_scoped_to_ids(tagged):
     conn, _, qid = tagged
-    other = add_question(conn, passage="o", stem="o?", choices=["oa", "ob", "oc", "od"],
-                         tags=("scope_shift",))
+    other = add_question(
+        conn, passage="o", stem="o?", choices=["oa", "ob", "oc", "od"], tags=("scope_shift",)
+    )
 
     assert set(tagmod.tags_by_question(conn, [qid])) == {qid}
     assert set(tagmod.tags_by_question(conn, [qid, other])) == {qid, other}
@@ -67,6 +75,7 @@ def test_all_tags_with_origin_still_shows_suppressed(tagged):
 
 
 # ----------------------------------------------------- reaches the readers --
+
 
 def test_suppressed_tag_leaves_the_weakness_model(tagged):
     """Regression: compute_weakness joined question_tags directly and scored
@@ -96,9 +105,10 @@ def test_manual_tag_reaches_the_sampler(tagged):
 
 # ------------------------------------------------- survival across retagging --
 
+
 def test_suppression_survives_full_tagging(tagged):
     """A re-tagging run must not resurrect a tag the admin removed."""
-    conn, path, qid = tagged
+    conn, _path, qid = tagged
     tagmod.suppress(conn, qid, "qualifier_strength")
     conn.commit()
 
@@ -108,7 +118,7 @@ def test_suppression_survives_full_tagging(tagged):
 
 
 def test_manual_tag_survives_full_tagging(tagged):
-    conn, path, qid = tagged
+    conn, _path, qid = tagged
     tagmod.set_manual(conn, qid, "cause_vs_correlation")
     conn.commit()
 
@@ -135,14 +145,15 @@ def test_set_rule_tags_replaces_only_rule_rows(tagged):
     tagmod.set_rule_tags(conn, qid, ["tone_or_stance"])
 
     assert dict(tagmod.all_tags_with_origin(conn, qid)) == {
-        "tone_or_stance": "rule",     # new rule tag
-        "scope_shift": "manual",      # human assertion kept
-        "chronology": "suppressed",   # human removal kept
+        "tone_or_stance": "rule",  # new rule tag
+        "scope_shift": "manual",  # human assertion kept
+        "chronology": "suppressed",  # human removal kept
     }
     assert "qualifier_strength" not in tagmod.effective_tags(conn, qid)
 
 
 # ---------------------------------------------------------------- archive --
+
 
 def test_archive_round_trip_preserves_suppression(tagged, tmp_path):
     """A restore must be faithful: a suppressed tag stays suppressed, or the
@@ -150,7 +161,7 @@ def test_archive_round_trip_preserves_suppression(tagged, tmp_path):
     from satprep.corpus.archive import export_corpus, restore_corpus
     from satprep.db import connect
 
-    conn, path, qid = tagged
+    conn, _path, qid = tagged
     tagmod.suppress(conn, qid, "qualifier_strength")
     conn.commit()
 
@@ -184,7 +195,6 @@ def test_admin_tag_correction_refreshes_weakness_cache(tagged):
     """select_drill and /weaknesses both prefer weakness_cache over
     recomputing, so a correction that leaves it stale is half applied."""
     import satprep.server as server_mod
-
     from satprep.db import connect
 
     conn, path, qid = tagged
@@ -205,8 +215,9 @@ def test_admin_tag_correction_refreshes_weakness_cache(tagged):
     assert cached("qualifier_strength") == 1
 
     handler_conn = connect(path)
-    server_mod.admin_tags_save(None, qid, tag="qualifier_strength",
-                               action="remove", conn=handler_conn)
+    server_mod.admin_tags_save(
+        None, qid, tag="qualifier_strength", action="remove", conn=handler_conn
+    )
     handler_conn.commit()
     handler_conn.close()
 

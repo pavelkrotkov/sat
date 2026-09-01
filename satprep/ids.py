@@ -8,9 +8,7 @@ sampler, and stays testable without a database.
 """
 
 import uuid
-
-from typing import Callable
-
+from collections.abc import Callable
 
 #: Salting is uuid4-based, so a genuine collision run is vanishingly
 #: unlikely. A predicate that always reports a collision is not - it means

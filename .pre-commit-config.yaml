@@ -1,0 +1,32 @@
+# See https://pre-commit.com for more information
+# See https://pre-commit.com/hooks.html for more hooks
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-ast
+      - id: check-json
+      - id: check-toml
+      - id: check-yaml
+      - id: debug-statements
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.14
+    hooks:
+      - id: ruff
+        args: [ --fix ]
+      - id: ruff-format
+
+  # Run through uv so this uses the ty pinned in uv.lock, and keep the
+  # arguments identical to the Python Quality workflow.
+  - repo: local
+    hooks:
+      - id: ty
+        name: ty type check
+        entry: uv run ty check --extra-search-path . .
+        language: system
+        pass_filenames: false
+        always_run: true

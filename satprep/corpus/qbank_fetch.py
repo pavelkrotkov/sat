@@ -16,20 +16,23 @@ import base64
 import html as html_mod
 import json
 import re
+import sqlite3
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
+from bs4 import BeautifulSoup
+
 from .. import config
-from ..config import SKILL_TO_DOMAIN
 from ..clock import utc_now
+from ..config import SKILL_TO_DOMAIN
 from . import fingerprint as fpmod
 
 BASE = "https://qbank-api.collegeboard.org/msreportingquestionbank-prod/questionbank"
-SAT_RW_ASMT = 99   # SAT
-SAT_RW_TEST = 1    # Reading and Writing
+SAT_RW_ASMT = 99  # SAT
+SAT_RW_TEST = 1  # Reading and Writing
 DOMAINS = ["INI", "CAS", "EOI", "SEC"]
 
 # Inline figures (EQB embeds graphs/diagrams in the stimulus HTML) are written
@@ -40,20 +43,65 @@ _DIFFICULTY_MAP = {"H": "hard", "M": "medium", "L": "easy", "E": "easy"}
 
 _STRIPTAGS = re.compile(r"<[^>]+>")
 _SVG_RE = re.compile(r"<svg\b.*?</svg>", re.IGNORECASE | re.DOTALL)
+_TABLE_RE = re.compile(r"<table\b.*?</table>", re.IGNORECASE | re.DOTALL)
 _IMG_DATA_RE = re.compile(
     r"<img\b[^>]*?\bsrc=(['\"])(data:image/(?:png|jpe?g|gif|webp|svg\+xml);base64,[^'\"]+)\1",
     re.IGNORECASE | re.DOTALL,
 )
-# One document-order pass over all three figure shapes. Group 1 holds the
+# One document-order pass over all visual shapes. Group 1 holds the
 # data-URI payload, set only by the <img> branch (an <img> inside a <figure>
 # is consumed by the figure branch first, at the earlier offset).
 _ANY_FIGURE_RE = re.compile(
     r"<figure\b.*?</figure>"
     r"|<svg\b.*?</svg>"
+    r"|<table\b.*?</table>"
     r"|<img\b[^>]*?\bsrc=(?:['\"])("
     r"data:image/(?:png|jpe?g|gif|webp|svg\+xml);base64,[^'\"]+)(?:['\"][^>]*)?>",
     re.IGNORECASE | re.DOTALL,
 )
+
+#: Sanitized visual records look like {'kind': 'table', 'html': '<table …>'}
+#: or {'kind': 'image', 'file': 'eqb-…-figure-1.svg'}. The template renders
+#: table html with |safe — sanitization here is the ONLY reason that is
+#: acceptable, so the output must be structurally limited to the allowlist.
+_TABLE_ALLOWED_TAGS = {
+    "table",
+    "caption",
+    "thead",
+    "tbody",
+    "tfoot",
+    "tr",
+    "th",
+    "td",
+    "col",
+    "colgroup",
+}
+_TABLE_ALLOWED_ATTRS = {
+    "th": {"scope", "colspan", "rowspan"},
+    "td": {"colspan", "rowspan", "headers"},
+    "col": {"span"},
+}
+#: Inline formatting the EQB wraps around cell values. These are unwrapped —
+#: the tag is removed but its text is kept, so a cell written as
+#: <td><p>3.1</p></td> or <td><strong>3.1</strong></td> still yields "3.1".
+#: Only content-bearing dangerous tags (script/style) are decomposed whole.
+_TABLE_UNWRAP_TAGS = {
+    "p",
+    "div",
+    "span",
+    "em",
+    "strong",
+    "b",
+    "i",
+    "u",
+    "sub",
+    "sup",
+    "br",
+    "ul",
+    "ol",
+    "li",
+}
+_TABLE_DANGEROUS_TAGS = {"script", "style"}
 
 
 def _post(url: str, payload: dict, retries: int = 3) -> object:
@@ -62,7 +110,9 @@ def _post(url: str, payload: dict, retries: int = 3) -> object:
     for attempt in range(retries):
         try:
             req = urllib.request.Request(
-                url, data=body, headers={"Content-Type": "application/json"},
+                url,
+                data=body,
+                headers={"Content-Type": "application/json"},
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=30) as resp:
@@ -81,46 +131,190 @@ def _clean_html(html: str | None) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _save_figure(ext_id: str, index: int, content: bytes, suffix: str,
-                 image_dir: Path) -> str:
+#: Global write guard for figure files. Cleared by the audit-only backfill so
+#: `_normalize` can report what WOULD be written without recreating files on
+#: disk (round-2 finding: the missing-file audit was always zero because
+#: normalization re-saved every figure before the existence check ran).
+_WRITE_FIGURES = True
+
+
+def _save_figure(ext_id: str, index: int, content: bytes, suffix: str, image_dir: Path) -> str:
     """Write one figure into image_dir; returns the bare filename stored in
     images_json (the template renders /figures/<name> via the basename filter)."""
-    image_dir.mkdir(parents=True, exist_ok=True)
     name = f"eqb-{ext_id}-figure-{index}.{suffix}"
-    (image_dir / name).write_bytes(content)
+    if _WRITE_FIGURES:
+        image_dir.mkdir(parents=True, exist_ok=True)
+        (image_dir / name).write_bytes(content)
     return name
 
 
-def _extract_figures(ext_id: str, html: str, image_dir: Path,
-                     start_index: int = 1) -> tuple[str, list[str], int]:
-    """Pull inline figures out of EQB stimulus/stem HTML.
+def sanitize_table(html: str, id_prefix: str = "eqb") -> str | None:
+    """Reduce arbitrary `<table>` markup to a safe, accessible subset.
 
-    Returns (remaining_html, saved_filenames, next_index). One
-    document-order pass over <figure> blocks, bare inline <svg>, and
-    data-URI <img> tags. The matched figure markup is replaced by its
-    visible text (SVG <text> nodes, <figcaption>, alt text, …) so that
-    axis labels and captions still reach the cleaned passage/stem —
-    which keeps legacy fingerprints (computed from the fully stripped
-    text) stable across re-imports. `start_index`/`next_index` let callers
-    share one numbering across multiple HTML fields (stem + stimulus) so
-    filenames stay unique in document order.
+    Issue #46: the EQB embeds data tables as real `<figure class="table">`
+    HTML. Persisting them as first-class visuals needs a representation that
+    is safe to render with `|safe` in Jinja — the allowlist is the whole
+    point: only table-structure tags survive, every attribute except the
+    layout ones below is dropped, and no script/style/event/URL content
+    (or nested markup) can ride along.
+
+    Cell values wrapped in harmless inline markup (`<p>`, `<strong>`,
+    `<sup>`…) are unwrapped so their text survives; only dangerous
+    content-bearing tags (`script`/`style`) are decomposed whole.
+    `id_prefix` distinguishes the header ids of one table from another so
+    several tables in a question never collide on duplicate DOM ids.
+
+    Returns a normalized `<table>…</table>` string with cells' visible text,
+    or None when the markup contains no table at all.
     """
-    assets: list[str] = []
-    index = start_index
+    if not html:
+        return None
+    soup = BeautifulSoup(html, "html.parser")
+    table = soup.find("table")
+    if table is None:
+        return None
+    # Rewrite header ids so any headers="..." reference stays within the
+    # table we persist (source ids could collide with page ids or be
+    # absent). The id counter makes the map deterministic per table, and the
+    # same map remaps every headers="..." token so references never dangle.
+    id_map: dict[str, str] = {}
+    for i, th in enumerate(table.find_all("th"), 1):
+        src = th.get("id")
+        if isinstance(src, str) and src:
+            id_map[src] = f"{id_prefix}-th-{i}"
+    # Process the root <table> element together with its descendants: the
+    # root carries its own attributes that the descendant pass would miss.
+    for tag in [table, *table.find_all(True)]:
+        if tag.name in _TABLE_DANGEROUS_TAGS:
+            tag.decompose()
+            continue
+        if tag.name not in _TABLE_ALLOWED_TAGS:
+            # unwrap harmless formatting tags (keep their text); drop
+            # anything else not represented (img, unknown blocks)
+            if tag.name in _TABLE_UNWRAP_TAGS:
+                # round-4 finding: <br> must become a space, not nothing, so
+                # <td>1<br>2</td> stays "1 2" instead of collapsing to "12".
+                if tag.name == "br":
+                    tag.replace_with(" ")
+                else:
+                    tag.unwrap()
+            else:
+                # img with alt text: keep the alt, drop the tag. Everything
+                # else unknown (and any URL/script carrier) is removed.
+                if tag.name == "img":
+                    alt = tag.get("alt")
+                    if isinstance(alt, str) and alt:
+                        tag.replace_with(alt)
+                    else:
+                        tag.decompose()
+                else:
+                    tag.decompose()
+            continue
+        for attr in list(tag.attrs):
+            raw = tag.get(attr)
+            # BeautifulSoup returns multi-valued attrs (class, headers, …)
+            # as lists; coerce to the space-joined string we validate.
+            if raw is None:
+                value = ""
+            elif isinstance(raw, str):
+                value = raw
+            else:
+                value = " ".join(str(part) for part in raw if part is not None)
+            if tag.name == "th" and attr == "id" and value in id_map:
+                tag["id"] = id_map[value]
+                continue
+            if attr == "headers":
+                # tokens are space-separated header ids; remap the ones we
+                # know, drop the rest (they can only dangle after the purge)
+                tokens = [id_map[t] for t in value.split() if t in id_map]
+                if tokens:
+                    tag["headers"] = " ".join(tokens)
+                else:
+                    del tag["headers"]
+                continue
+            if tag.name == "th" and attr == "scope":
+                # enumerated attribute: anything outside the four spec
+                # values is junk (round-1 finding: arbitrary values were
+                # passing the alphanumeric check)
+                if value.lower() not in {"row", "col", "rowgroup", "colgroup"}:
+                    del tag["scope"]
+                continue
+            if attr not in _TABLE_ALLOWED_ATTRS.get(tag.name, set()):
+                del tag[attr]
+                continue
+            if not re.fullmatch(r"[0-9a-zA-Z\s]+", value or ""):
+                del tag[attr]
+    # Tables whose cells carry no text (or whose structure collapsed to
+    # nothing) are useless to a student; skip rather than persist a husk.
+    if not any((tag.get_text(strip=True)) for tag in table.find_all(["th", "td"])):
+        return None
+    return str(table)
 
-    def _payload(match: re.Match) -> tuple[bytes, str] | None:
-        """Content + suffix for one match, or None to skip (keep as text)."""
+
+def _extract_visuals(
+    ext_id: str, html: str, image_dir: Path, start_index: int = 1, table_seq: int = 1
+) -> tuple[str, list[dict], int, int]:
+    """Pull inline visuals (figures AND data tables) out of EQB HTML.
+
+    Returns (remaining_html, visual_records, next_index, next_table_seq). One
+    document-order pass over <figure> blocks, bare inline <svg>, data-URI
+    <img> tags, and <table> blocks.
+
+    - Figures (svg/data-URI) are saved to image_dir; their record is
+      {'kind': 'image', 'file': <bare filename>} and the template renders
+      /figures/<file>.
+    - Tables are sanitized via `sanitize_table`; their record is
+      {'kind': 'table', 'html': '<table …>'}. The stored text fallback
+      (caption + cell text flattened, below) keeps the cleaned
+      passage/stem/fingerprint identical to what the old ingest stored.
+
+    The matched markup is replaced by its visible text (SVG <text> nodes,
+    <figcaption>, alt text, and for tables the caption + cell text) so that
+    axis labels and captions still reach the cleaned passage/stem — which
+    keeps legacy fingerprints (computed from the fully stripped text) stable
+    across re-imports. `start_index`/`next_index` let callers share one
+    numbering across multiple HTML fields (stem + stimulus) so filenames stay
+    unique in document order; `table_seq`/`next_table_seq` do the same so
+    header id prefixes stay unique across every table in one question.
+    """
+    visuals: list[dict] = []
+    index = start_index
+    tseq = table_seq
+
+    def _payload(match: re.Match) -> list[tuple[str, bytes, str]]:
+        """(kind, content, suffix) records for one match (may be several)."""
+        nonlocal tseq
         block = match.group(0)
+        records: list[tuple[str, bytes, str]] = []
         data = match.group(1)  # set only by the bare data-URI <img> branch
         if data is None:
+            # Round-3 (finding 7): a <figure class="table"> containing an
+            # inline SVG inside a data cell must be extracted as a TABLE, not
+            # as an image — the table branch owns the wrapper; only a figure
+            # with NO table but an SVG/photo is a figure.
+            table = _TABLE_RE.search(block)
+            if table:
+                sanitized = sanitize_table(table.group(0), id_prefix=f"eqb-{ext_id}-t{tseq}")
+                if sanitized is not None:
+                    tseq += 1
+                    return [("table", sanitized.encode("utf-8"), "html")]
+                # sanitize failed (e.g. no cells): fall through to svg/img
             svg = _SVG_RE.search(block)
             if svg:
-                return svg.group(0).encode("utf-8"), "svg"
-            inner = _IMG_DATA_RE.search(block)  # <figure><img data:...></figure>
-            if inner:
-                data = inner.group(2)
-            else:
-                return None  # <figure> with no savable asset: keep its text
+                return [("image", svg.group(0).encode("utf-8"), "svg")]
+            # Round-4 (finding 5): a <figure> may hold MORE than one data-URI
+            # <img>; search() would save only the first. Iterate every one in
+            # document order.
+            for inner in _IMG_DATA_RE.finditer(block):  # <figure><img...></figure>
+                one = _payload_img_data(inner.group(2))
+                if one is not None:
+                    records.append(one)
+            return records
+        one = _payload_img_data(data)
+        return [one] if one is not None else []
+
+    def _payload_img_data(data: str) -> tuple[str, bytes, str] | None:
+        """Decode one data-URI <img> payload, or None to skip (keep text)."""
         if "," not in data:  # malformed data URI: skip, keep as text
             return None
         # Long payloads commonly serialize with newlines every ~76 chars;
@@ -129,35 +323,38 @@ def _extract_figures(ext_id: str, html: str, image_dir: Path,
         b64 = re.sub(r"\s+", "", data.split(",", 1)[1])
         if not b64:  # whitespace-only payload: nothing to save, skip
             return None
-        mime = data[len("data:image/"):].split(";", 1)[0].lower()
+        mime = data[len("data:image/") :].split(";", 1)[0].lower()
         suffix = {"jpeg": "jpg", "svg+xml": "svg"}.get(mime) or mime
         suffix = suffix.rsplit("/", 1)[-1].split("+", 1)[-1]
         if not suffix.isalnum() or len(suffix) > 5:
             return None  # unknown/unsafe type: skip
         try:
-            return base64.b64decode(b64, validate=True), suffix
+            return "image", base64.b64decode(b64, validate=True), suffix
         except Exception:
             return None  # malformed payload: skip, keep as text
 
     def _repl(match: re.Match) -> str:
         nonlocal index
-        got = _payload(match)
-        if got is not None:
-            content, suffix = got
-            name = _save_figure(ext_id, index, content, suffix, image_dir)
-            assets.append(name)
+        for got in _payload(match):
+            kind, content, suffix = got
+            if kind == "table":
+                visuals.append({"kind": "table", "html": content.decode("utf-8")})
+            else:
+                name = _save_figure(ext_id, index, content, suffix, image_dir)
+                visuals.append({"kind": "image", "file": name})
             index += 1
         # always leave the visible text (labels, captions, alt) in place
         return _clean_html(match.group(0)) or " "
 
     remaining = _ANY_FIGURE_RE.sub(_repl, html)
-    return remaining, assets, index
+    return remaining, visuals, index, tseq
 
 
-def list_questions(domains: list[str] | None = None,
-                   assessment: int = SAT_RW_ASMT, test: int = SAT_RW_TEST) -> list[dict]:
+def list_questions(
+    domains: list[str] | None = None, assessment: int = SAT_RW_ASMT, test: int = SAT_RW_TEST
+) -> list[dict]:
     out: list[dict] = []
-    for cd in (domains or DOMAINS):
+    for cd in domains or DOMAINS:
         rows = _post(
             f"{BASE}/digital/get-questions",
             {"asmtEventId": assessment, "test": test, "domain": cd},
@@ -169,7 +366,8 @@ def list_questions(domains: list[str] | None = None,
 
 def fetch_question(external_id: str) -> dict | None:
     try:
-        return _post(f"{BASE}/digital/get-question", {"external_id": external_id})
+        result = _post(f"{BASE}/digital/get-question", {"external_id": external_id})
+        return result if isinstance(result, dict) else None
     except RuntimeError:
         return None
 
@@ -198,24 +396,38 @@ def _normalize(detail: dict, meta: dict, image_dir: Path | None = None) -> dict 
     for c in choices:
         c["is_correct"] = c["letter"] == correct_letter
     difficulty = meta.get("difficulty") or ""
-    difficulty = _DIFFICULTY_MAP.get(str(difficulty).strip().upper(),
-                                     str(difficulty).strip().lower())
-    # Figures (graphs/diagrams) live inline in the stem and stimulus HTML. Save
-    # them before _clean_html strips markup; their visible text (labels,
-    # captions) is left in place so the stored text still matches legacy rows.
+    difficulty = _DIFFICULTY_MAP.get(
+        str(difficulty).strip().upper(), str(difficulty).strip().lower()
+    )
+    # Visuals (graphs/diagrams/tables) live inline in the stem and stimulus
+    # HTML. Save them before _clean_html strips markup; their visible text
+    # (labels, captions, cell text) is left in place so the stored text still
+    # matches legacy rows.
     image_dir = image_dir if image_dir is not None else FIGURE_DIR
     ext_id = str(meta.get("external_id") or detail.get("externalid") or "")
-    # One numbering across both fields so stem+stimulus figures never
-    # collide on a filename, in document order within each field.
-    stem_html, stem_images, nxt = _extract_figures(ext_id, detail.get("stem") or "", image_dir)
-    stim_html, stim_images, _ = _extract_figures(ext_id, detail.get("stimulus") or "",
-                                                 image_dir, start_index=nxt)
-    images = stem_images + stim_images
+    # One numbering across both fields so stem+stimulus visuals never
+    # collide on a filename or header id, in document order within each field.
+    stem_html, stem_visuals, nxt, stem_tseq = _extract_visuals(
+        ext_id, detail.get("stem") or "", image_dir
+    )
+    stim_html, stim_visuals, _, _ = _extract_visuals(
+        ext_id,
+        detail.get("stimulus") or "",
+        image_dir,
+        start_index=nxt,
+        table_seq=stem_tseq,
+    )
+    # Round-4 finding: the page renders the passage/stimulus, then the stem,
+    # so stimulus visuals precede stem visuals in the display list — the
+    # reverse would pair a stem reference with the wrong picture.
+    visuals = stim_visuals + stem_visuals
+    images = [v["file"] for v in visuals if v.get("kind") == "image"]
     return {
         "passage": _clean_html(stim_html),
         "stem": _clean_html(stem_html),
         "choices": choices,
         "images": images,
+        "visuals": visuals,
         "correct": correct_letter,
         "domain": meta.get("primary_class_cd_desc", ""),
         "skill": meta.get("skill_desc", ""),
@@ -236,12 +448,14 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
         return "invalid"
     fp = fpmod.fingerprint(row["passage"], row["stem"], [c["text"] for c in choices])
     exists = conn.execute(
-        "SELECT id, choices_json, images_json, official_skill, difficulty, pool FROM questions WHERE fingerprint=?",
+        "SELECT id, choices_json, images_json, visuals_json, official_skill, difficulty, pool FROM questions WHERE fingerprint=?",
         (fp,),
     ).fetchone()
 
     images = row.get("images") or []
     images_json = json.dumps(images)
+    visuals = row.get("visuals") or []
+    visuals_json = json.dumps(visuals)
 
     def _backfill_images(target_id: int, current: str) -> None:
         if not images:
@@ -251,11 +465,22 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
                 return  # already has figures
         except ValueError:
             pass
-        conn.execute("UPDATE questions SET images_json=? WHERE id=?",
-                     (images_json, target_id))
+        conn.execute("UPDATE questions SET images_json=? WHERE id=?", (images_json, target_id))
+
+    def _backfill_visuals(target_id: int, current: str) -> None:
+        if not visuals:
+            return
+        try:
+            if json.loads(current or "null"):
+                return  # already has visuals
+        except ValueError:
+            pass
+        conn.execute("UPDATE questions SET visuals_json=? WHERE id=?", (visuals_json, target_id))
 
     def _reconcile(target_id: int) -> str:
-        skill = exists_row["official_skill"] or row.get("skill", "")
+        row_ = exists_row
+        assert row_ is not None
+        skill = row_["official_skill"] or row.get("skill", "")
         domain = SKILL_TO_DOMAIN.get(skill, "") if skill else ""
         diff = (row.get("difficulty") or "").strip().lower()
         conn.execute(
@@ -264,16 +489,24 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
                    official_skill=?, official_domain=?,
                    skill_source=CASE WHEN ?!='' THEN 'reconciled' ELSE skill_source END,
                    rationale=CASE WHEN rationale='' THEN ? ELSE rationale END
-               WHERE id=?""",  # noqa: E501
-            (json.dumps(choices), row["correct"], diff, diff,
-             skill, domain,
-             exists_row["official_skill"] == "" and bool(skill),
-             row.get("rationale", ""), target_id),
+               WHERE id=?""",
+            (
+                json.dumps(choices),
+                row["correct"],
+                diff,
+                diff,
+                skill,
+                domain,
+                row_["official_skill"] == "" and bool(skill),
+                row.get("rationale", ""),
+                target_id,
+            ),
         )
-        _backfill_images(target_id, exists_row["images_json"] or "")
+        _backfill_images(target_id, row_["images_json"] or "")
+        _backfill_visuals(target_id, row_["visuals_json"] or "")
         return "duplicate"
 
-    exists_row = None
+    exists_row: sqlite3.Row | None = None
     if exists:
         # Cross-source match (spec section 2): never counted as fresh.
         exists_row = exists
@@ -290,10 +523,20 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
                   official_domain=CASE WHEN official_skill='' AND ?!='' THEN ? ELSE official_domain END,
                   rationale=CASE WHEN rationale='' AND ?!='' THEN ? ELSE rationale END
               WHERE id=?""",
-            (diff, diff, skill, skill, skill, SKILL_TO_DOMAIN.get(skill, ""),
-             row.get("rationale", ""), row.get("rationale", ""), exists["id"]),
+            (
+                diff,
+                diff,
+                skill,
+                skill,
+                skill,
+                SKILL_TO_DOMAIN.get(skill, ""),
+                row.get("rationale", ""),
+                row.get("rationale", ""),
+                exists["id"],
+            ),
         )
         _backfill_images(exists["id"], exists["images_json"] or "")
+        _backfill_visuals(exists["id"], exists["visuals_json"] or "")
         return "duplicate"
 
     # External-identity pass: the content fingerprint path above already handled
@@ -307,13 +550,13 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
         # (no content-fingerprint match — that path returned 'duplicate'
         # above; matching the same row twice here would be a no-op at best)
         ext_row = conn.execute(
-            """SELECT id, choices_json, images_json, official_skill, difficulty, pool
-               FROM questions
-               WHERE active=1
-                 AND source='college_board_question_bank'
-                 AND json_valid(provenance_json)
-                 AND json_extract(provenance_json, '$.external_id')=?
-               ORDER BY id DESC""",
+            """SELECT id, choices_json, images_json, visuals_json, official_skill, difficulty, pool
+              FROM questions
+              WHERE active=1
+                AND source='college_board_question_bank'
+                AND json_valid(provenance_json)
+                AND json_extract(provenance_json, '$.external_id')=?
+              ORDER BY id DESC""",
             (ext,),
         ).fetchone()
         if ext_row is not None:
@@ -329,18 +572,28 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
                       official_domain=CASE WHEN official_skill='' AND ?!='' THEN ? ELSE official_domain END,
                       rationale=CASE WHEN rationale='' AND ?!='' THEN ? ELSE rationale END
                   WHERE id=?""",
-                (diff, diff, skill, skill, skill, SKILL_TO_DOMAIN.get(skill, ""),
-                 row.get("rationale", ""), row.get("rationale", ""), ext_row["id"]),
+                (
+                    diff,
+                    diff,
+                    skill,
+                    skill,
+                    skill,
+                    SKILL_TO_DOMAIN.get(skill, ""),
+                    row.get("rationale", ""),
+                    row.get("rationale", ""),
+                    ext_row["id"],
+                ),
             )
             _backfill_images(ext_row["id"], ext_row["images_json"] or "")
+            _backfill_visuals(ext_row["id"], ext_row["visuals_json"] or "")
             return "duplicate"
 
     # Loose reconciliation pass: a stored choice-less record whose normalized
     # passage+stem matches this bank item IS the same question seen before.
     loose = fpmod.fingerprint_loose(row["passage"], row["stem"])
     for cand in conn.execute(
-        """SELECT id, passage, stem, official_skill, choices_json, images_json FROM questions
-          WHERE active=1 AND choices_json='[]'"""
+        """SELECT id, passage, stem, official_skill, choices_json, images_json, visuals_json FROM questions
+         WHERE active=1 AND choices_json='[]'"""
     ).fetchall():
         if fpmod.fingerprint_loose(cand["passage"], cand["stem"]) != loose:
             continue
@@ -350,19 +603,32 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
     diff = (row.get("difficulty") or "").strip().lower()
     conn.execute(
         """INSERT INTO questions
-           (fingerprint, source, source_test, source_question_number, module,
-            passage, stem, choices_json, correct_letter, rationale, images_json,
-            official_domain, official_skill, skill_source, difficulty,
-            pool, seen_benchmark, is_new_bank, import_batch, imported_at, provenance_json)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,1,?,?,?)""",
+          (fingerprint, source, source_test, source_question_number, module,
+           passage, stem, choices_json, correct_letter, rationale, images_json,
+           visuals_json,
+           official_domain, official_skill, skill_source, difficulty,
+           pool, seen_benchmark, is_new_bank, import_batch, imported_at, provenance_json)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,1,?,?,?)""",
         (
-            fp, "college_board_question_bank", batch, row.get("ext_id", ""), "",
-            row["passage"], row["stem"], json.dumps(choices), correct,
-            row.get("rationale", ""), images_json,
-            row.get("domain", ""), row.get("skill", ""),
+            fp,
+            "college_board_question_bank",
+            batch,
+            row.get("ext_id", ""),
+            "",
+            row["passage"],
+            row["stem"],
+            json.dumps(choices),
+            correct,
+            row.get("rationale", ""),
+            images_json,
+            visuals_json,
+            row.get("domain", ""),
+            row.get("skill", ""),
             "metadata" if row.get("skill") else "unknown",
             diff if diff in ("easy", "medium", "hard") else "",
-            pool, batch, utc_now(),
+            pool,
+            batch,
+            utc_now(),
             json.dumps(row.get("_provenance") or {"external_id": row.get("ext_id", "")}),
         ),
     )
@@ -393,13 +659,25 @@ def known_external_ids(conn) -> set[str]:
     return ids
 
 
-def fetch_qbank(conn, hard_only: bool = False, domains: list[str] | None = None,
-                limit: int = 0, sleep_s: float = 0.25) -> dict:
+def fetch_qbank(
+    conn,
+    hard_only: bool = False,
+    domains: list[str] | None = None,
+    limit: int = 0,
+    sleep_s: float = 0.25,
+) -> dict:
     """Pull SAT R&W items from the public EQB into the corpus. Idempotent."""
     have = known_external_ids(conn)
-    batch = f"eqb-{datetime.now(timezone.utc).strftime('%Y%m%d')}"
-    stats = {"listed": 0, "skipped_known": 0, "fetched": 0,
-             "added": 0, "duplicates": 0, "invalid": 0, "failed": 0}
+    batch = f"eqb-{datetime.now(UTC).strftime('%Y%m%d')}"
+    stats = {
+        "listed": 0,
+        "skipped_known": 0,
+        "fetched": 0,
+        "added": 0,
+        "duplicates": 0,
+        "invalid": 0,
+        "failed": 0,
+    }
 
     metas = list_questions(domains)
     stats["listed"] = len(metas)
@@ -415,8 +693,10 @@ def fetch_qbank(conn, hard_only: bool = False, domains: list[str] | None = None,
     if limit:
         todo = todo[:limit]
 
-    print(f"eqb: {stats['listed']} listed, {len(todo)} to fetch "
-          f"(batch {batch}, hard_only={hard_only})")
+    print(
+        f"eqb: {stats['listed']} listed, {len(todo)} to fetch "
+        f"(batch {batch}, hard_only={hard_only})"
+    )
     for i, m in enumerate(todo, 1):
         detail = fetch_question(str(m["external_id"]))
         if detail is None:
@@ -441,75 +721,157 @@ def fetch_qbank(conn, hard_only: bool = False, domains: list[str] | None = None,
     return stats
 
 
-def backfill_figures(conn, figure_hint: bool = True, limit: int = 0,
-                     sleep_s: float = 0.25) -> dict:
-    """Re-fetch bank questions whose figures were dropped at ingest time and
-    attach them.
+def backfill_visuals(
+    conn, hint: bool = True, limit: int = 0, sleep_s: float = 0.25, audit_only: bool = False
+) -> dict:
+    """Re-fetch bank questions whose visuals (figures/tables) were dropped at
+    ingest time and attach them.
 
     The original EQB ingest stripped all markup from stimulus/stem without
-    saving the inline figures, so graph/diagram questions stored an empty
-    images_json. This exists solely to repair those rows: matching is by
-    stored external_id, figures are re-extracted from the live record, and only
-    rows that gain figures are updated.
+    saving the inline visuals, so graph/diagram/table questions stored empty
+    images_json and visuals_json. This exists solely to repair those rows:
+    matching is by stored external_id, visuals are re-extracted from the live
+    record, and only rows that gain visuals are updated.
 
-    `figure_hint` limits the sweep to rows whose stem cites a figure. Returns a
-    stats dict; updates are committed incrementally so the sweep is resumable.
+    `hint` limits the sweep to rows whose stem cites a visual. Returns a stats
+    dict; updates are committed incrementally so the sweep is resumable. With
+    `audit_only`, no rows are written — the sweep reports what WOULD change,
+    which is the acceptance-criteria audit for issue #46.
     """
     sql = (
-        "SELECT id, source_question_number, provenance_json, images_json"
+        "SELECT id, source_question_number, provenance_json, images_json, visuals_json"
         " FROM questions"
         " WHERE source='college_board_question_bank' AND active=1"
-        " AND images_json IN ('[]','','null')"
+        " AND visuals_json IN ('[]','','null')"
     )
-    if figure_hint:
+    if hint:
         # Stems that name the embedded asset in any common word; the full
-        # sweep (figure_hint=False) is the only one that can't miss any.
-        sql += (" AND (stem LIKE '%graph%' OR stem LIKE '%figure%' OR stem LIKE '%diagram%'"
-                " OR stem LIKE '%table%' OR stem LIKE '%chart%' OR stem LIKE '%scatterplot%'"
-                " OR stem LIKE '%map%' OR stem LIKE '%illustration%' OR stem LIKE '%plot%')")
+        # sweep (hint=False) is the only one that can't miss any.
+        sql += (
+            " AND (stem LIKE '%graph%' OR stem LIKE '%figure%' OR stem LIKE '%diagram%'"
+            " OR stem LIKE '%table%' OR stem LIKE '%chart%' OR stem LIKE '%scatterplot%'"
+            " OR stem LIKE '%map%' OR stem LIKE '%illustration%' OR stem LIKE '%plot%')"
+        )
     sql += " ORDER BY id"
     rows = conn.execute(sql).fetchall()
     if limit:
         rows = rows[:limit]
-    stats = {"candidate": 0, "fetched": 0, "failed": 0, "now_images": 0,
-             "still_empty": 0}
-    for i, r in enumerate(rows, 1):
-        stats["candidate"] += 1
-        try:
-            ext = json.loads(r["provenance_json"] or "{}").get("external_id") \
-                or r["source_question_number"]
-        except json.JSONDecodeError:
-            ext = r["source_question_number"]
-        if not ext:
-            stats["failed"] += 1
-            continue
-        detail = fetch_question(str(ext))
-        if detail is None:
-            stats["failed"] += 1
-            continue
-        stats["fetched"] += 1
-        # Reuse the full normalization so figure numbering/ordering matches
-        # the normal ingest path (shared across stem and stimulus).
-        row = _normalize(detail, {"external_id": str(ext)})
-        images = row["images"] if row else []
-        if not images:
-            stats["still_empty"] += 1
-            # Checkpoint even when this candidate gained nothing, so an
-            # interrupted run resumes where it left off (resumable sweep).
+    stats = {
+        "candidate": 0,
+        "fetched": 0,
+        "failed": 0,
+        "now_visuals": 0,
+        "now_images": 0,
+        "now_tables": 0,
+        "still_empty": 0,
+        "unsupported_markup": 0,
+        "missing_files": 0,
+    }
+    # Round-2 (finding 4): the missing-file audit inspects PERSISTED refs —
+    # including rows the sweep would not touch — BEFORE any extraction that
+    # re-saves figures. This is the only way a genuinely deleted file is
+    # reported rather than silently recreated by normalization. Round-3
+    # (finding 5): count each unique missing file once per row — current-format
+    # rows store a filename both as an images_json string AND as an image
+    # record in visuals_json, so a per-reference count would double-report.
+    for r in conn.execute(
+        "SELECT images_json, visuals_json FROM questions"
+        " WHERE source='college_board_question_bank' AND active=1"
+    ).fetchall():
+        seen: set[str] = set()
+        for blob in (r["images_json"] or "[]", r["visuals_json"] or "[]"):
+            try:
+                refs = json.loads(blob) if blob else []
+            except (ValueError, TypeError):
+                continue
+            for ref in refs or []:
+                fname = ref if isinstance(ref, str) else (ref or {}).get("file", "")
+                if not fname:
+                    continue
+                if fname in seen:
+                    continue
+                seen.add(fname)
+                if not (config.IMAGES_DIR / fname).exists():
+                    stats["missing_files"] += 1
+    if audit_only:
+        # Round-2 (finding 3/4): audit must be purely read-only — do not
+        # write figures to disk while re-normalizing (the audit reports what
+        # WOULD be written, it does not write).
+        global _WRITE_FIGURES
+        _WRITE_FIGURES = False
+    try:
+        for i, r in enumerate(rows, 1):
+            stats["candidate"] += 1
+            try:
+                ext = (
+                    json.loads(r["provenance_json"] or "{}").get("external_id")
+                    or r["source_question_number"]
+                )
+            except json.JSONDecodeError:
+                ext = r["source_question_number"]
+            if not ext:
+                stats["failed"] += 1
+                continue
+            detail = fetch_question(str(ext))
+            if detail is None:
+                stats["failed"] += 1
+                continue
+            stats["fetched"] += 1
+            # Round-2 (finding 7): unsupported markup is counted only when the
+            # SOURCE actually carried a visual element that extraction failed
+            # to preserve — a plain text-only question is not "unsupported".
+            source = f"{detail.get('stem') or ''} {detail.get('stimulus') or ''}"
+            had_markup = bool(re.search(r"<(figure|table|svg|img)\b", source, re.I))
+            # Reuse the full normalization so figure numbering/ordering matches
+            # the normal ingest path (shared across stem and stimulus).
+            row = _normalize(detail, {"external_id": str(ext)})
+            visuals = row["visuals"] if row else []
+            images = [v["file"] for v in visuals if v.get("kind") == "image"]
+            if not visuals:
+                stats["still_empty"] += 1
+                if had_markup:
+                    stats["unsupported_markup"] += 1
+            else:
+                # Round-3 (finding 4): the audit reports what WOULD be
+                # preserved, so count discovered visuals here — before the
+                # early exits — so now_* are non-zero in audit mode too.
+                stats["now_visuals"] += 1
+                stats["now_images"] += len(images)
+                stats["now_tables"] += sum(1 for v in visuals if v.get("kind") == "table")
+            if audit_only:
+                if i % 50 == 0:
+                    print(f"  audit {i}/{len(rows)} … {stats}")
+                time.sleep(sleep_s)
+                continue
+            if not visuals:
+                # Checkpoint even when this candidate gained nothing, so an
+                # interrupted run resumes where it left off (resumable sweep).
+                if i % 50 == 0:
+                    conn.commit()
+                    print(f"  backfill {i}/{len(rows)} … {stats}")
+                time.sleep(sleep_s)
+                continue
+            conn.execute(
+                "UPDATE questions SET images_json=?, visuals_json=? WHERE id=?",
+                (json.dumps(images), json.dumps(visuals), r["id"]),
+            )
             if i % 50 == 0:
                 conn.commit()
                 print(f"  backfill {i}/{len(rows)} … {stats}")
             time.sleep(sleep_s)
-            continue
-        conn.execute("UPDATE questions SET images_json=? WHERE id=?",
-                     (json.dumps(images), r["id"]))
-        stats["now_images"] += 1
-        if i % 50 == 0:
-            conn.commit()
-            print(f"  backfill {i}/{len(rows)} … {stats}")
-        time.sleep(sleep_s)
+    finally:
+        if audit_only:
+            _WRITE_FIGURES = True
     conn.commit()
     return stats
+
+
+#: Backward-compatible alias: figure-only backfill is now the visual sweep.
+def backfill_figures(
+    conn, figure_hint: bool = True, limit: int = 0, sleep_s: float = 0.25, **kwargs
+) -> dict:
+    """Legacy name for `backfill_visuals` (issue #46 unified the sweep)."""
+    return backfill_visuals(conn, hint=figure_hint, limit=limit, sleep_s=sleep_s, **kwargs)
 
 
 if __name__ == "__main__":

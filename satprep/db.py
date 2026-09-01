@@ -14,7 +14,7 @@ from . import config
 #: Bumped whenever SCHEMA or _migrate changes. Stamped into PRAGMA
 #: user_version so a database swapped in underneath a running process is
 #: detected by more than the presence of one table.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 #: Join target for tag reads. Defined in SCHEMA; the semantics live in
 #: satprep.corpus.tags, which re-exports this name.
@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS questions (
     correct_letter TEXT NOT NULL,
     rationale TEXT DEFAULT '',
     images_json TEXT DEFAULT '[]',
+    visuals_json TEXT DEFAULT '[]',     -- first-class non-image visuals (tables)
     official_domain TEXT DEFAULT '',
     official_skill TEXT DEFAULT '',
     skill_source TEXT DEFAULT 'unknown',   -- metadata | derived | manual | unknown
@@ -141,7 +142,7 @@ _SCHEMA_APPLIED: set[str] = set()
 _SCHEMA_LOCK = threading.Lock()
 
 
-def connect(db_path: Path | None = None) -> sqlite3.Connection:
+def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
     """Open a connection. Prefer `db_context`, which also commits and closes."""
     path = Path(db_path) if db_path else config.DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -201,10 +202,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(attempts)")}
     if "error_tags" not in cols:
         conn.execute("ALTER TABLE attempts ADD COLUMN error_tags TEXT NOT NULL DEFAULT '[]'")
+    qcols = {r[1] for r in conn.execute("PRAGMA table_info(questions)")}
+    if "visuals_json" not in qcols:
+        conn.execute("ALTER TABLE questions ADD COLUMN visuals_json TEXT DEFAULT '[]'")
 
 
 @contextmanager
-def db_context(db_path: Path | None = None):
+def db_context(db_path: Path | str | None = None):
     """One connection, one transaction, for the span of one command.
 
     Every entry point - each CLI subcommand, each web request - opens exactly

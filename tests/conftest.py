@@ -14,11 +14,26 @@ def db(tmp_path: Path):
     conn.close()
 
 
-def add_question(conn, *, passage="P", stem="Q?", choices=("a", "b", "c", "d"),
-                 correct="A", source="college_board_question_bank", pool=None,
-                 difficulty="", skill="", tags=(), fingerprint=None,
-                 import_batch="batch1", images=(), source_test="SAT Practice Test 1",
-                 source_question_number="1", module="Module 1", rationale="rationale"):
+def add_question(
+    conn,
+    *,
+    passage="P",
+    stem="Q?",
+    choices=("a", "b", "c", "d"),
+    correct="A",
+    source="college_board_question_bank",
+    pool=None,
+    difficulty="",
+    skill="",
+    tags=(),
+    fingerprint=None,
+    import_batch="batch1",
+    images=(),
+    source_test="SAT Practice Test 1",
+    source_question_number="1",
+    module="Module 1",
+    rationale="rationale",
+):
     from satprep.corpus import fingerprint as fpmod
 
     fp = fingerprint or fpmod.fingerprint(passage, stem, list(choices))
@@ -30,12 +45,32 @@ def add_question(conn, *, passage="P", stem="Q?", choices=("a", "b", "c", "d"),
              official_domain, official_skill, skill_source, difficulty, pool, seen_benchmark,
              is_new_bank, import_batch, imported_at, provenance_json)
           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?,?)""",
-        (fp, source, source_test, source_question_number, module, passage, stem,
-         json.dumps([{"letter": chr(65 + i), "text": t, "is_correct": chr(65 + i) == correct}
-                     for i, t in enumerate(choices)]),
-         correct, rationale, json.dumps(list(images)), "", skill, "metadata" if skill else "unknown",
-         difficulty, pool, import_batch if source != "bluebook_test" else "",
-         "2026-01-01T00:00:00+00:00", "{}"),
+        (
+            fp,
+            source,
+            source_test,
+            source_question_number,
+            module,
+            passage,
+            stem,
+            json.dumps(
+                [
+                    {"letter": chr(65 + i), "text": t, "is_correct": chr(65 + i) == correct}
+                    for i, t in enumerate(choices)
+                ]
+            ),
+            correct,
+            rationale,
+            json.dumps(list(images)),
+            "",
+            skill,
+            "metadata" if skill else "unknown",
+            difficulty,
+            pool,
+            import_batch if source != "bluebook_test" else "",
+            "2026-01-01T00:00:00+00:00",
+            "{}",
+        ),
     )
     qid = cur.lastrowid
     conn.execute("INSERT INTO question_state (question_id) VALUES (?)", (qid,))
@@ -47,12 +82,26 @@ def add_question(conn, *, passage="P", stem="Q?", choices=("a", "b", "c", "d"),
     return qid
 
 
-def add_attempt(conn, qid, correct, confidence=2, mode="historical",
-                attempted_at="2026-03-01T00:00:00+00:00", session_id="hist:x"):
+def add_attempt(
+    conn,
+    qid,
+    correct,
+    confidence=2,
+    mode="historical",
+    attempted_at="2026-03-01T00:00:00+00:00",
+    session_id="hist:x",
+):
     conn.execute(
         """INSERT INTO attempts (session_id, question_id, chosen_letter, correct,
                                  confidence, time_ms, mode, attempted_at)
            VALUES (?,?,?,?,?,0,?,?)""",
-        (f"{session_id}:{qid}" if session_id.startswith("hist") else session_id,
-         qid, "B", int(correct), int(confidence), mode, attempted_at),
+        (
+            f"{session_id}:{qid}" if session_id.startswith("hist") else session_id,
+            qid,
+            "B",
+            int(correct),
+            int(confidence),
+            mode,
+            attempted_at,
+        ),
     )

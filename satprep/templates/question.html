@@ -2,6 +2,7 @@
 {% set nav = 'drill' %}
 {% block title %}Question {{ idx + 1 }} of {{ total }} · satprep{% endblock %}
 {% block content %}
+{% import "_visuals.html" as vx %}
 <div class="progress"><div style="width: {{ (idx * 100 / total)|round(0) }}%"></div></div>
 <p class="drill-meta">
   <span>Question {{ idx + 1 }} of {{ total }}</span>

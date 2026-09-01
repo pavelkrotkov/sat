@@ -8,7 +8,10 @@
      ctx.passage        — full original passage text ('' when none)
      ctx.stem           — the question stem
      ctx.choices        — [{letter, text, is_correct}] complete list
-     ctx.images         — stored figure paths served by /figures
+     ctx.images         — legacy stored figure paths served by /figures
+     ctx.visuals        — ordered visual records [{kind, file|html}]: tables
+                          render as real tables, images as /figures/<file>;
+                          empty → falls back to ctx.images (pre-visuals rows)
      ctx.chosen_letter  — the student's committed answer ('' / absent = not submitted)
      ctx.key_letter     — the correct letter ('' until an answer is committed)
      ctx.source_label   — "test · q# · module" placement for debugging
@@ -18,13 +21,10 @@
    The key is never revealed for an unsubmitted question: key_letter is
    empty until the caller sets it.
 #}
+{% import "_visuals.html" as vx %}
 <article class="question-context">
   {% if ctx.passage %}<div class="passage">{% for p in ctx.passage.split('\n') %}<p>{{ p }}</p>{% endfor %}</div>{% endif %}
-  {% if ctx.images %}
-    <div class="figures">
-    {% for img in ctx.images %}<img src="/figures/{{ img|basename }}" alt="question figure {{ loop.index }}" loading="lazy">{% endfor %}
-    </div>
-  {% endif %}
+  {{ vx.visuals_block(ctx.visuals, ctx.images) }}
   <p class="stem">{{ ctx.stem }}</p>
   {% if ctx.selectable %}
     <div class="choices">

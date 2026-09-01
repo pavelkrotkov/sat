@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import csv
 import html
 import io
@@ -28,14 +29,17 @@ from typing import Any
 
 from playwright.sync_api import (
     BrowserContext,
-    Error as PlaywrightError,
     Frame,
     Locator,
     Page,
-    TimeoutError as PlaywrightTimeoutError,
     sync_playwright,
 )
-
+from playwright.sync_api import (
+    Error as PlaywrightError,
+)
+from playwright.sync_api import (
+    TimeoutError as PlaywrightTimeoutError,
+)
 
 LOG = logging.getLogger("sat_wrong_questions")
 
@@ -287,7 +291,9 @@ def dedupe_preserve_order(values: list[str]) -> list[str]:
     return deduped
 
 
-def extract_visual_assets_from_html_details(uid: str, html: str, image_dir: Path) -> tuple[list[str], set[str]]:
+def extract_visual_assets_from_html_details(
+    uid: str, html: str, image_dir: Path
+) -> tuple[list[str], set[str]]:
     figure_blocks = re.findall(r"<figure\b.*?</figure>", html, flags=re.IGNORECASE | re.DOTALL)
     if not figure_blocks:
         return [], set()
@@ -311,7 +317,9 @@ def extract_visual_assets_from_html_details(uid: str, html: str, image_dir: Path
             continue
 
         for image_index, img_match in enumerate(
-            re.finditer(r"<img\b[^>]*?\bsrc=(['\"])(.*?)\1", figure_html, flags=re.IGNORECASE | re.DOTALL),
+            re.finditer(
+                r"<img\b[^>]*?\bsrc=(['\"])(.*?)\1", figure_html, flags=re.IGNORECASE | re.DOTALL
+            ),
             start=1,
         ):
             src = normalize_space(img_match.group(2))
@@ -427,7 +435,7 @@ def split_explanation(lines: list[str]) -> tuple[list[str], list[str]]:
         lowered = line.lower()
         if lowered.startswith("explanation") or "correct answer and explanation" in lowered:
             if ":" in line:
-                head, tail = line.split(":", 1)
+                _head, tail = line.split(":", 1)
                 remainder = [normalize_space(tail)] if normalize_space(tail) else []
                 return lines[:idx], remainder + lines[idx + 1 :]
             return lines[:idx], lines[idx + 1 :]
@@ -465,16 +473,19 @@ def parse_review_content(raw_text: str) -> dict[str, Any]:
         "correct answer",
         "show correct answer and explanation",
     ):
-        metadata_lines.extend(
-            line for line in before_expl if line.lower().startswith(label)
-        )
+        metadata_lines.extend(line for line in before_expl if line.lower().startswith(label))
     question_lines = [
         line
         for line in before_expl
         if line not in choices and line not in metadata_lines and "review" not in line.lower()
     ]
     explanation = "\n".join(explanation_lines).strip()
-    if explanation.replace("\n", " ").strip() in {"Previous Next", "Next Previous", "Previous", "Next"}:
+    if explanation.replace("\n", " ").strip() in {
+        "Previous Next",
+        "Next Previous",
+        "Previous",
+        "Next",
+    }:
         explanation = ""
     return {
         "question_number": question_number or label_values["question"],
@@ -493,14 +504,18 @@ def parse_review_content(raw_text: str) -> dict[str, Any]:
 def summarize_group(items: list[dict[str, Any]], subject: str, label: str) -> str:
     keyword_counts = Counter()
     for item in items:
-        keyword_counts.update(tokenize_keywords(f"{item.get('question_text', '')} {item.get('explanation', '')}"))
+        keyword_counts.update(
+            tokenize_keywords(f"{item.get('question_text', '')} {item.get('explanation', '')}")
+        )
     common = [term for term, count in keyword_counts.most_common(4) if count >= 2]
     if common:
         return (
             f"This {subject.lower()} cluster centers on {label.lower()}. "
             f"Recurring themes include {', '.join(common[:3])}."
         )
-    return f"This {subject.lower()} cluster centers on {label.lower()} and needs targeted repetition."
+    return (
+        f"This {subject.lower()} cluster centers on {label.lower()} and needs targeted repetition."
+    )
 
 
 def review_first(items: list[dict[str, Any]], subject: str, label: str) -> str:
@@ -538,7 +553,9 @@ def question_ref(item: dict[str, Any]) -> str:
 
 
 class ReviewParser:
-    def parse_container(self, container: Locator, row_meta: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    def parse_container(
+        self, container: Locator, row_meta: dict[str, Any]
+    ) -> tuple[dict[str, Any], str]:
         structured = self.extract_review_structured_data(container)
         merged = {**row_meta, **structured}
         text_payload = ""
@@ -636,16 +653,28 @@ class ReviewParser:
             if match:
                 structured["section"] = normalize_space(match.group(1))
                 structured["question_number"] = match.group(2)
-        question_parts = [normalize_space(part) for part in data.get("question_parts", []) if normalize_space(part)]
+        question_parts = [
+            normalize_space(part)
+            for part in data.get("question_parts", [])
+            if normalize_space(part)
+        ]
         if question_parts:
             structured["question_text"] = "\n".join(question_parts)
         question_html = (data.get("question_html") or "").strip()
         if question_html:
             structured["question_html"] = question_html
-        answer_choices = [normalize_space(choice) for choice in data.get("answer_choices", []) if normalize_space(choice)]
+        answer_choices = [
+            normalize_space(choice)
+            for choice in data.get("answer_choices", [])
+            if normalize_space(choice)
+        ]
         if answer_choices:
             structured["answer_choices"] = answer_choices
-        answer_choices_html = [fragment.strip() for fragment in data.get("answer_choices_html", []) if fragment and fragment.strip()]
+        answer_choices_html = [
+            fragment.strip()
+            for fragment in data.get("answer_choices_html", [])
+            if fragment and fragment.strip()
+        ]
         if answer_choices_html:
             structured["answer_choices_html"] = answer_choices_html
         explanation = normalize_space(data.get("explanation"))
@@ -670,14 +699,22 @@ class ReviewParser:
         if status_kind:
             structured["answer_status"] = status_kind
         if status_text:
-            selected_match = re.search(r"You selected answer\s+([A-H])", status_text, flags=re.IGNORECASE)
-            correct_match = re.search(r"correct answer is\s+([A-H])", status_text, flags=re.IGNORECASE)
+            selected_match = re.search(
+                r"You selected answer\s+([A-H])", status_text, flags=re.IGNORECASE
+            )
+            correct_match = re.search(
+                r"correct answer is\s+([A-H])", status_text, flags=re.IGNORECASE
+            )
             if selected_match:
                 suffix = "Correct" if status_kind == "Correct" else "Incorrect"
                 structured["my_answer"] = f"{selected_match.group(1).upper()}; {suffix}"
             if correct_match:
                 structured["correct_answer"] = correct_match.group(1).upper()
-            if status_kind == "Correct" and not structured.get("my_answer") and structured.get("correct_answer"):
+            if (
+                status_kind == "Correct"
+                and not structured.get("my_answer")
+                and structured.get("correct_answer")
+            ):
                 structured["my_answer"] = f"{structured['correct_answer']}; Correct"
         correct_choice = normalize_space(data.get("correct_choice_letter"))
         if correct_choice and not structured.get("correct_answer"):
@@ -738,7 +775,9 @@ class OutputManager:
             LOG.warning("Could not parse %s; starting with an empty dataset.", self.json_path)
             return {}
         if isinstance(payload, list):
-            return {item["uid"]: item for item in payload if isinstance(item, dict) and item.get("uid")}
+            return {
+                item["uid"]: item for item in payload if isinstance(item, dict) and item.get("uid")
+            }
         return {}
 
     def has_uid(self, uid: str) -> bool:
@@ -809,7 +848,9 @@ class OutputManager:
                 )
             except subprocess.CalledProcessError as exc:
                 stderr = normalize_space(exc.stderr)
-                LOG.warning("Pandoc HTML export failed for %s: %s", markdown_path.name, stderr or exc)
+                LOG.warning(
+                    "Pandoc HTML export failed for %s: %s", markdown_path.name, stderr or exc
+                )
 
     def _warm_fragment_conversion_cache(self, records: list[dict[str, Any]]) -> None:
         if not self.pandoc_path:
@@ -818,14 +859,18 @@ class OutputManager:
         jobs_by_format: dict[str, list[tuple[tuple[str, str, bool], str]]] = defaultdict(list)
         seen_keys: set[tuple[str, str, bool]] = set()
         for record in records:
-            for fragment, target_format, strip_figures in self._fragment_conversion_requests(record):
+            for fragment, target_format, strip_figures in self._fragment_conversion_requests(
+                record
+            ):
                 prepared_fragment = (fragment or "").strip()
                 if not prepared_fragment:
                     continue
                 cache_key = (prepared_fragment, target_format, strip_figures)
                 if cache_key in seen_keys or cache_key in self.fragment_conversion_cache:
                     continue
-                prepared_html = self._prepare_fragment_for_markdown(prepared_fragment, strip_figures=strip_figures)
+                prepared_html = self._prepare_fragment_for_markdown(
+                    prepared_fragment, strip_figures=strip_figures
+                )
                 jobs_by_format[target_format].append((cache_key, prepared_html))
                 seen_keys.add(cache_key)
 
@@ -865,7 +910,9 @@ class OutputManager:
             parts = re.split(rf"^\s*{re.escape(token)}\s*$", stdout, flags=re.MULTILINE)
             if len(parts) == len(jobs):
                 for (cache_key, _prepared), part in zip(jobs, parts, strict=True):
-                    self.fragment_conversion_cache[cache_key] = self._postprocess_fragment_output(part, target_format)
+                    self.fragment_conversion_cache[cache_key] = self._postprocess_fragment_output(
+                        part, target_format
+                    )
                 return
             LOG.debug(
                 "Pandoc batch split mismatch for %s: expected %d parts, got %d",
@@ -876,7 +923,9 @@ class OutputManager:
 
         for cache_key, prepared in jobs:
             single_stdout = self._run_pandoc_html_conversion(prepared, target_format)
-            self.fragment_conversion_cache[cache_key] = self._postprocess_fragment_output(single_stdout, target_format)
+            self.fragment_conversion_cache[cache_key] = self._postprocess_fragment_output(
+                single_stdout, target_format
+            )
 
     def _refresh_record_assets(self) -> None:
         for uid, record in self.records.items():
@@ -925,7 +974,9 @@ class OutputManager:
         for record in records:
             row = record.copy()
             row["answer_choices"] = json.dumps(row.get("answer_choices", []), ensure_ascii=False)
-            row["answer_choices_html"] = json.dumps(row.get("answer_choices_html", []), ensure_ascii=False)
+            row["answer_choices_html"] = json.dumps(
+                row.get("answer_choices_html", []), ensure_ascii=False
+            )
             row["images"] = json.dumps(row.get("images", []), ensure_ascii=False)
             writer.writerow(row)
         return output.getvalue()
@@ -999,23 +1050,33 @@ class OutputManager:
         lines.append(f"- Section: {item.get('section') or 'Unknown'}")
         lines.append(f"- Subject: {item.get('subject_bucket') or 'Unknown'}")
         lines.append(f"- Module: {item.get('module') or 'Unknown'}")
-        lines.append(f"- Domain / Skill: {item.get('domain') or 'Unknown'} / {item.get('skill') or 'Unknown'}")
+        lines.append(
+            f"- Domain / Skill: {item.get('domain') or 'Unknown'} / {item.get('skill') or 'Unknown'}"
+        )
         lines.append(f"- My answer: {item.get('my_answer') or 'Unknown'}")
         lines.append(f"- Correct answer: {item.get('correct_answer') or 'Unknown'}")
         if include_images:
             self._append_record_images(lines, item)
         if item.get("screenshot_path"):
-            lines.append(f"- Screenshot: {relative_markdown_path(self.outputs_dir, item['screenshot_path'])}")
+            lines.append(
+                f"- Screenshot: {relative_markdown_path(self.outputs_dir, item['screenshot_path'])}"
+            )
         if item.get("html_snapshot_path"):
-            lines.append(f"- HTML snapshot: {relative_markdown_path(self.outputs_dir, item['html_snapshot_path'])}")
+            lines.append(
+                f"- HTML snapshot: {relative_markdown_path(self.outputs_dir, item['html_snapshot_path'])}"
+            )
         lines.extend(["", "#### Question", ""])
-        question_markdown = self._record_fragment_markdown(item, "question_html", item.get("question_text", ""))
+        question_markdown = self._record_fragment_markdown(
+            item, "question_html", item.get("question_text", "")
+        )
         lines.extend([question_markdown or "_Not parsed cleanly._", ""])
         if include_visual_context:
             self._append_visual_context(lines, item)
         self._append_answer_choices(lines, item)
         lines.extend(["#### Explanation", ""])
-        explanation_markdown = self._record_fragment_markdown(item, "explanation_html", item.get("explanation", ""))
+        explanation_markdown = self._record_fragment_markdown(
+            item, "explanation_html", item.get("explanation", "")
+        )
         lines.extend([explanation_markdown or "_Not found._", ""])
 
     def _append_record_images(self, lines: list[str], item: dict[str, Any]) -> None:
@@ -1064,7 +1125,9 @@ class OutputManager:
             lines.extend(f"- {choice}" for choice in item["answer_choices"])
             lines.append("")
 
-    def _record_fragment_markdown(self, item: dict[str, Any], html_key: str, plain_text: str) -> str:
+    def _record_fragment_markdown(
+        self, item: dict[str, Any], html_key: str, plain_text: str
+    ) -> str:
         html_fragment = item.get(html_key) or ""
         if html_fragment:
             converted = self._convert_html_fragment(
@@ -1134,7 +1197,9 @@ class OutputManager:
                 flags=re.IGNORECASE | re.DOTALL,
             )
         if strip_figures:
-            fragment = re.sub(r"<figure\b.*?</figure>", "", fragment, flags=re.IGNORECASE | re.DOTALL)
+            fragment = re.sub(
+                r"<figure\b.*?</figure>", "", fragment, flags=re.IGNORECASE | re.DOTALL
+            )
         fragment = re.sub(
             r"<mjx-container\b[^>]*>.*?<mjx-assistive-mml[^>]*>(.*?)</mjx-assistive-mml>.*?</mjx-container>",
             r"\1",
@@ -1298,9 +1363,7 @@ class OutputManager:
             return False
         if len(normalized) < 12:
             return False
-        if normalized.lower() in {"figure", "table", "visual"}:
-            return False
-        return True
+        return normalized.lower() not in {"figure", "table", "visual"}
 
     def _clean_report_markdown(self, markdown: str) -> str:
         return self._postprocess_markdown_fragment(markdown).strip() + "\n"
@@ -1326,7 +1389,9 @@ class OutputManager:
                 key=lambda entry: (-len(entry[1]), natural_sort_key(entry[0])),
             ):
                 lines.extend([f"### {label}", ""])
-                lines.append(f"- Affected tests/questions: {', '.join(question_ref(item) for item in items)}")
+                lines.append(
+                    f"- Affected tests/questions: {', '.join(question_ref(item) for item in items)}"
+                )
                 lines.append(f"- Weakness summary: {summarize_group(items, subject, label)}")
                 lines.append(f"- Review first: {review_first(items, subject, label)}")
                 lines.append("- Ready-to-paste prompts:")
@@ -1365,7 +1430,9 @@ class SatBluebookScraper:
             self.context.set_default_timeout(self.args.timeout_ms)
             if self.args.save_page_visits:
                 self.install_debug_hooks()
-            self.main_page = self.context.pages[0] if self.context.pages else self.context.new_page()
+            self.main_page = (
+                self.context.pages[0] if self.context.pages else self.context.new_page()
+            )
             self.main_page.set_default_timeout(self.args.timeout_ms)
             self.main_page.goto(self.args.start_url, wait_until="domcontentloaded")
             self.wait_for_ready_state(self.main_page)
@@ -1395,7 +1462,7 @@ class SatBluebookScraper:
                     self.ensure_ready_to_scrape(self.main_page, reprompt=False)
                     try:
                         self.process_test_card(self.main_page, card)
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         self.capture_error(self.main_page, f"test-failure-{slugify(test_name)}")
                         LOG.exception("Failed while scraping %s: %s", test_name, exc)
                 return
@@ -1411,10 +1478,8 @@ class SatBluebookScraper:
         try:
             page.wait_for_load_state("networkidle", timeout=4_000)
         except PlaywrightTimeoutError:
-            try:
+            with contextlib.suppress(PlaywrightTimeoutError):
                 page.wait_for_load_state("domcontentloaded", timeout=2_000)
-            except PlaywrightTimeoutError:
-                pass
         page.wait_for_timeout(750)
         if self.args.save_page_visits:
             self.snapshot_page(page, "wait_for_ready_state")
@@ -1483,10 +1548,16 @@ class SatBluebookScraper:
         return str(html_path)
 
     def ensure_ready_to_scrape(self, page: Page, reprompt: bool = True) -> None:
-        ready = self.on_test_list(page) or self.on_test_page(page) or self.on_questions_overview(page)
+        ready = (
+            self.on_test_list(page) or self.on_test_page(page) or self.on_questions_overview(page)
+        )
         if not ready and not reprompt and not self.args.force_login_prompt:
             self.wait_for_ready_state(page)
-            ready = self.on_test_list(page) or self.on_test_page(page) or self.on_questions_overview(page)
+            ready = (
+                self.on_test_list(page)
+                or self.on_test_page(page)
+                or self.on_questions_overview(page)
+            )
         if self.args.force_login_prompt or (reprompt and not ready):
             print(
                 "\nManual step: if College Board asks you to sign in, do it in the opened browser window.\n"
@@ -1495,14 +1566,20 @@ class SatBluebookScraper:
             )
             input()
             self.wait_for_ready_state(page)
-            ready = self.on_test_list(page) or self.on_test_page(page) or self.on_questions_overview(page)
+            ready = (
+                self.on_test_list(page)
+                or self.on_test_page(page)
+                or self.on_questions_overview(page)
+            )
         if not ready and reprompt:
             raise RuntimeError(
                 "The browser is not on a recognizable My Practice screen after the login prompt."
             )
 
     def on_test_list(self, page: Page) -> bool:
-        return self.any_text_visible(page, [r"SAT Practice Tests"]) and self.page_has_test_cards(page)
+        return self.any_text_visible(page, [r"SAT Practice Tests"]) and self.page_has_test_cards(
+            page
+        )
 
     def on_test_page(self, page: Page) -> bool:
         return (
@@ -1543,7 +1620,9 @@ class SatBluebookScraper:
     def any_text_visible(self, page: Page, patterns: list[str]) -> bool:
         for pattern in patterns:
             try:
-                if page.get_by_text(re.compile(pattern, flags=re.IGNORECASE)).first.is_visible(timeout=1_000):
+                if page.get_by_text(re.compile(pattern, flags=re.IGNORECASE)).first.is_visible(
+                    timeout=1_000
+                ):
                     return True
             except (PlaywrightTimeoutError, PlaywrightError):
                 continue
@@ -1651,10 +1730,8 @@ class SatBluebookScraper:
         self.dismiss_session_modal(page)
         card = page.locator(".carousel-score-card").nth(card_index)
         button = card.locator("button.details-button").first
-        try:
+        with contextlib.suppress(PlaywrightError, PlaywrightTimeoutError):
             card.scroll_into_view_if_needed(timeout=2_000)
-        except (PlaywrightError, PlaywrightTimeoutError):
-            pass
         if self.click_first_visible(button, required=False):
             return
         try:
@@ -1699,7 +1776,11 @@ class SatBluebookScraper:
             self.wait_for_questions_overview(page)
             row = self.find_row_for_target(page, row_target)
             if row is None:
-                LOG.warning("Could not refind incorrect row %d for %s; stopping early.", row_position + 1, test_name)
+                LOG.warning(
+                    "Could not refind incorrect row %d for %s; stopping early.",
+                    row_position + 1,
+                    test_name,
+                )
                 break
             row_meta = row_target["meta"]
             tentative_uid = make_uid(
@@ -1726,14 +1807,23 @@ class SatBluebookScraper:
                     self.outputs.upsert(record)
                     self.outputs.checkpoint_json()
                     LOG.info("Saved %s.", record.uid)
-            except Exception as exc:  # noqa: BLE001
-                self.capture_error(review_page, f"review-failure-{slugify(test_name)}-{row_position + 1}")
-                LOG.exception("Failed to scrape review page for %s row %d: %s", test_name, row_position + 1, exc)
+            except Exception as exc:
+                self.capture_error(
+                    review_page, f"review-failure-{slugify(test_name)}-{row_position + 1}"
+                )
+                LOG.exception(
+                    "Failed to scrape review page for %s row %d: %s",
+                    test_name,
+                    row_position + 1,
+                    exc,
+                )
             finally:
                 try:
                     self.return_to_questions_overview(page, review_page)
-                except Exception as cleanup_exc:  # noqa: BLE001
-                    self.capture_error(page, f"cleanup-failure-{slugify(test_name)}-{row_position + 1}")
+                except Exception as cleanup_exc:
+                    self.capture_error(
+                        page, f"cleanup-failure-{slugify(test_name)}-{row_position + 1}"
+                    )
                     LOG.exception(
                         "Failed to return to Questions Overview for %s row %d: %s",
                         test_name,
@@ -1745,7 +1835,9 @@ class SatBluebookScraper:
         if self.on_questions_overview(page):
             return
         try:
-            page.get_by_text(re.compile(r"Questions Overview", re.IGNORECASE)).first.wait_for(timeout=5_000)
+            page.get_by_text(re.compile(r"Questions Overview", re.IGNORECASE)).first.wait_for(
+                timeout=5_000
+            )
         except PlaywrightTimeoutError:
             page.wait_for_timeout(1_000)
 
@@ -1753,7 +1845,7 @@ class SatBluebookScraper:
         self.dismiss_session_modal(page)
         try:
             total_questions = self.total_questions_count(page)
-        except Exception:  # noqa: BLE001
+        except Exception:
             total_questions = 0
         page_size_buttons = page.locator("#questions-table .page-size button")
         try:
@@ -1770,7 +1862,9 @@ class SatBluebookScraper:
             if aria_disabled is not None or "selected" in classes:
                 return
             if self.click_first_visible(button, required=False):
-                self.wait_for_table_row_count(page, minimum=max(total_questions, 11) if total_questions > 10 else 1)
+                self.wait_for_table_row_count(
+                    page, minimum=max(total_questions, 11) if total_questions > 10 else 1
+                )
                 return
         try:
             labeled_select = page.get_by_label(re.compile(r"View", re.IGNORECASE))
@@ -1886,7 +1980,13 @@ class SatBluebookScraper:
             if text:
                 values.append(text)
         section = next(
-            (value for value in values if "math" in value.lower() or "reading" in value.lower() or "writing" in value.lower()),
+            (
+                value
+                for value in values
+                if "math" in value.lower()
+                or "reading" in value.lower()
+                or "writing" in value.lower()
+            ),
             "",
         )
         module = next((value for value in values if "module" in value.lower()), "")
@@ -1907,7 +2007,9 @@ class SatBluebookScraper:
         my_answer = ""
         answer_status = ""
         for value in values:
-            match = re.search(r"^([A-H]);\s*(correct|incorrect)$", value.strip(), flags=re.IGNORECASE)
+            match = re.search(
+                r"^([A-H]);\s*(correct|incorrect)$", value.strip(), flags=re.IGNORECASE
+            )
             if match:
                 my_answer = f"{match.group(1).upper()}; {match.group(2).capitalize()}"
                 answer_status = match.group(2).capitalize()
@@ -1956,7 +2058,9 @@ class SatBluebookScraper:
             pass
         raise RuntimeError("Could not find the Review control in the incorrect-question row.")
 
-    def scrape_review_page(self, page: Page, test_name: str, row_meta: dict[str, str]) -> WrongQuestionRecord:
+    def scrape_review_page(
+        self, page: Page, test_name: str, row_meta: dict[str, str]
+    ) -> WrongQuestionRecord:
         self.wait_for_review_screen(page)
         self.ensure_correct_answer_visible(page)
         container = self.review_container(page)
@@ -2017,9 +2121,15 @@ class SatBluebookScraper:
         if self.review_answer_reveal_visible(modal):
             return
 
-        label = modal.locator("label").filter(has_text=re.compile(r"Show correct answer and explanation", re.IGNORECASE)).first
+        label = (
+            modal.locator("label")
+            .filter(has_text=re.compile(r"Show correct answer and explanation", re.IGNORECASE))
+            .first
+        )
         checkbox_input = modal.locator("input[type='checkbox']").first
-        text_locator = modal.get_by_text(re.compile(r"Show correct answer and explanation", re.IGNORECASE)).first
+        text_locator = modal.get_by_text(
+            re.compile(r"Show correct answer and explanation", re.IGNORECASE)
+        ).first
 
         for _ in range(3):
             if self.review_answer_reveal_visible(modal):
@@ -2054,12 +2164,18 @@ class SatBluebookScraper:
                     clicked = False
             page.wait_for_timeout(600 if clicked else 300)
         if not self.review_answer_reveal_visible(modal):
-            LOG.warning("Could not reveal the correct answer/explanation before scraping this review modal.")
+            LOG.warning(
+                "Could not reveal the correct answer/explanation before scraping this review modal."
+            )
 
     def review_answer_reveal_visible(self, modal: Locator) -> bool:
         candidates = [
-            modal.locator(".answer-panel p.incorrect, .answer-panel p.correct, .answer-panel p.response"),
-            modal.locator(".answer-panel h3").filter(has_text=re.compile(r"Rationale", re.IGNORECASE)),
+            modal.locator(
+                ".answer-panel p.incorrect, .answer-panel p.correct, .answer-panel p.response"
+            ),
+            modal.locator(".answer-panel h3").filter(
+                has_text=re.compile(r"Rationale", re.IGNORECASE)
+            ),
             modal.locator(".answer-panel li.correct"),
         ]
         return self._first_visible(candidates) is not None
@@ -2104,7 +2220,9 @@ class SatBluebookScraper:
         handled_image_sources: set[str] = set()
         if html_markup:
             try:
-                images, handled_image_sources = extract_visual_assets_from_html_details(uid, html_markup, self.image_dir)
+                images, handled_image_sources = extract_visual_assets_from_html_details(
+                    uid, html_markup, self.image_dir
+                )
             except OSError as exc:
                 LOG.warning("Figure extraction failed for %s: %s", uid, exc)
 
@@ -2175,10 +2293,8 @@ class SatBluebookScraper:
                 self.wait_for_ready_state(score_page)
                 if self.on_questions_overview(score_page):
                     return
-            try:
+            with contextlib.suppress(PlaywrightTimeoutError):
                 score_page.go_back(wait_until="domcontentloaded", timeout=4_000)
-            except PlaywrightTimeoutError:
-                pass
             self.wait_for_ready_state(score_page)
             if self.on_questions_overview(score_page):
                 return
@@ -2244,7 +2360,7 @@ class SatBluebookScraper:
                 closed = True
                 break
         if not closed:
-            try:
+            with contextlib.suppress(PlaywrightError):
                 page.evaluate(
                     """
                     () => {
@@ -2260,12 +2376,8 @@ class SatBluebookScraper:
                     }
                     """
                 )
-            except PlaywrightError:
-                pass
-            try:
+            with contextlib.suppress(PlaywrightError):
                 page.keyboard.press("Escape")
-            except PlaywrightError:
-                pass
         try:
             page.locator(".test-questions-modal[aria-hidden='false']").first.wait_for(
                 state="hidden",
@@ -2282,7 +2394,11 @@ class SatBluebookScraper:
         regex: bool = False,
         required: bool = True,
     ) -> bool:
-        pattern = re.compile(text, flags=re.IGNORECASE) if regex else re.compile(re.escape(text), flags=re.IGNORECASE)
+        pattern = (
+            re.compile(text, flags=re.IGNORECASE)
+            if regex
+            else re.compile(re.escape(text), flags=re.IGNORECASE)
+        )
         locators = [
             page.get_by_role("button", name=pattern),
             page.get_by_role("link", name=pattern),
@@ -2387,7 +2503,9 @@ def rehydrate_records_from_snapshots(args: argparse.Namespace, outputs: OutputMa
         browser = playwright.chromium.launch(headless=True)
         page = browser.new_page()
         try:
-            page.set_content("<!DOCTYPE html><html><body></body></html>", wait_until="domcontentloaded")
+            page.set_content(
+                "<!DOCTYPE html><html><body></body></html>", wait_until="domcontentloaded"
+            )
             for record in pending:
                 html_path = Path(record["html_snapshot_path"])
                 if not html_path.exists():
@@ -2417,7 +2535,7 @@ def main() -> int:
             outputs.records = load_records_from_json(json_path)
             rehydrate_records_from_snapshots(args, outputs)
             outputs.finalize()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             LOG.exception("Rebuild failed: %s", exc)
             return 1
         LOG.info(
@@ -2436,7 +2554,7 @@ def main() -> int:
     except KeyboardInterrupt:
         LOG.warning("Interrupted by user.")
         return 130
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         LOG.exception("Scrape failed: %s", exc)
         return 1
     LOG.info(

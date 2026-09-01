@@ -1,28 +1,49 @@
-from satprep.training.sampler import select_drill
 from conftest import add_question
+
+from satprep.training.sampler import select_drill
 
 
 def _seed(db, n_hist_wrong=6, n_hist_right=10, n_fresh=14):
-    conn, path = db
+    conn, _path = db
     for i in range(n_hist_wrong):
-        qid = add_question(conn, passage=f"w{i}", stem=f"ws{i}?",
-                           choices=[f"w{i}c{l}" for l in "abcd"],
-                           source="bluebook_test", pool="historical",
-                           tags=("qualifier_strength",))
-        conn.execute("INSERT INTO attempts (session_id, question_id, chosen_letter, correct, confidence, time_ms, mode, attempted_at) VALUES (?,?,?,?,0,0,'historical','2026-03-01')",
-                     (f"hw{i}", qid, "B", 0))
+        qid = add_question(
+            conn,
+            passage=f"w{i}",
+            stem=f"ws{i}?",
+            choices=[f"w{i}c{c}" for c in "abcd"],
+            source="bluebook_test",
+            pool="historical",
+            tags=("qualifier_strength",),
+        )
+        conn.execute(
+            "INSERT INTO attempts (session_id, question_id, chosen_letter, correct, confidence, time_ms, mode, attempted_at) VALUES (?,?,?,?,0,0,'historical','2026-03-01')",
+            (f"hw{i}", qid, "B", 0),
+        )
     for i in range(n_hist_right):
-        qid = add_question(conn, passage=f"r{i}", stem=f"rs{i}?",
-                           choices=[f"r{i}c{l}" for l in "abcd"],
-                           source="bluebook_test", pool="historical",
-                           tags=("qualifier_strength", "paraphrase_precision"))
-        conn.execute("INSERT INTO attempts (session_id, question_id, chosen_letter, correct, confidence, time_ms, mode, attempted_at) VALUES (?,?,?,1,2,0,'historical','2026-03-01')",
-                     (f"hr{i}", qid, "A"))
+        qid = add_question(
+            conn,
+            passage=f"r{i}",
+            stem=f"rs{i}?",
+            choices=[f"r{i}c{c}" for c in "abcd"],
+            source="bluebook_test",
+            pool="historical",
+            tags=("qualifier_strength", "paraphrase_precision"),
+        )
+        conn.execute(
+            "INSERT INTO attempts (session_id, question_id, chosen_letter, correct, confidence, time_ms, mode, attempted_at) VALUES (?,?,?,1,2,0,'historical','2026-03-01')",
+            (f"hr{i}", qid, "A"),
+        )
     for i in range(n_fresh):
-        add_question(conn, passage=f"f{i}", stem=f"fs{i}?",
-                     choices=[f"f{i}c{l}" for l in "abcd"],
-                     source="college_board_question_bank", pool="fresh_training",
-                     difficulty="hard", tags=("qualifier_strength",))
+        add_question(
+            conn,
+            passage=f"f{i}",
+            stem=f"fs{i}?",
+            choices=[f"f{i}c{c}" for c in "abcd"],
+            source="college_board_question_bank",
+            pool="fresh_training",
+            difficulty="hard",
+            tags=("qualifier_strength",),
+        )
     conn.commit()
     return conn
 
@@ -42,7 +63,9 @@ def test_plan_has_explainable_components(db):
     for item in plan["items"]:
         assert item["why"], "every selection must record its reasons"
         labels = {lbl for lbl, _ in item["why"]}
-        assert any(l.startswith(("weak-tag", "skill-weakness", "difficulty", "base")) for l in labels)
+        assert any(
+            line.startswith(("weak-tag", "skill-weakness", "difficulty", "base")) for line in labels
+        )
 
 
 def test_targeted_mix_includes_old_wrong_and_fresh(db):
@@ -58,8 +81,12 @@ def test_targeted_mix_includes_old_wrong_and_fresh(db):
 
 def test_transfer_mode_excludes_previously_wrong(db):
     conn = _seed(db)
-    wrong_ids = {r[0] for r in conn.execute(
-        """SELECT question_id FROM attempts WHERE correct=0 AND mode='historical'""")}
+    wrong_ids = {
+        r[0]
+        for r in conn.execute(
+            """SELECT question_id FROM attempts WHERE correct=0 AND mode='historical'"""
+        )
+    }
     plan = select_drill(conn, "transfer_drill", count=10, seed="t")
     ids = {i["question_id"] for i in plan["items"]}
     assert not ids & wrong_ids, "transfer drill must not serve memorized errors"
@@ -78,20 +105,36 @@ def test_exposure_penalty_demotes_seen_questions(db):
 
     conn = _seed(db)
     c = conn
-    row = Question.from_row(c.execute(
-        "SELECT * FROM questions WHERE pool='historical' LIMIT 1").fetchone())
+    row = Question.from_row(
+        c.execute("SELECT * FROM questions WHERE pool='historical' LIMIT 1").fetchone()
+    )
     tags = ["qualifier_strength"]
-    weakness = {"tag": {"qualifier_strength": {"score": 60}},
-                "skill": {"Inferences": {"score": 40}}}
+    weakness = {
+        "tag": {"qualifier_strength": {"score": 60}},
+        "skill": {"Inferences": {"score": 40}},
+    }
     from types import SimpleNamespace
+
     fresh = Candidate(row, tags)
-    fresh.state = SimpleNamespace(times_seen=0, times_correct=0, times_wrong=0,
-                                  confident_wrong_streak=0, due_at=None, last_attempted_at=None,
-                                  interval_days=1.0)
+    fresh.state = SimpleNamespace(
+        times_seen=0,
+        times_correct=0,
+        times_wrong=0,
+        confident_wrong_streak=0,
+        due_at=None,
+        last_attempted_at=None,
+        interval_days=1.0,
+    )
     seen = Candidate(row, tags)
-    seen.state = SimpleNamespace(times_seen=4, times_correct=0, times_wrong=4,
-                                 confident_wrong_streak=1, due_at=None, last_attempted_at=None,
-                                 interval_days=1.0)
+    seen.state = SimpleNamespace(
+        times_seen=4,
+        times_correct=0,
+        times_wrong=4,
+        confident_wrong_streak=1,
+        due_at=None,
+        last_attempted_at=None,
+        interval_days=1.0,
+    )
     score_candidate(fresh, weakness)
     score_candidate(seen, weakness)
     assert fresh.score > seen.score
@@ -122,8 +165,12 @@ def test_seed_reuse_creates_distinct_sessions(db):
 
 def test_transfer_fallback_excludes_memorized_errors(db):
     conn = _seed(db, n_hist_wrong=30, n_hist_right=2, n_fresh=2)
-    wrong_ids = {r[0] for r in conn.execute(
-        "SELECT question_id FROM attempts WHERE correct=0 AND mode='historical'")}
+    wrong_ids = {
+        r[0]
+        for r in conn.execute(
+            "SELECT question_id FROM attempts WHERE correct=0 AND mode='historical'"
+        )
+    }
     plan = select_drill(conn, "transfer_drill", count=25, seed="over")
     ids = {i["question_id"] for i in plan["items"]}
     assert not ids & wrong_ids

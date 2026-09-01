@@ -67,8 +67,7 @@ def parse_snapshot(html: str) -> ParsedQuestion:
     # the last one that looks like a question (ends with ? or starts with a
     # typical directive). Everything earlier is passage material.
     body_divs = [
-        d for d in panel.find_all("div", recursive=False)
-        if d is not None and not d.find("h3")
+        d for d in panel.find_all("div", recursive=False) if d is not None and not d.find("h3")
     ]
     stem_idx = -1
     for idx in range(len(body_divs) - 1, -1, -1):
@@ -91,17 +90,22 @@ def parse_snapshot(html: str) -> ParsedQuestion:
         start_letter = start.upper() if isinstance(start, str) and len(start) == 1 else "A"
         for offset, li in enumerate(ol.find_all("li", recursive=False)):
             classes = li.get("class") or []
-            out.choices.append({
-                "letter": chr(ord(start_letter) + offset),
-                "text": _node_text(li),
-                "is_correct": "correct" in classes,
-            })
+            out.choices.append(
+                {
+                    "letter": chr(ord(start_letter) + offset),
+                    "text": _node_text(li),
+                    "is_correct": "correct" in classes,
+                }
+            )
     for c in out.choices:
         if c["is_correct"]:
             out.correct_letter = c["letter"]
             break
 
-    status_p = answer_panel.find("p", class_=lambda c: c and ("response" in c or "incorrect" in c or "correct" in c))
+    status_p = answer_panel.find(
+        "p",
+        class_=lambda c: bool(c) and ("response" in c or "incorrect" in c or "correct" in c),
+    )
     if status_p:
         status_text = _clean(status_p.get_text(" "))
         m_sel = _SELECTED_RE.search(status_text)
@@ -113,7 +117,11 @@ def parse_snapshot(html: str) -> ParsedQuestion:
                 out.correct_letter = m_key.group(1).upper()
 
     rationale_h3 = next(
-        (h for h in answer_panel.find_all("h3") if re.search(r"rationale", _clean(h.get_text(" ")), re.I)),
+        (
+            h
+            for h in answer_panel.find_all("h3")
+            if re.search(r"rationale", _clean(h.get_text(" ")), re.I)
+        ),
         None,
     )
     if rationale_h3:

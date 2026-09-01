@@ -1,4 +1,5 @@
 """Tests for the auditable question-review persistence workflow (issue #37)."""
+
 from __future__ import annotations
 
 import json
@@ -15,7 +16,6 @@ from satprep.reviews import (
     ReviewStateError,
     delete_review,
     edit_review,
-    ensure_review_schema,
     export_review,
     get_review,
     list_reviews,
@@ -31,6 +31,7 @@ from satprep.reviews import (
 @pytest.fixture
 def db(tmp_path):
     import sqlite3
+
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.executescript("""
@@ -62,7 +63,8 @@ def db(tmp_path):
     """)
     conn.execute(
         """INSERT INTO questions (fingerprint, source, correct_letter, pool, imported_at)
-           VALUES ('fp-1', 'college_board_question_bank', 'B', 'fresh_training', '2026-01-01')""")
+           VALUES ('fp-1', 'college_board_question_bank', 'B', 'fresh_training', '2026-01-01')"""
+    )
     conn.commit()
     yield conn
     conn.close()
@@ -70,8 +72,11 @@ def db(tmp_path):
 
 def _draft(conn, qid=1, fp="fp-1"):
     return upsert_draft(
-        conn, question_id=qid, question_fingerprint=fp,
-        tested_task="inference", tempting_answer="overstates the evidence",
+        conn,
+        question_id=qid,
+        question_fingerprint=fp,
+        tested_task="inference",
+        tempting_answer="overstates the evidence",
         exact_failure="adds 'always' where the passage says 'often'",
         correct_reasoning="the correct answer stays within the passage's scope",
         kb_tactic_refs=["kb/wiki/summaries/settele-strong-words.md"],
@@ -84,6 +89,7 @@ def _draft(conn, qid=1, fp="fp-1"):
 # ---------------------------------------------------------------------------
 # Draft creation + duplicate prevention
 # ---------------------------------------------------------------------------
+
 
 def test_upsert_draft_creates_and_round_trips(db):
     rev = _draft(db)
@@ -102,7 +108,7 @@ def test_upsert_draft_creates_and_round_trips(db):
 def test_upsert_draft_updates_existing_draft_in_place(db):
     first = _draft(db)
     second = _draft(db, fp="fp-1")
-    assert first.id == second.id          # same row, not a duplicate
+    assert first.id == second.id  # same row, not a duplicate
     rows = db.execute("SELECT COUNT(*) FROM question_reviews").fetchone()[0]
     assert rows == 1
 
@@ -116,13 +122,13 @@ def test_upsert_draft_refuses_to_overwrite_approved(db):
 
 def test_upsert_draft_unknown_question_raises(db):
     with pytest.raises(ValueError):
-        upsert_draft(db, question_id=999, question_fingerprint="fp-x",
-                     tested_task="t")
+        upsert_draft(db, question_id=999, question_fingerprint="fp-x", tested_task="t")
 
 
 # ---------------------------------------------------------------------------
 # State transitions
 # ---------------------------------------------------------------------------
+
 
 def test_draft_to_approved_to_edited_to_rejected(db):
     rev = _draft(db)
@@ -131,7 +137,7 @@ def test_draft_to_approved_to_edited_to_rejected(db):
     assert approved.approved_at is not None
     edited = transition(db, rev.id, EDITED, reason="fix wording", actor="tester")
     assert edited.state == EDITED
-    assert edited.approved_at is not None    # keeps original approval time
+    assert edited.approved_at is not None  # keeps original approval time
     rejected = transition(db, rev.id, REJECTED, reason="not useful", actor="tester")
     assert rejected.state == REJECTED
 
@@ -148,9 +154,15 @@ def test_invalid_transitions_raise(db):
 
 
 def test_approve_requires_exact_failure(db):
-    rev = upsert_draft(db, question_id=1, question_fingerprint="fp-1",
-                       tested_task="t", tempting_answer="x", exact_failure="",
-                       correct_reasoning="y")
+    rev = upsert_draft(
+        db,
+        question_id=1,
+        question_fingerprint="fp-1",
+        tested_task="t",
+        tempting_answer="x",
+        exact_failure="",
+        correct_reasoning="y",
+    )
     with pytest.raises(ReviewStateError):
         transition(db, rev.id, APPROVED, reason="ok", actor="tester")
 
@@ -167,8 +179,9 @@ def test_approve_stale_review_is_blocked(db):
 def test_provenance_records_edits(db):
     rev = _draft(db)
     transition(db, rev.id, APPROVED, reason="initial approval", actor="alice")
-    edited = edit_review(db, rev.id, exact_failure="rewritten failure",
-                         actor="bob", reason="clearer wording")
+    edited = edit_review(
+        db, rev.id, exact_failure="rewritten failure", actor="bob", reason="clearer wording"
+    )
     notes = json.loads(edited.provenance_json)
     assert len(notes["edits"]) >= 2
     assert notes["edits"][-1]["type"] == "edit"
@@ -180,10 +193,10 @@ def test_provenance_records_edits(db):
 # Edit
 # ---------------------------------------------------------------------------
 
+
 def test_edit_changes_fields_and_logs(db):
     rev = _draft(db)
-    edited = edit_review(db, rev.id, correct_reasoning="new reasoning",
-                         actor="c", reason="improve")
+    edited = edit_review(db, rev.id, correct_reasoning="new reasoning", actor="c", reason="improve")
     assert edited.correct_reasoning == "new reasoning"
     notes = json.loads(edited.provenance_json)
     assert any(e.get("type") == "edit" for e in notes["edits"])
@@ -200,6 +213,7 @@ def test_edit_noop_does_not_log(db):
 # ---------------------------------------------------------------------------
 # Stale references
 # ---------------------------------------------------------------------------
+
 
 def test_stale_flag_set_on_fingerprint_drift(db):
     rev = _draft(db)
@@ -236,6 +250,7 @@ def test_delete_approved_requires_reject_first(db):
 # ---------------------------------------------------------------------------
 # Markdown export
 # ---------------------------------------------------------------------------
+
 
 def test_export_draft_is_blocked(db, tmp_path):
     rev = _draft(db)
@@ -289,6 +304,7 @@ def test_export_stale_review_blocked(db, tmp_path):
 # SQLite-is-authoritative guarantee
 # ---------------------------------------------------------------------------
 
+
 def test_review_does_not_copy_canonical_data(db):
     """The review row stores only diagnosis + join keys. The passage,
     stem, choices, correct letter and rationale stay in questions.
@@ -296,11 +312,9 @@ def test_review_does_not_copy_canonical_data(db):
     review row at all — citations collapse to {role, letter?, ref?}
     refs that point at the authoritative questions row."""
     rev = _draft(db)
-    row = db.execute(
-        "SELECT * FROM question_reviews WHERE id=?", (rev.id,)).fetchone()
-    for col in ("passage", "stem", "choices_json", "correct_letter",
-                "rationale"):
-        assert col not in row.keys(), f"review must not carry canonical {col}"
+    row = db.execute("SELECT * FROM question_reviews WHERE id=?", (rev.id,)).fetchone()
+    for col in ("passage", "stem", "choices_json", "correct_letter", "rationale"):
+        assert col not in row, f"review must not carry canonical {col}"
     # The evidence_json carries only non-canonical refs.
     evidence = json.loads(row["evidence_json"])
     assert all(set(c) <= {"role", "letter", "ref"} for c in evidence)
@@ -313,6 +327,7 @@ def test_review_does_not_copy_canonical_data(db):
 
 def test_module_boundary_no_training_import():
     import satprep.reviews as rv
+
     src = pathlib.Path(rv.__file__).read_text()
     assert "from .training" not in src
     assert "import .training" not in src
@@ -323,13 +338,18 @@ def test_module_boundary_no_training_import():
 # threads Codex raised on commit 19f1aec.
 # ---------------------------------------------------------------------------
 
+
 def test_export_emits_required_frontmatter(db, tmp_path):
     """P1 finding 3899816853: the exported Markdown must carry
     `student_answer`, `correct_answer`, and `confidence` so it passes
     `scripts/check_kb.py` line 71-73 + 206-210."""
     rev = upsert_draft(
-        db, question_id=1, question_fingerprint="fp-1",
-        student_answer="A", correct_answer="B", confidence="medium",
+        db,
+        question_id=1,
+        question_fingerprint="fp-1",
+        student_answer="A",
+        correct_answer="B",
+        confidence="medium",
         tested_task="inference",
         exact_failure="adds 'always' where the passage says 'often'",
         correct_reasoning="the correct answer stays within passage scope",
@@ -345,6 +365,7 @@ def test_export_emits_required_frontmatter(db, tmp_path):
     assert "confidence: medium" in text
     # All three must be valid KB values too (line 206-210).
     import yaml
+
     fm = yaml.safe_load(text.split("---\n", 2)[1])
     assert fm["student_answer"] in {"A", "B", "C", "D", "E"}
     assert fm["correct_answer"] in {"A", "B", "C", "D", "E"}
@@ -375,8 +396,9 @@ def test_stale_when_question_inactive(db):
 def test_stale_when_stored_fingerprint_empty(db):
     """P2 finding 3899816860: a review with no stored fingerprint
     cannot verify against the corpus; treat as stale so it surfaces."""
-    rev = upsert_draft(db, question_id=1, question_fingerprint="",
-                       tested_task="t", exact_failure="ef")
+    rev = upsert_draft(
+        db, question_id=1, question_fingerprint="", tested_task="t", exact_failure="ef"
+    )
     again = get_review(db, rev.id)
     assert again.stale is True
 
@@ -401,8 +423,7 @@ def test_edit_rejected_review_is_blocked(db):
     rev = _draft(db)
     transition(db, rev.id, REJECTED, reason="not useful", actor="t")
     with pytest.raises(ReviewStateError):
-        edit_review(db, rev.id, exact_failure="rewrite",
-                    actor="bob", reason="tidy-up")
+        edit_review(db, rev.id, exact_failure="rewrite", actor="bob", reason="tidy-up")
 
 
 def test_edit_stale_review_is_blocked(db):
@@ -412,8 +433,7 @@ def test_edit_stale_review_is_blocked(db):
     db.execute("UPDATE questions SET fingerprint='fp-2' WHERE id=1")
     db.commit()
     with pytest.raises(ReviewStateError):
-        edit_review(db, rev.id, exact_failure="tidy",
-                    actor="bob", reason="improve")
+        edit_review(db, rev.id, exact_failure="tidy", actor="bob", reason="improve")
 
 
 def test_edit_approved_review_transitions_to_edited(db):
@@ -422,8 +442,9 @@ def test_edit_approved_review_transitions_to_edited(db):
     lifecycle (was approved then edited)."""
     rev = _draft(db)
     transition(db, rev.id, APPROVED, reason="initial", actor="alice")
-    edited = edit_review(db, rev.id, exact_failure="new failure text",
-                         actor="bob", reason="clearer")
+    edited = edit_review(
+        db, rev.id, exact_failure="new failure text", actor="bob", reason="clearer"
+    )
     assert edited.state == EDITED
 
 
@@ -431,6 +452,7 @@ def test_delete_review_writes_tombstone(db):
     """P2 finding 3899816877: deletion must leave an audit record so
     'what was deleted, when, by whom, why' survives."""
     from satprep.reviews import list_deletions
+
     rev = _draft(db)
     delete_review(db, rev.id, actor="alice", reason="superseded")
     tombstones = list_deletions(db)
@@ -445,8 +467,9 @@ def test_delete_review_writes_tombstone(db):
     assert snap["tested_task"] == "inference"
     assert snap["exact_failure"].startswith("adds 'always'")
     # The review row itself is gone.
-    assert db.execute("SELECT COUNT(*) FROM question_reviews "
-                      "WHERE id=?", (rev.id,)).fetchone()[0] == 0
+    assert (
+        db.execute("SELECT COUNT(*) FROM question_reviews WHERE id=?", (rev.id,)).fetchone()[0] == 0
+    )
 
 
 def test_upsert_draft_merges_prior_edits_and_keeps_first_generated_at(db):
@@ -502,8 +525,10 @@ def test_review_show_cli_subcommand_exposes_full_body(db, tmp_path):
     """P1 finding 3899816897: `satprep review show` exposes the
     draft/approved/edited body so the operator can inspect it before
     approving."""
-    from satprep import cli as cli_mod
     import sqlite3 as _sq
+
+    from satprep import cli as cli_mod
+
     # The CLI's `cmd_review_show` opens a fresh connection via
     # `db_context()`, which delegates to `connect(config.DB_PATH)`.
     # Point it at a freshly-seeded file DB so the in-memory `db`
@@ -534,14 +559,19 @@ def test_review_show_cli_subcommand_exposes_full_body(db, tmp_path):
     """)
     fresh.close()
     import satprep.config as cfg_mod
+
     saved = cfg_mod.DB_PATH
     cfg_mod.DB_PATH = db_path
     try:
         seeded = _sq.connect(str(db_path))
         seeded.row_factory = _sq.Row
         rev = upsert_draft(
-            seeded, question_id=1, question_fingerprint="fp-1",
-            student_answer="A", correct_answer="B", confidence="medium",
+            seeded,
+            question_id=1,
+            question_fingerprint="fp-1",
+            student_answer="A",
+            correct_answer="B",
+            confidence="medium",
             tested_task="inference",
             exact_failure="adds 'always' where the passage says 'often'",
             correct_reasoning="the correct answer stays within passage scope",
@@ -551,7 +581,9 @@ def test_review_show_cli_subcommand_exposes_full_body(db, tmp_path):
         review_id = rev.id
         seeded.close()
         args = type("A", (), {"id": review_id})()
-        import io, contextlib
+        import contextlib
+        import io
+
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             cli_mod.cmd_review_show(args)
@@ -570,19 +602,22 @@ def test_evidence_strips_canonical_text(db):
     correct_choice / passage_excerpt). Those roles collapse to
     non-canonical {role, letter?, ref?} refs."""
     rev = upsert_draft(
-        db, question_id=1, question_fingerprint="fp-1",
-        tested_task="t", exact_failure="ef",
-        evidence=[{"role": "stem", "text": "Which supports the claim? " * 10},
-                  {"role": "student_choice", "letter": "A",
-                   "text": "long choice text " * 20},
-                  {"role": "correct_choice", "letter": "B",
-                   "text": "short choice"},
-                  {"role": "passage_excerpt", "text": "P" * 400},
-                  {"role": "kb_ref", "ref": "kb/wiki/summaries/x"}])
+        db,
+        question_id=1,
+        question_fingerprint="fp-1",
+        tested_task="t",
+        exact_failure="ef",
+        evidence=[
+            {"role": "stem", "text": "Which supports the claim? " * 10},
+            {"role": "student_choice", "letter": "A", "text": "long choice text " * 20},
+            {"role": "correct_choice", "letter": "B", "text": "short choice"},
+            {"role": "passage_excerpt", "text": "P" * 400},
+            {"role": "kb_ref", "ref": "kb/wiki/summaries/x"},
+        ],
+    )
     evidence = json.loads(rev.evidence_json)
     for e in evidence:
-        if e["role"] in {"stem", "student_choice", "correct_choice",
-                         "passage_excerpt"}:
+        if e["role"] in {"stem", "student_choice", "correct_choice", "passage_excerpt"}:
             # The canonical role is preserved but the text is dropped.
             assert "text" not in e
         if e["role"] == "kb_ref":
@@ -594,10 +629,16 @@ def test_review_records_student_answer_correct_answer_confidence(db):
     """P1 finding 3899816853: the review row records the join keys the
     KB export needs; without them the export frontmatter is incomplete
     and the file fails the KB lint."""
-    rev = upsert_draft(db, question_id=1, question_fingerprint="fp-1",
-                       student_answer="A", correct_answer="B",
-                       confidence="high",
-                       tested_task="t", exact_failure="ef")
+    rev = upsert_draft(
+        db,
+        question_id=1,
+        question_fingerprint="fp-1",
+        student_answer="A",
+        correct_answer="B",
+        confidence="high",
+        tested_task="t",
+        exact_failure="ef",
+    )
     assert rev.student_answer == "A"
     assert rev.correct_answer == "B"
     assert rev.confidence == "high"

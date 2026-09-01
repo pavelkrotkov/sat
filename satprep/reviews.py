@@ -40,6 +40,7 @@ This module never mutates the versioned KB on its own: `export_review`
 writes a file ONLY when called with `dry_run=False` after an explicit
 approval has been recorded.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -84,6 +85,7 @@ class DuplicateReviewError(ValueError):
 # Data model
 # ---------------------------------------------------------------------------
 
+
 @dataclasses.dataclass(frozen=True)
 class Review:
     id: int
@@ -94,20 +96,20 @@ class Review:
     updated_at: str
     approved_at: str | None
     exported_at: str | None
-    generator: str          # rule | llm
-    model: str              # "" for rule
+    generator: str  # rule | llm
+    model: str  # "" for rule
     tested_task: str
     tempting_answer: str
     exact_failure: str
     correct_reasoning: str
     kb_tactic_refs: list[str]
     error_taxonomy: list[str]
-    evidence_json: str      # JSON array of {role, letter?, ref?, text} (non-canonical refs only)
-    provenance_json: str    # JSON object: {edits: [...], generator_notes: {...}}
+    evidence_json: str  # JSON array of {role, letter?, ref?, text} (non-canonical refs only)
+    provenance_json: str  # JSON object: {edits: [...], generator_notes: {...}}
     student_answer: str = ""  # join key for KB export frontmatter
     correct_answer: str = ""  # join key for KB export frontmatter
-    confidence: str = ""      # high | medium | low
-    stale: bool = False     # set by loader when fingerprint mismatch
+    confidence: str = ""  # high | medium | low
+    stale: bool = False  # set by loader when fingerprint mismatch
 
 
 # ---------------------------------------------------------------------------
@@ -169,8 +171,7 @@ def _migrate_review_schema(conn) -> None:
     """Forward-migrate the reviews tables: add the student/correct/conf
     columns on older DBs so the export frontmatter and the per-thread
     audit reply are aligned with the current schema."""
-    cols = {r["name"] for r in conn.execute(
-        "PRAGMA table_info(question_reviews)").fetchall()}
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(question_reviews)").fetchall()}
     for col, default in (
         ("student_answer", "''"),
         ("correct_answer", "''"),
@@ -178,21 +179,22 @@ def _migrate_review_schema(conn) -> None:
     ):
         if col not in cols:
             conn.execute(
-                f"ALTER TABLE question_reviews "
-                f"ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}")
+                f"ALTER TABLE question_reviews ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}"
+            )
 
 
 def _current_fingerprint(conn, question_id: int) -> str:
     row = conn.execute(
-        "SELECT fingerprint FROM questions WHERE id=? AND active=1",
-        (question_id,)).fetchone()
+        "SELECT fingerprint FROM questions WHERE id=? AND active=1", (question_id,)
+    ).fetchone()
     return row["fingerprint"] if row else ""
 
 
 def _question_exists(conn, question_id: int) -> bool:
-    return conn.execute(
-        "SELECT 1 FROM questions WHERE id=? AND active=1",
-        (question_id,)).fetchone() is not None
+    return (
+        conn.execute("SELECT 1 FROM questions WHERE id=? AND active=1", (question_id,)).fetchone()
+        is not None
+    )
 
 
 def _question_active(conn, question_id: int) -> bool:
@@ -200,8 +202,7 @@ def _question_active(conn, question_id: int) -> bool:
     Used to distinguish "missing question" from "inactive question" —
     both make a review orphaned, but the import path can resurrect the
     latter while the former is permanently gone."""
-    row = conn.execute(
-        "SELECT active FROM questions WHERE id=?", (question_id,)).fetchone()
+    row = conn.execute("SELECT active FROM questions WHERE id=?", (question_id,)).fetchone()
     if row is None:
         return False
     return bool(row["active"])
@@ -210,29 +211,37 @@ def _question_active(conn, question_id: int) -> bool:
 def _review_state(conn, review_id: int) -> str | None:
     """Fetch only the review's current state, without recomputing
     derived flags. Returns None when the row is absent."""
-    row = conn.execute(
-        "SELECT state FROM question_reviews WHERE id=?", (review_id,)).fetchone()
+    row = conn.execute("SELECT state FROM question_reviews WHERE id=?", (review_id,)).fetchone()
     return row["state"] if row else None
 
 
 def _latest_review_for_question(conn, question_id: int):
     return conn.execute(
-        "SELECT * FROM question_reviews WHERE question_id=? "
-        "ORDER BY id DESC LIMIT 1", (question_id,)).fetchone()
+        "SELECT * FROM question_reviews WHERE question_id=? ORDER BY id DESC LIMIT 1",
+        (question_id,),
+    ).fetchone()
 
 
-def upsert_draft(conn, *, question_id: int, question_fingerprint: str,
-                 student_answer: str = "",
-                 correct_answer: str = "",
-                 confidence: str = "",
-                 generator: str = GENERATOR_RULE, model: str = "",
-                 tested_task: str = "", tempting_answer: str = "",
-                 exact_failure: str = "", correct_reasoning: str = "",
-                 kb_tactic_refs: list[str] | None = None,
-                 error_taxonomy: list[str] | None = None,
-                 evidence: list[dict] | None = None,
-                 evidence_refs: list[dict] | None = None,
-                 generator_notes: dict | None = None) -> Review:
+def upsert_draft(
+    conn,
+    *,
+    question_id: int,
+    question_fingerprint: str,
+    student_answer: str = "",
+    correct_answer: str = "",
+    confidence: str = "",
+    generator: str = GENERATOR_RULE,
+    model: str = "",
+    tested_task: str = "",
+    tempting_answer: str = "",
+    exact_failure: str = "",
+    correct_reasoning: str = "",
+    kb_tactic_refs: list[str] | None = None,
+    error_taxonomy: list[str] | None = None,
+    evidence: list[dict] | None = None,
+    evidence_refs: list[dict] | None = None,
+    generator_notes: dict | None = None,
+) -> Review:
     """Create a draft review, or update the existing DRAFT for the same
     question. Refuses to overwrite an APPROVED/EDITED/REJECTED review;
     the caller must explicitly transition (approve a new draft or edit
@@ -252,7 +261,8 @@ def upsert_draft(conn, *, question_id: int, question_fingerprint: str,
         if existing_state in EXPORTABLE_STATES:
             raise DuplicateReviewError(
                 f"question {question_id} already has a {existing_state} review; "
-                f"edit it explicitly or reject it first")
+                f"edit it explicitly or reject it first"
+            )
         if existing_state == REJECTED:
             # PR-44 round-1 P2: rejected reviews are terminal. Refuse to
             # overwrite the diagnosis / provenance / generated content;
@@ -260,7 +270,8 @@ def upsert_draft(conn, *, question_id: int, question_fingerprint: str,
             # (delete_review records it in review_deletions).
             raise ReviewStateError(
                 f"question {question_id} already has a rejected review; "
-                f"delete it explicitly before regenerating a new draft")
+                f"delete it explicitly before regenerating a new draft"
+            )
         # existing is DRAFT — fall through to the in-place update.
     now = utc_now()
     notes = dict(generator_notes or {})
@@ -280,17 +291,18 @@ def upsert_draft(conn, *, question_id: int, question_fingerprint: str,
         # we must pull `edits` and `first_generated_at` from the prior
         # row if it had them.
         prev_notes = json.loads(existing["provenance_json"] or "{}")
-        notes.setdefault("first_generated_at",
-                         prev_notes.get("first_generated_at", now))
+        notes.setdefault("first_generated_at", prev_notes.get("first_generated_at", now))
         # Merge prior edit log; the new generator run records a fresh
         # generation entry at the head of the array.
         prev_edits = list(prev_notes.get("edits", []) or [])
-        prev_edits.append({
-            "at": now,
-            "type": "regenerate",
-            "actor": (generator_notes or {}).get("actor", ""),
-            "reason": "upsert_draft regenerated an existing draft",
-        })
+        prev_edits.append(
+            {
+                "at": now,
+                "type": "regenerate",
+                "actor": (generator_notes or {}).get("actor", ""),
+                "reason": "upsert_draft regenerated an existing draft",
+            }
+        )
         notes["edits"] = prev_edits
         conn.execute(
             """UPDATE question_reviews SET
@@ -300,12 +312,24 @@ def upsert_draft(conn, *, question_id: int, question_fingerprint: str,
                  evidence_json=?, provenance_json=?,
                  student_answer=?, correct_answer=?, confidence=?
                WHERE id=?""",
-            (question_fingerprint, now, generator, model,
-             tested_task, tempting_answer, exact_failure, correct_reasoning,
-             json.dumps(kb_tactic_refs or []), json.dumps(error_taxonomy or []),
-             json.dumps(refs), json.dumps(notes),
-             student_answer, correct_answer, confidence,
-             existing["id"]),
+            (
+                question_fingerprint,
+                now,
+                generator,
+                model,
+                tested_task,
+                tempting_answer,
+                exact_failure,
+                correct_reasoning,
+                json.dumps(kb_tactic_refs or []),
+                json.dumps(error_taxonomy or []),
+                json.dumps(refs),
+                json.dumps(notes),
+                student_answer,
+                correct_answer,
+                confidence,
+                existing["id"],
+            ),
         )
         conn.commit()
         return get_review(conn, existing["id"])
@@ -317,12 +341,28 @@ def upsert_draft(conn, *, question_id: int, question_fingerprint: str,
             error_taxonomy, evidence_json, provenance_json,
             student_answer, correct_answer, confidence)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (question_id, question_fingerprint, DRAFT, now, now, None, None,
-         generator, model, tested_task, tempting_answer, exact_failure,
-         correct_reasoning, json.dumps(kb_tactic_refs or []),
-         json.dumps(error_taxonomy or []), json.dumps(refs),
-         json.dumps(notes),
-         student_answer, correct_answer, confidence),
+        (
+            question_id,
+            question_fingerprint,
+            DRAFT,
+            now,
+            now,
+            None,
+            None,
+            generator,
+            model,
+            tested_task,
+            tempting_answer,
+            exact_failure,
+            correct_reasoning,
+            json.dumps(kb_tactic_refs or []),
+            json.dumps(error_taxonomy or []),
+            json.dumps(refs),
+            json.dumps(notes),
+            student_answer,
+            correct_answer,
+            confidence,
+        ),
     )
     conn.commit()
     rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -333,12 +373,10 @@ def upsert_draft(conn, *, question_id: int, question_fingerprint: str,
 # are dropped from the persisted evidence by default to keep the review
 # row from duplicating the authoritative SQLite fields (PR-44 round-1
 # P1). Pass `evidence_refs` explicitly to opt in to a different shape.
-_CANONICAL_ROLES = {"stem", "student_choice", "correct_choice",
-                    "passage_excerpt"}
+_CANONICAL_ROLES = {"stem", "student_choice", "correct_choice", "passage_excerpt"}
 
 
-def _coerce_evidence_refs(citations: list[dict] | None,
-                           refs: list[dict] | None) -> list[dict]:
+def _coerce_evidence_refs(citations: list[dict] | None, refs: list[dict] | None) -> list[dict]:
     """Normalize whatever the caller passed into a list of
     non-canonical {role, letter?, ref?, text?} dicts.
 
@@ -353,8 +391,7 @@ def _coerce_evidence_refs(citations: list[dict] | None,
         for r in refs:
             if not isinstance(r, dict):
                 continue
-            out.append({k: v for k, v in r.items()
-                        if k in {"role", "letter", "ref", "text"}})
+            out.append({k: v for k, v in r.items() if k in {"role", "letter", "ref", "text"}})
         return out
     for c in citations or []:
         if not isinstance(c, dict):
@@ -368,8 +405,7 @@ def _coerce_evidence_refs(citations: list[dict] | None,
             entry["ref"] = "questions:" + str(c.get("question_id", ""))
             out.append(entry)
             continue
-        out.append({k: v for k, v in c.items()
-                    if k in {"role", "letter", "ref", "text"}})
+        out.append({k: v for k, v in c.items() if k in {"role", "letter", "ref", "text"}})
     return out
 
 
@@ -378,18 +414,22 @@ def get_review(conn, review_id: int) -> Review:
     current questions.fingerprint. Raises KeyError when absent. A
     review whose question is missing or inactive is also marked stale
     (PR-44 round-1 P2 — the documented orphan-reference behaviour)."""
-    row = conn.execute(
-        "SELECT * FROM question_reviews WHERE id=?", (review_id,)).fetchone()
+    row = conn.execute("SELECT * FROM question_reviews WHERE id=?", (review_id,)).fetchone()
     if row is None:
         raise KeyError(f"no review with id={review_id}")
     stale = _compute_stale(conn, row["question_id"], row["question_fingerprint"])
     return Review(
-        id=row["id"], question_id=row["question_id"],
+        id=row["id"],
+        question_id=row["question_id"],
         question_fingerprint=row["question_fingerprint"],
-        state=row["state"], created_at=row["created_at"],
-        updated_at=row["updated_at"], approved_at=row["approved_at"],
-        exported_at=row["exported_at"], generator=row["generator"],
-        model=row["model"], tested_task=row["tested_task"],
+        state=row["state"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        approved_at=row["approved_at"],
+        exported_at=row["exported_at"],
+        generator=row["generator"],
+        model=row["model"],
+        tested_task=row["tested_task"],
         tempting_answer=row["tempting_answer"],
         exact_failure=row["exact_failure"],
         correct_reasoning=row["correct_reasoning"],
@@ -426,8 +466,7 @@ def _compute_stale(conn, question_id: int, stored_fp: str) -> bool:
     return current_fp != stored_fp
 
 
-def list_reviews(conn, *, state: str | None = None,
-                 include_stale: bool = True) -> list[Review]:
+def list_reviews(conn, *, state: str | None = None, include_stale: bool = True) -> list[Review]:
     """All reviews, newest first. Optionally filter by state and/or
     hide stale rows."""
     ensure_review_schema(conn)
@@ -447,8 +486,7 @@ def list_reviews(conn, *, state: str | None = None,
     return out
 
 
-def transition(conn, review_id: int, to_state: str, *,
-               reason: str = "", actor: str = "") -> Review:
+def transition(conn, review_id: int, to_state: str, *, reason: str = "", actor: str = "") -> Review:
     """Apply a state transition with provenance logging.
 
     Allowed:
@@ -474,32 +512,39 @@ def transition(conn, review_id: int, to_state: str, *,
         raise ReviewStateError(
             f"review {review_id} is stale (question fingerprint changed "
             f"or question missing/inactive); it must be rejected "
-            f"(was attempting {rev.state!r} -> {to_state!r})")
+            f"(was attempting {rev.state!r} -> {to_state!r})"
+        )
     if (rev.state, to_state) not in {
-        (DRAFT, APPROVED), (DRAFT, REJECTED),
-        (APPROVED, EDITED), (APPROVED, REJECTED),
+        (DRAFT, APPROVED),
+        (DRAFT, REJECTED),
+        (APPROVED, EDITED),
+        (APPROVED, REJECTED),
         (EDITED, REJECTED),
     }:
-        raise ReviewStateError(
-            f"invalid transition {rev.state!r} -> {to_state!r}")
+        raise ReviewStateError(f"invalid transition {rev.state!r} -> {to_state!r}")
     if to_state == APPROVED and not rev.exact_failure.strip():
         raise ReviewStateError(
-            "cannot approve a review with an empty exact_failure; "
-            "edit it first or reject it")
+            "cannot approve a review with an empty exact_failure; edit it first or reject it"
+        )
     prev_notes = json.loads(rev.provenance_json or "{}")
     edits = prev_notes.get("edits", [])
-    edits.append({
-        "at": now,
-        "from": rev.state,
-        "to": to_state,
-        "reason": reason,
-        "actor": actor,
-    })
+    edits.append(
+        {
+            "at": now,
+            "from": rev.state,
+            "to": to_state,
+            "reason": reason,
+            "actor": actor,
+        }
+    )
     # Persist the edits array back into the notes dict; the local
     # `edits` was a copy of the list inside prev_notes.
     prev_notes["edits"] = edits
-    approved_at = rev.approved_at if to_state in (EDITED,) else (
-        now if to_state == APPROVED else rev.approved_at)
+    approved_at = (
+        rev.approved_at
+        if to_state in (EDITED,)
+        else (now if to_state == APPROVED else rev.approved_at)
+    )
     conn.execute(
         """UPDATE question_reviews SET
              state=?, updated_at=?, approved_at=?, provenance_json=?
@@ -510,10 +555,18 @@ def transition(conn, review_id: int, to_state: str, *,
     return get_review(conn, review_id)
 
 
-def edit_review(conn, review_id: int, *, tested_task: str = "",
-                tempting_answer: str = "", exact_failure: str = "",
-                correct_reasoning: str = "", kb_tactic_refs: list[str] | None = None,
-                actor: str = "", reason: str = "") -> Review:
+def edit_review(
+    conn,
+    review_id: int,
+    *,
+    tested_task: str = "",
+    tempting_answer: str = "",
+    exact_failure: str = "",
+    correct_reasoning: str = "",
+    kb_tactic_refs: list[str] | None = None,
+    actor: str = "",
+    reason: str = "",
+) -> Review:
     """Edit an approved/edited review's diagnosis fields, recording the
     change in provenance. A draft can also be edited (updates the
     diagnosis without a state change). PR-44 round-1 P2: enforce the
@@ -525,21 +578,23 @@ def edit_review(conn, review_id: int, *, tested_task: str = "",
     ensure_review_schema(conn)
     rev = get_review(conn, review_id)
     if rev.state == REJECTED:
-        raise ReviewStateError(
-            f"review {review_id} is rejected (terminal); cannot edit")
+        raise ReviewStateError(f"review {review_id} is rejected (terminal); cannot edit")
     if rev.stale:
         raise ReviewStateError(
             f"review {review_id} is stale (question fingerprint changed "
-            f"or question missing/inactive); reject it instead of editing")
+            f"or question missing/inactive); reject it instead of editing"
+        )
     now = utc_now()
     prev_notes = json.loads(rev.provenance_json or "{}")
     edits = prev_notes.get("edits", [])
     changes = {}
-    for name, new_val in (("tested_task", tested_task),
-                          ("tempting_answer", tempting_answer),
-                          ("exact_failure", exact_failure),
-                          ("correct_reasoning", correct_reasoning),
-                          ("kb_tactic_refs", kb_tactic_refs)):
+    for name, new_val in (
+        ("tested_task", tested_task),
+        ("tempting_answer", tempting_answer),
+        ("exact_failure", exact_failure),
+        ("correct_reasoning", correct_reasoning),
+        ("kb_tactic_refs", kb_tactic_refs),
+    ):
         old_val = getattr(rev, name)
         # None (or empty string) means "no change requested". A
         # genuinely empty string would erase the field, which callers
@@ -555,13 +610,15 @@ def edit_review(conn, review_id: int, *, tested_task: str = "",
         # original approval is the latest review step.
         prev_state = rev.state
         new_state = EDITED if prev_state == APPROVED else prev_state
-        edits.append({
-            "at": now,
-            "type": "edit",
-            "reason": reason,
-            "actor": actor,
-            "changes": changes,
-        })
+        edits.append(
+            {
+                "at": now,
+                "type": "edit",
+                "reason": reason,
+                "actor": actor,
+                "changes": changes,
+            }
+        )
         # Persist the edits array back into the notes dict (the local
         # `edits` was a copy of the list inside prev_notes).
         prev_notes["edits"] = edits
@@ -571,19 +628,23 @@ def edit_review(conn, review_id: int, *, tested_task: str = "",
                  correct_reasoning=?, kb_tactic_refs=?, updated_at=?,
                  provenance_json=?, state=?
                WHERE id=?""",
-            (tested_task or rev.tested_task,
-             tempting_answer or rev.tempting_answer,
-             exact_failure or rev.exact_failure,
-             correct_reasoning or rev.correct_reasoning,
-             json.dumps(kb_tactic_refs or rev.kb_tactic_refs),
-             now, json.dumps(prev_notes), new_state, review_id),
+            (
+                tested_task or rev.tested_task,
+                tempting_answer or rev.tempting_answer,
+                exact_failure or rev.exact_failure,
+                correct_reasoning or rev.correct_reasoning,
+                json.dumps(kb_tactic_refs or rev.kb_tactic_refs),
+                now,
+                json.dumps(prev_notes),
+                new_state,
+                review_id,
+            ),
         )
         conn.commit()
     return get_review(conn, review_id)
 
 
-def delete_review(conn, review_id: int, *,
-                  actor: str = "", reason: str = "") -> None:
+def delete_review(conn, review_id: int, *, actor: str = "", reason: str = "") -> None:
     """Explicitly delete a review (only allowed for draft/rejected).
     An approved/edited review must be rejected first; the export is not
     auto-removed (the vault is versioned; the operator deletes the file
@@ -593,8 +654,7 @@ def delete_review(conn, review_id: int, *,
     ensure_review_schema(conn)
     rev = get_review(conn, review_id)
     if rev.state in EXPORTABLE_STATES:
-        raise ReviewStateError(
-            f"review {review_id} is {rev.state}; reject it first, then delete")
+        raise ReviewStateError(f"review {review_id} is {rev.state}; reject it first, then delete")
     snapshot = {
         "question_id": rev.question_id,
         "question_fingerprint": rev.question_fingerprint,
@@ -618,8 +678,17 @@ def delete_review(conn, review_id: int, *,
            (review_id, question_id, question_fingerprint, state,
             actor, reason, snapshot_json, deleted_at)
            VALUES (?,?,?,?,?,?,?,?)""",
-        (review_id, rev.question_id, rev.question_fingerprint, rev.state,
-         actor, reason, json.dumps(snapshot), now))
+        (
+            review_id,
+            rev.question_id,
+            rev.question_fingerprint,
+            rev.state,
+            actor,
+            reason,
+            json.dumps(snapshot),
+            now,
+        ),
+    )
     conn.execute("DELETE FROM question_reviews WHERE id=?", (review_id,))
     conn.commit()
 
@@ -648,8 +717,9 @@ def _slug(question_id: int, tested_task: str) -> str:
     return f"review-q{question_id}-{base}"[:80]
 
 
-def export_review(conn, review_id: int, *, vault_dir: pathlib.Path,
-                  dry_run: bool = False) -> pathlib.Path:
+def export_review(
+    conn, review_id: int, *, vault_dir: pathlib.Path, dry_run: bool = False
+) -> pathlib.Path:
     """Write an approved/edited review to the versioned vault as
     kb/wiki/reviews/<slug>.md, following the #35 template. Only
     APPROVED/EDITED reviews export. `dry_run=True` returns the target
@@ -662,12 +732,13 @@ def export_review(conn, review_id: int, *, vault_dir: pathlib.Path,
     rev = get_review(conn, review_id)
     if rev.state not in EXPORTABLE_STATES:
         raise ReviewStateError(
-            f"review {review_id} is {rev.state}; only {sorted(EXPORTABLE_STATES)} "
-            f"reviews export")
+            f"review {review_id} is {rev.state}; only {sorted(EXPORTABLE_STATES)} reviews export"
+        )
     if rev.stale:
         raise ReviewStateError(
             f"review {review_id} is stale; refusing to export against a "
-            f"changed question fingerprint")
+            f"changed question fingerprint"
+        )
     target = vault_dir / f"{_slug(rev.question_id, rev.tested_task)}.md"
     if dry_run:
         return target
@@ -725,19 +796,19 @@ def export_review(conn, review_id: int, *, vault_dir: pathlib.Path,
     ]
     for ref in rev.kb_tactic_refs:
         lines.append(f"- [[{ref.replace('kb/wiki/', '').removesuffix('.md')}]]")
-    lines += ["", "## Provenance", "",
-              f"- State: {rev.state}" +
-              (f" (approved {rev.approved_at})" if rev.approved_at else ""),
-              f"- Generator: {rev.generator}" +
-              (f" ({rev.model})" if rev.model else ""),
-              f"- Created: {rev.created_at}",
-              f"- Updated: {rev.updated_at}",
-              ]
+    lines += [
+        "",
+        "## Provenance",
+        "",
+        f"- State: {rev.state}" + (f" (approved {rev.approved_at})" if rev.approved_at else ""),
+        f"- Generator: {rev.generator}" + (f" ({rev.model})" if rev.model else ""),
+        f"- Created: {rev.created_at}",
+        f"- Updated: {rev.updated_at}",
+    ]
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("\n".join(lines) + "\n", encoding="utf-8")
     # Record the export in the review row (provenance).
-    conn.execute("UPDATE question_reviews SET exported_at=? WHERE id=?",
-                 (utc_now(), review_id))
+    conn.execute("UPDATE question_reviews SET exported_at=? WHERE id=?", (utc_now(), review_id))
     conn.commit()
     return target
 

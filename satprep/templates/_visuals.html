@@ -1,0 +1,29 @@
+{# Shared rendering for persisted question visuals (issue #46).
+   visual records are {'kind': 'image', 'file': ...} or
+   {'kind': 'table', 'html': '<table ...>'}. Table html is sanitized at
+   ingest time by satprep.corpus.qbank_fetch.sanitize_table — the |safe
+   below is ONLY safe because of that allowlist.
+
+   `images` is the round-2 fallback: questions ingested before the
+   visuals column (or restored from a legacy archive) have populated
+   images_json but empty visuals_json. Those rows must still render their
+   legacy figures, so a graph-dependent question never silently loses its
+   chart on a database that predates the migration. #}
+{% macro visuals_block(visuals, images) %}
+{% if visuals %}
+  <div class="visuals">
+  {% for v in visuals %}
+    {% if v.kind == 'image' %}<img src="/figures/{{ v.file|basename }}" alt="question figure {{ loop.index }}" loading="lazy">
+    {% elif v.kind == 'table' %}
+      {# round-4 finding: a wide table must scroll inside its own container,
+         not force the whole page wider than the viewport #}
+      <div class="table-wrap">{{ v.html|safe }}</div>
+    {% endif %}
+  {% endfor %}
+  </div>
+{% elif images %}
+  <div class="figures">
+  {% for img in images %}<img src="/figures/{{ img|basename }}" alt="question figure {{ loop.index }}" loading="lazy">{% endfor %}
+  </div>
+{% endif %}
+{% endmacro %}

@@ -2,6 +2,7 @@
 {% set nav = 'drill' %}
 {% block title %}Review · satprep{% endblock %}
 {% block content %}
+{% import "_visuals.html" as vx %}
 <h1>Review Mistakes</h1>
 {% if not reviews %}<p>Clean session — nothing to review.</p>{% endif %}
 {% for r in reviews %}
@@ -11,14 +12,16 @@
     <b>your {{ r.chosen_letter or '—' }}</b> → key <b>{{ r.key_letter }}</b>
     <span class="muted">{{ r.official_skill }}</span>
   </header>
-  {% set ctx = {
+{% set ctx = {
       'passage': r.question.passage,
       'stem': r.question.stem,
       'choices': r.question.choices,
       'images': r.question.images,
+      'visuals': r.question.visuals,
       'chosen_letter': r.chosen_letter,
       'key_letter': r.key_letter,
       'source_label': r.question.source_label,
+      'selectable': False,
   } %}
   {% include '_question_context.html' %}
   {% if r.reasoning_tags %}<p><label>reasoning tags:</label> {{ r.reasoning_tags|join(', ') }}</p>{% endif %}

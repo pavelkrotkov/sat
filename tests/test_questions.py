@@ -7,29 +7,41 @@ of surfacing as an IndexError deep inside a comprehension - which is how the
 dashboard crash in #10 stayed hidden.
 """
 
+import dataclasses
 import json
 
 import pytest
+from conftest import add_question
 
 from satprep.corpus.questions import Choice, Question, iter_active, load, load_many
-from conftest import add_question
 
 
 def test_from_row_decodes_the_json_columns(db):
     conn, _ = db
-    qid = add_question(conn, passage="Passage", stem="Stem?",
-                       choices=["alpha", "beta", "gamma", "delta"], correct="C",
-                       source="bluebook_test", pool="historical",
-                       difficulty="hard", skill="Inferences")
-    conn.execute("UPDATE questions SET images_json=?, provenance_json=? WHERE id=?",
-                 ('["artifacts/images/fig.svg"]', '{"bluebook_uid": "u1"}', qid))
+    qid = add_question(
+        conn,
+        passage="Passage",
+        stem="Stem?",
+        choices=["alpha", "beta", "gamma", "delta"],
+        correct="C",
+        source="bluebook_test",
+        pool="historical",
+        difficulty="hard",
+        skill="Inferences",
+    )
+    conn.execute(
+        "UPDATE questions SET images_json=?, provenance_json=? WHERE id=?",
+        ('["artifacts/images/fig.svg"]', '{"bluebook_uid": "u1"}', qid),
+    )
 
     q = load(conn, qid)
 
     assert isinstance(q, Question)
     assert q.choices == (
-        Choice("A", "alpha", False), Choice("B", "beta", False),
-        Choice("C", "gamma", True), Choice("D", "delta", False),
+        Choice("A", "alpha", False),
+        Choice("B", "beta", False),
+        Choice("C", "gamma", True),
+        Choice("D", "delta", False),
     )
     assert q.images == ("artifacts/images/fig.svg",)
     assert q.provenance == {"bluebook_uid": "u1"}
@@ -50,8 +62,9 @@ def test_missing_column_fails_at_the_seam(db):
 
 def test_answer_helpers(db):
     conn, _ = db
-    qid = add_question(conn, passage="p", stem="s?",
-                       choices=["alpha", "beta", "gamma", "delta"], correct="B")
+    qid = add_question(
+        conn, passage="p", stem="s?", choices=["alpha", "beta", "gamma", "delta"], correct="B"
+    )
     q = load(conn, qid)
 
     assert q.key == Choice("B", "beta", True)
@@ -83,8 +96,10 @@ def test_choiceless_questions_are_not_displayable(db):
 
 def test_load_many_is_one_query_keyed_by_id(db):
     conn, _ = db
-    ids = [add_question(conn, passage=f"p{i}", stem=f"s{i}?",
-                        choices=[f"c{i}{x}" for x in "abcd"]) for i in range(4)]
+    ids = [
+        add_question(conn, passage=f"p{i}", stem=f"s{i}?", choices=[f"c{i}{x}" for x in "abcd"])
+        for i in range(4)
+    ]
 
     loaded = load_many(conn, ids)
     assert set(loaded) == set(ids)
@@ -103,12 +118,20 @@ def test_iter_active_respects_pool_and_active_filters(db):
     """The sampler's leakage guarantee is this filter, in SQL - a protected
     item is never loaded outside benchmark mode, so scoring cannot reach it."""
     conn, _ = db
-    add_question(conn, passage="h", stem="h?", choices=["ha", "hb", "hc", "hd"],
-                 source="bluebook_test", pool="historical")
-    add_question(conn, passage="f", stem="f?", choices=["fa", "fb", "fc", "fd"],
-                 pool="fresh_training")
-    prot = add_question(conn, passage="p", stem="p?", choices=["pa", "pb", "pc", "pd"],
-                        pool="protected_benchmark")
+    add_question(
+        conn,
+        passage="h",
+        stem="h?",
+        choices=["ha", "hb", "hc", "hd"],
+        source="bluebook_test",
+        pool="historical",
+    )
+    add_question(
+        conn, passage="f", stem="f?", choices=["fa", "fb", "fc", "fd"], pool="fresh_training"
+    )
+    prot = add_question(
+        conn, passage="p", stem="p?", choices=["pa", "pb", "pc", "pd"], pool="protected_benchmark"
+    )
 
     pools = {q.pool for q in iter_active(conn, pools=("historical", "fresh_training"))}
     assert pools == {"historical", "fresh_training"}
@@ -123,7 +146,7 @@ def test_question_is_frozen(db):
     qid = add_question(conn, passage="p", stem="s?", choices=["a", "b", "c", "d"])
     q = load(conn, qid)
 
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         q.passage = "mutated"
 
 
@@ -133,8 +156,11 @@ def test_choice_round_trips_through_storage_shape(db):
     qid = add_question(conn, passage="p", stem="s?", choices=["a", "b", "c", "d"], correct="D")
     q = load(conn, qid)
 
-    stored = json.loads(conn.execute(
-        "SELECT choices_json FROM questions WHERE id=?", (qid,)).fetchone()["choices_json"])
+    stored = json.loads(
+        conn.execute("SELECT choices_json FROM questions WHERE id=?", (qid,)).fetchone()[
+            "choices_json"
+        ]
+    )
     assert [c.as_dict() for c in q.choices] == stored
 
 

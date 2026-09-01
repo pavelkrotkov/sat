@@ -6,18 +6,19 @@ import statistics
 
 from .. import config
 from ..clock import utc_now
-from ..ids import opaque_id
 from ..corpus.ingest import mark_benchmark_seen
+from ..corpus.questions import load, load_many
+from ..corpus.tagger import diagnose_attempt
+from ..corpus.tags import tags_by_question
+from ..ids import opaque_id
 from .sampler import persist_session, select_drill
 from .spacing import update_after_attempt
 from .weakness import compute_weakness
-from ..corpus.tagger import diagnose_attempt
-from ..corpus.questions import load, load_many
-from ..corpus.tags import tags_by_question
 
 
-def create_session(conn, mode: str, count: int | None = None, seed: str | None = None,
-                   focus_tag: str | None = None) -> dict:
+def create_session(
+    conn, mode: str, count: int | None = None, seed: str | None = None, focus_tag: str | None = None
+) -> dict:
     plan = select_drill(conn, mode, count=count, seed=seed, focus_tag=focus_tag)
     if not plan["session_id"]:
         # benchmark plans have no seed to derive an id from
@@ -29,20 +30,26 @@ def create_session(conn, mode: str, count: int | None = None, seed: str | None =
         q = by_id.get(item["question_id"])
         if q is None:
             continue
-        questions.append({
-            "id": q.id,
-            "passage": q.passage,
-            "stem": q.stem or "Select the best answer.",
-            "choices": [c.as_dict() for c in q.choices],
-            "images": list(q.images),
-        })
+        questions.append(
+            {
+                "id": q.id,
+                "passage": q.passage,
+                "stem": q.stem or "Select the best answer.",
+                "choices": [c.as_dict() for c in q.choices],
+                "images": list(q.images),
+                "visuals": [dict(v) for v in q.visuals],
+            }
+        )
     return {"plan": plan, "questions": questions}
 
 
-def submit_answer(conn, session_id: str, question_id: int, chosen_letter: str,
-                  confidence: int, time_ms: int) -> dict:
+def submit_answer(
+    conn, session_id: str, question_id: int, chosen_letter: str, confidence: int, time_ms: int
+) -> dict:
     """Record one attempt; returns {'correct', 'key'} without revealing more."""
-    sess = conn.execute("SELECT status, plan_json, mode FROM sessions WHERE id=?", (session_id,)).fetchone()
+    sess = conn.execute(
+        "SELECT status, plan_json, mode FROM sessions WHERE id=?", (session_id,)
+    ).fetchone()
     if sess is None:
         raise ValueError(f"Unknown session {session_id}")
     if sess["status"] != "open":
@@ -56,8 +63,7 @@ def submit_answer(conn, session_id: str, question_id: int, chosen_letter: str,
     ).fetchone()
     if prior is not None:
         # retried submission: never double-count attempts or spacing updates
-        return {"correct": bool(prior["correct"]), "key": "",
-                "error_tags": [], "duplicate": True}
+        return {"correct": bool(prior["correct"]), "key": "", "error_tags": [], "duplicate": True}
     q = load(conn, question_id)
     if q is None:
         raise ValueError(f"Question {question_id} not found")
@@ -67,8 +73,16 @@ def submit_answer(conn, session_id: str, question_id: int, chosen_letter: str,
         """INSERT INTO attempts (session_id, question_id, chosen_letter, correct,
                                  confidence, time_ms, mode, attempted_at)
            VALUES (?,?,?,?,?,?,(SELECT mode FROM sessions WHERE id=?),?)""",
-        (session_id, question_id, chosen_letter[:1].upper(), correct, confidence,
-         time_ms, session_id, utc_now()),
+        (
+            session_id,
+            question_id,
+            chosen_letter[:1].upper(),
+            correct,
+            confidence,
+            time_ms,
+            session_id,
+            utc_now(),
+        ),
     )
     update_after_attempt(conn, question_id, correct, confidence)
 
@@ -76,12 +90,18 @@ def submit_answer(conn, session_id: str, question_id: int, chosen_letter: str,
     if q.pool == "protected_benchmark":
         mark_benchmark_seen(conn, [question_id])
     elif not correct:
-        error_tags = diagnose_attempt(conn, question_id, [c.as_dict() for c in q.choices],
-                                      q.correct_letter, chosen_letter[:1].upper())
+        error_tags = diagnose_attempt(
+            conn,
+            question_id,
+            [c.as_dict() for c in q.choices],
+            q.correct_letter,
+            chosen_letter[:1].upper(),
+        )
         # spec section 6/13: diagnoses belong to THIS attempt, so older
         # reviews never inherit a later attempt's trap analysis
-        conn.execute("UPDATE attempts SET error_tags=? WHERE id=?",
-                     (json.dumps(error_tags), cur.lastrowid))
+        conn.execute(
+            "UPDATE attempts SET error_tags=? WHERE id=?", (json.dumps(error_tags), cur.lastrowid)
+        )
     return {"correct": bool(correct), "key": q.correct_letter, "error_tags": error_tags}
 
 
@@ -100,22 +120,29 @@ def _question_context(question) -> dict:
     """
     choices = []
     for c in question.choices:
-        choices.append({
-            "letter": c.letter,
-            "text": c.text,
-            "is_correct": c.is_correct,
-        })
-    source_parts = [p for p in (
-        question.source_test,
-        question.source_question_number,
-        question.module,
-    ) if p]
+        choices.append(
+            {
+                "letter": c.letter,
+                "text": c.text,
+                "is_correct": c.is_correct,
+            }
+        )
+    source_parts = [
+        p
+        for p in (
+            question.source_test,
+            question.source_question_number,
+            question.module,
+        )
+        if p
+    ]
     return {
         "question_id": question.id,
         "passage": question.passage,
         "stem": question.stem,
         "choices": choices,
         "images": list(question.images),
+        "visuals": [dict(v) for v in question.visuals],
         "correct_letter": question.correct_letter,
         "source_test": question.source_test,
         "source_question_number": question.source_question_number,
@@ -162,6 +189,8 @@ def answer_feedback(conn, session_id: str, question_id: int) -> dict | None:
         "key_text": question.text_of(question.correct_letter),
         "why_key_works": _why_key_works(question.rationale),
         "official_skill": question.official_skill,
+        "visuals": [dict(v) for v in question.visuals],
+        "images": list(question.images),
         "streak": current_streak(conn, session_id),
     }
 
@@ -232,26 +261,29 @@ def review_payload(conn, session_id: str) -> list[dict]:
         ctx = _question_context(question)
         ctx["chosen_letter"] = r["chosen_letter"]
         ctx["key_letter"] = question.correct_letter
-        out.append({
-            "question": ctx,
-            "question_id": r["question_id"],
-            "chosen_letter": r["chosen_letter"],
-            "chosen_text": question.text_of(r["chosen_letter"]),
-            "correct": bool(r["correct"]),
-            "confidence": r["confidence"],
-            "key_letter": question.correct_letter,
-            "key_text": question.text_of(question.correct_letter),
-            "why_key_works": _why_key_works(question.rationale),
-            "official_skill": question.official_skill,
-            "reasoning_tags": tags,
-            "trap_tags": trap_tags,
-            "rationale_official": question.rationale,
-            "rationale_paragraphs": _paragraphs(question.rationale),
-            "rationale_is_official": bool(question.rationale),
-            "passage_skeleton": skeleton,
-            "lesson": lesson,
-            "lesson_source": "derived rule" if lesson else "",
-        })
+        ctx["visuals"] = [dict(v) for v in question.visuals]
+        out.append(
+            {
+                "question": ctx,
+                "question_id": r["question_id"],
+                "chosen_letter": r["chosen_letter"],
+                "chosen_text": question.text_of(r["chosen_letter"]),
+                "correct": bool(r["correct"]),
+                "confidence": r["confidence"],
+                "key_letter": question.correct_letter,
+                "key_text": question.text_of(question.correct_letter),
+                "why_key_works": _why_key_works(question.rationale),
+                "official_skill": question.official_skill,
+                "reasoning_tags": tags,
+                "trap_tags": trap_tags,
+                "rationale_official": question.rationale,
+                "rationale_paragraphs": _paragraphs(question.rationale),
+                "rationale_is_official": bool(question.rationale),
+                "passage_skeleton": skeleton,
+                "lesson": lesson,
+                "lesson_source": "derived rule" if lesson else "",
+            }
+        )
     return out
 
 
@@ -274,8 +306,19 @@ def _infer_trap(tags):
 # be indistinguishable from an answer label ("The correct answer is A.").
 _TITLE_ABBREVIATIONS = ("Dr.", "Mr.", "Mrs.", "Ms.", "St.")
 _ALWAYS_ABBREVIATIONS = ("e.g.", "i.e.", "vs.")
-_OTHER_ABBREVIATIONS = ("etc.", "Inc.", "Co.", "Jr.", "Sr.", "U.S.",
-                        "U.K.", "A.D.", "B.C.", "Ph.D.", "M.D.")
+_OTHER_ABBREVIATIONS = (
+    "etc.",
+    "Inc.",
+    "Co.",
+    "Jr.",
+    "Sr.",
+    "U.S.",
+    "U.K.",
+    "A.D.",
+    "B.C.",
+    "Ph.D.",
+    "M.D.",
+)
 # Ellipsis runs (compact "...", spaced ". . .", ".. ..") are protected
 # only when a lowercase continuation follows — in the corpus (1,965
 # rationales, 257 ellipsis occurrences) every ellipsis is mid-sentence
@@ -323,12 +366,10 @@ def _protect_abbreviations(text: str) -> str:
         # "St." match only as a standalone token followed by a space —
         # never the suffix of "best." nor broken by a trailing \b before
         # whitespace ("Dr. Smith" stays protected; PR-50 round-10/11).
-        pattern = re.compile(
-            r"\b" + re.escape(abbr) + r"(?=[\s\x00])", re.IGNORECASE)
+        pattern = re.compile(r"\b" + re.escape(abbr) + r"(?=[\s\x00])", re.IGNORECASE)
         text = pattern.sub(lambda m: m.group(0).replace(".", "\x00"), text)
     for abbr in _OTHER_ABBREVIATIONS:
-        text = re.sub(re.escape(abbr) + r"(?=\s+[a-z])",
-                      abbr.replace(".", "\x00"), text)
+        text = re.sub(re.escape(abbr) + r"(?=\s+[a-z])", abbr.replace(".", "\x00"), text)
     return text
 
 
@@ -436,4 +477,3 @@ def _logical_skeleton(passage: str) -> list[str]:
     if not picked and sentences:
         picked = [sentences[0].strip()]
     return picked
-
