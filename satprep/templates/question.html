@@ -11,19 +11,7 @@
 <form method="post" action="/answer/{{ sid }}/{{ idx }}" id="answer-form">
   <input type="hidden" name="question_id" value="{{ q.id }}">
   <input type="hidden" name="elapsed_ms" id="elapsed_ms" value="0">
-  {% if q.passage %}<div class="passage">{% for p in q.passage.split('\n') %}<p>{{ p }}</p>{% endfor %}</div>{% endif %}
-  {% if q.images %}
-    <div class="figures">
-    {% for img in q.images %}<img src="/figures/{{ img|basename }}" alt="question figure {{ loop.index }}" loading="lazy">{% endfor %}
-    </div>
-  {% endif %}
-  <p class="stem">{{ q.stem }}</p>
-  <div class="choices">
-  {% for c in q.choices %}
-    <label class="choice"><input type="radio" name="letter" value="{{ c.letter }}" required>
-      <span class="letter">{{ c.letter }}.</span> <span>{{ c.text }}</span></label>
-  {% endfor %}
-  </div>
+  {% include '_question_context.html' %}
   {# Each confidence control is itself the submit button: a submit button
      carries its own name/value, so this is two taps and no scroll to a
      separate Next — with or without JavaScript. #}

@@ -17,7 +17,8 @@ def db(tmp_path: Path):
 def add_question(conn, *, passage="P", stem="Q?", choices=("a", "b", "c", "d"),
                  correct="A", source="college_board_question_bank", pool=None,
                  difficulty="", skill="", tags=(), fingerprint=None,
-                 import_batch="batch1"):
+                 import_batch="batch1", images=(), source_test="SAT Practice Test 1",
+                 source_question_number="1", module="Module 1", rationale="rationale"):
     from satprep.corpus import fingerprint as fpmod
 
     fp = fingerprint or fpmod.fingerprint(passage, stem, list(choices))
@@ -28,11 +29,11 @@ def add_question(conn, *, passage="P", stem="Q?", choices=("a", "b", "c", "d"),
              module, passage, stem, choices_json, correct_letter, rationale, images_json,
              official_domain, official_skill, skill_source, difficulty, pool, seen_benchmark,
              is_new_bank, import_batch, imported_at, provenance_json)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?,?)""",
-        (fp, source, "SAT Practice Test 1", "1", "Module 1", passage, stem,
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,?,?)""",
+        (fp, source, source_test, source_question_number, module, passage, stem,
          json.dumps([{"letter": chr(65 + i), "text": t, "is_correct": chr(65 + i) == correct}
                      for i, t in enumerate(choices)]),
-         correct, "rationale", "[]", "", skill, "metadata" if skill else "unknown",
+         correct, rationale, json.dumps(list(images)), "", skill, "metadata" if skill else "unknown",
          difficulty, pool, import_batch if source != "bluebook_test" else "",
          "2026-01-01T00:00:00+00:00", "{}"),
     )

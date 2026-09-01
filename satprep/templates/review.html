@@ -11,6 +11,16 @@
     <b>your {{ r.chosen_letter or '—' }}</b> → key <b>{{ r.key_letter }}</b>
     <span class="muted">{{ r.official_skill }}</span>
   </header>
+  {% set ctx = {
+      'passage': r.question.passage,
+      'stem': r.question.stem,
+      'choices': r.question.choices,
+      'images': r.question.images,
+      'chosen_letter': r.chosen_letter,
+      'key_letter': r.key_letter,
+      'source_label': r.question.source_label,
+  } %}
+  {% include '_question_context.html' %}
   {% if r.reasoning_tags %}<p><label>reasoning tags:</label> {{ r.reasoning_tags|join(', ') }}</p>{% endif %}
   {% if r.trap_tags %}<p><label>trap:</label> {{ r.trap_tags|join(' + ') }}</p>{% endif %}
   {% if r.passage_skeleton %}
