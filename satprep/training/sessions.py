@@ -240,10 +240,12 @@ _ELLIPSIS = re.compile(r"\.(?:\s*\.)+(?=\s+[a-z])")
 # quote/bracket). Requiring a continuation keeps an embedded quoted
 # question ("asks "Why?" before explaining") inside its sentence
 # (PR-50 round-10); a digit start ("1990. 200 participants") is a real
-# boundary (PR-50 round-11); a lowercase continuation is an
+# boundary (PR-50 round-11); Latin-1 uppercase covers accented sentence
+# starts ("Émile Zola", PR-50 round-12); a lowercase continuation is an
 # abbreviation/quote already protected.
 _SENTENCE_SPLIT = re.compile(
-    r"(?<=[.!?])([\"'\u201d\u2019)\]]*)\s+(?=[A-Z0-9\u201c\"'(\[])")
+    r"(?<=[.!?])([\"'\u201d\u2019)\]]*)\s+"
+    r"(?=[A-Z0-9\u00c0-\u00d6\u00d8-\u00de\u201c\"'(\[])")
 
 
 def _protect_abbreviations(text: str) -> str:
