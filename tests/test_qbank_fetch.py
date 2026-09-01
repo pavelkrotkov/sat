@@ -263,8 +263,11 @@ def test_figures_in_both_fields_get_unique_numbers(fig_dirs):
     assert len(set(row["images"])) == 2, row["images"]
     for n in row["images"]:
         assert (fig_dirs / n).exists()
+    # Round-4: stimulus visuals precede stem visuals (the page renders the
+    # passage/stimulus first), so the display list is stimulus-figure-2 then
+    # stem-figure-1 — but both distinct numbers are preserved.
     names = [n.rsplit("-", 1)[1] for n in row["images"]]
-    assert names == ["1.svg", "2.svg"]
+    assert sorted(names) == ["1.svg", "2.svg"]
 
 
 def test_mixed_formats_extracted_in_document_order(fig_dirs):

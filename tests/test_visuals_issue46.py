@@ -575,3 +575,37 @@ def test_table_wins_over_nested_svg(fig_dirs):
     assert "Table S. Data" in tables[0]["html"]
     assert "1.0" in tables[0]["html"]
     assert not any(v.get("kind") == "image" for v in row["visuals"])
+
+
+def test_figure_with_multiple_data_uri_images_saves_all(fig_dirs):
+    """Round-4 P1: a single <figure> holding several data-URI <img> tags must
+    save every image, not just the first (search() used to drop the rest)."""
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()
+    png2 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00\x01\x02").decode()
+    detail = {
+        **DETAIL,
+        "stimulus": (
+            f'<figure><img src="data:image/png;base64,{png}">'
+            f'<img src="data:image/png;base64,{png2}"></figure>'
+        ),
+        "externalid": "ext-multi-img",
+    }
+    row = _normalize(detail, dict(META, external_id="ext-multi-img"))
+    images = [v for v in row["visuals"] if v.get("kind") == "image"]
+    assert len(images) == 2, f"expected both data-URI images, got {row['visuals']}"
+    files = [v["file"] for v in images]
+    assert len(set(files)) == 2
+    for f in files:
+        assert (fig_dirs / f).exists()
+
+
+def test_sanitize_table_turns_break_into_separator():
+    """Round-4 P1: <td>1<br>2</td> must stay two values, not collapse to
+    '12' (unwrap() used to remove <br> with no separator)."""
+    from bs4 import BeautifulSoup
+
+    out = sanitize_table("<table><tr><td>1<br>2</td></tr></table>")
+    assert out is not None
+    text = BeautifulSoup(out, "html.parser").get_text()
+    # the two numbers are kept apart by whitespace, not fused into "12"
+    assert "1" in text and "2" in text and "12" not in text

@@ -14,7 +14,10 @@
   <div class="visuals">
   {% for v in visuals %}
     {% if v.kind == 'image' %}<img src="/figures/{{ v.file|basename }}" alt="question figure {{ loop.index }}" loading="lazy">
-    {% elif v.kind == 'table' %}{{ v.html|safe }}
+    {% elif v.kind == 'table' %}
+      {# round-4 finding: a wide table must scroll inside its own container,
+         not force the whole page wider than the viewport #}
+      <div class="table-wrap">{{ v.html|safe }}</div>
     {% endif %}
   {% endfor %}
   </div>
