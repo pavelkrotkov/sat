@@ -91,6 +91,46 @@ that is reassigned on rebuild, ingest, or restore. See
 required sections. Write a review only when it captures a reusable diagnosis;
 the database remains authoritative on disagreement.
 
+### The auditable persistence workflow (issue #37)
+
+`satprep review` manages review lifecycle in SQLite (`question_reviews`
+table) with an explicit human approval step before anything reaches the
+versioned vault:
+
+```
+generate -> draft -> approve -> export (writes kb/wiki/reviews/<slug>.md)
+                  \-> reject  -> delete (or keep for audit)
+```
+
+- `satprep review generate --question-id N` — runs the #36 explanation
+  pipeline on the question's most recent wrong attempt and stores a `draft`.
+  Re-running updates the same draft (no duplicates). Refuses to overwrite an
+  approved review.
+- `satprep review list [--state draft|approved|rejected|edited]` — shows the
+  queue, including `stale: true` for reviews whose question fingerprint no
+  longer matches (question removed/merged/rebuilt).
+- `satprep review approve --id N` — the **required** human step; blocks if
+  the review is stale or the exact-failure field is empty.
+- `satprep review edit --id N --exact-failure ...` — edits an approved
+  review, recording the change in the provenance log.
+- `satprep review reject --id N` — terminal; approved reviews must be
+  rejected before deletion.
+- `satprep review export --id N [--dry-run]` — writes the approved review to
+  the versioned vault. Only `approved`/`edited` states export; stale reviews
+  never export. The file contains **diagnosis + join keys + provenance only**,
+  never the canonical question/choices/attempt records.
+
+State machine: `draft -> approved -> edited | rejected`; `rejected` is
+terminal. Every transition and edit is recorded in `provenance_json`
+(actor, timestamp, reason, before/after fields).
+
+SQLite is authoritative for question/attempt data; a Markdown file that
+disagrees with the DB loses (the review is surfaced as `stale` and cannot be
+approved or exported). No generated review is committed or published
+without the explicit `approve` step. Reviews are keyed to questions, not
+students — there is no student identity in the table; deletion is explicit
+and logged.
+
 > **Why `review-templates/` and not `templates/`?** MkDocs reserves a
 > top-level `templates/` directory for custom theme overrides and excludes it
 > from the built site by default, so a page there could never render. The
