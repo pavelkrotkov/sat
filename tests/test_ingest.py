@@ -88,9 +88,34 @@ def test_duplicate_content_dedupes_by_fingerprint(tmp_path, monkeypatch):
     _ingest(str(tmp_path / "t.db"))
     conn = connect(str(tmp_path / "t.db"))
     n = conn.execute("SELECT COUNT(*) FROM questions").fetchone()[0]
+    occ = conn.execute("SELECT COUNT(*) FROM bluebook_occurrences").fetchone()[0]
     conn.close()
     # identical passage+empty stem+no choices -> same fingerprint -> deduped
     assert n == 1
+    # but BOTH source occurrences are preserved with their placement identity
+    assert occ == 2
+
+
+def test_identical_content_occurrences_keep_placement(tmp_path, monkeypatch):
+    """Issue #49: same content at different placements must not erase
+    the source occurrence's test/module/question identity."""
+    monkeypatch.setattr("satprep.config.BLUEBOOK_JSON", tmp_path / "outputs" / "wrong_questions.json")
+    r1 = _rec("a1")
+    r2 = _rec("a2", num=2)
+    r2["question_text"] = r1["question_text"]
+    r2["test_name"] = "SAT Practice Test 5"
+    _write_corpus(tmp_path, [r1, r2])
+    _ingest(str(tmp_path / "t.db"))
+    conn = connect(str(tmp_path / "t.db"))
+    rows = conn.execute(
+        "SELECT test_name, module, question_number, bluebook_uid FROM bluebook_occurrences ORDER BY test_name"
+    ).fetchall()
+    conn.close()
+    assert len(rows) == 2
+    assert {(r["test_name"], r["question_number"]) for r in rows} == {
+        ("SAT Practice Test 4", "1"),
+        ("SAT Practice Test 5", "2"),
+    }
 
 
 def test_unknown_correctness_never_recorded(tmp_path, monkeypatch):
