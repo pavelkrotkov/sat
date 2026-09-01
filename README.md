@@ -78,7 +78,10 @@ uv run satprep serve --host 0.0.0.0   # reachable on the local network
 ```
 
 CLI: `ingest | analyze | drill [--count N] [--mode M] [--focus TAG] | benchmark |
-stats | serve`. Web UI and CLI share the same DB and selection logic.
+stats | serve | fetch-qbank | explain | review`. Web UI and CLI share the same
+DB and selection logic. `review` manages the auditable question-review
+lifecycle (draft → approve → export to `kb/wiki/reviews/`); see
+[kb/README.md](kb/README.md).
 
 The UI has no authentication, so `serve` binds loopback by default and prints a
 notice when told to bind anything else. To run it on an always-on box that other

@@ -25,6 +25,9 @@ from .corpus.ingest import ingest_bluebook, ingest_qbank
 from .corpus.qbank_fetch import backfill_figures, fetch_qbank
 from .corpus.tagger import run_full_tagging
 from .explanations import explain_error
+from .reviews import (APPROVED, REJECTED, delete_review, edit_review,
+                      ensure_review_schema, export_review, list_reviews,
+                      transition, upsert_draft)
 from .training.sessions import (complete_session, create_session, review_payload,
                                 submit_answer)
 from .training.weakness import compute_weakness
@@ -262,6 +265,111 @@ def cmd_explain(args) -> None:
     }, indent=2, ensure_ascii=False))
 
 
+def cmd_review_generate(args) -> None:
+    """Generate a draft review for a question from its most recent
+    wrong attempt, using the #36 pipeline. Read-only on the KB; writes
+    the review draft into SQLite."""
+    with db_context() as conn:
+        ensure_review_schema(conn)
+        qid = args.question_id
+        row = conn.execute(
+            "SELECT id, passage, stem, choices_json, correct_letter, "
+            "fingerprint, rationale "
+            "FROM questions WHERE id=? AND active=1", (qid,)).fetchone()
+        if row is None:
+            raise SystemExit(f"no active question with id={qid}")
+        attempt = conn.execute(
+            "SELECT chosen_letter FROM attempts "
+            "WHERE question_id=? AND correct=0 "
+            "ORDER BY id DESC LIMIT 1", (qid,)).fetchone()
+        if attempt is None:
+            raise SystemExit(
+                f"no wrong attempt for question_id={qid}; nothing to review")
+        choices = json.loads(row["choices_json"])
+        ex = explain_error(
+            question_id=qid,
+            passage=row["passage"], stem=row["stem"], choices=choices,
+            student_letter=attempt["chosen_letter"],
+            correct_letter=row["correct_letter"],
+            rationale=row["rationale"] or "",
+            question_fingerprint=row["fingerprint"] or "",
+            conn=conn,
+        )
+        rev = upsert_draft(
+            conn, question_id=qid, question_fingerprint=row["fingerprint"] or "",
+            generator=ex.mode, model=ex.model,
+            tested_task=ex.tested_task, tempting_answer=ex.tempting_answer,
+            exact_failure=ex.exact_failure, correct_reasoning=ex.correct_reasoning,
+            kb_tactic_refs=ex.kb_tactic_refs, error_taxonomy=ex.error_taxonomy,
+            evidence=ex.evidence_citations,
+            generator_notes={"confidence": ex.confidence},
+        )
+    print(json.dumps({
+        "review_id": rev.id, "question_id": qid, "state": rev.state,
+        "mode": rev.generator, "model": rev.model,
+        "tested_task": rev.tested_task, "stale": rev.stale,
+    }, indent=2))
+
+
+def cmd_review_list(args) -> None:
+    with db_context() as conn:
+        ensure_review_schema(conn)
+        rows = list_reviews(conn, state=args.state,
+                            include_stale=args.include_stale)
+    print(json.dumps([{
+        "id": r.id, "question_id": r.question_id, "state": r.state,
+        "generator": r.generator, "model": r.model,
+        "tested_task": r.tested_task, "stale": r.stale,
+        "updated_at": r.updated_at,
+    } for r in rows], indent=2))
+
+
+def cmd_review_approve(args) -> None:
+    with db_context() as conn:
+        ensure_review_schema(conn)
+        rev = transition(conn, args.id, APPROVED, reason=args.reason,
+                         actor="cli")
+    print(json.dumps({"review_id": rev.id, "state": rev.state,
+                      "approved_at": rev.approved_at}, indent=2))
+
+
+def cmd_review_reject(args) -> None:
+    with db_context() as conn:
+        ensure_review_schema(conn)
+        rev = transition(conn, args.id, REJECTED, reason=args.reason,
+                         actor="cli")
+    print(json.dumps({"review_id": rev.id, "state": rev.state}, indent=2))
+
+
+def cmd_review_edit(args) -> None:
+    with db_context() as conn:
+        ensure_review_schema(conn)
+        rev = edit_review(conn, args.id,
+                          exact_failure=args.exact_failure,
+                          correct_reasoning=args.correct_reasoning,
+                          tempting_answer=args.tempting_answer,
+                          actor="cli", reason=args.reason)
+    print(json.dumps({"review_id": rev.id, "state": rev.state,
+                      "exact_failure": rev.exact_failure}, indent=2))
+
+
+def cmd_review_export(args) -> None:
+    vault = config.REPO_ROOT / "kb" / "wiki" / "reviews"
+    with db_context() as conn:
+        ensure_review_schema(conn)
+        target = export_review(conn, args.id, vault_dir=vault,
+                               dry_run=args.dry_run)
+    print(json.dumps({"path": str(target),
+                      "dry_run": args.dry_run}, indent=2))
+
+
+def cmd_review_delete(args) -> None:
+    with db_context() as conn:
+        ensure_review_schema(conn)
+        delete_review(conn, args.id)
+    print(json.dumps({"deleted": True, "review_id": args.id}, indent=2))
+
+
 def cmd_stats(args) -> None:
     with db_context() as conn:
         d = full_dashboard(conn)
@@ -385,6 +493,52 @@ def build_parser() -> argparse.ArgumentParser:
                     help="override the student's chosen letter; defaults "
                          "to the most recent wrong attempt on this question")
     sp.set_defaults(func=cmd_explain)
+
+    # --- `satprep review` subcommands (issue #37) ---------------------
+    rv = sub.add_parser("review", help="manage student question reviews")
+    rv_sub = rv.add_subparsers(dest="review_cmd", required=True)
+
+    rsp = rv_sub.add_parser("generate", help="generate a draft review from "
+                             "the most recent wrong attempt on a question")
+    rsp.add_argument("--question-id", type=int, required=True)
+    rsp.set_defaults(func=cmd_review_generate)
+
+    rsp = rv_sub.add_parser("list", help="list reviews (draft/approved/... )")
+    rsp.add_argument("--state", default=None,
+                     choices=["draft", "approved", "rejected", "edited"])
+    rsp.add_argument("--include-stale", action="store_true",
+                     help="show stale reviews too")
+    rsp.set_defaults(func=cmd_review_list)
+
+    rsp = rv_sub.add_parser("approve", help="approve a draft review "
+                             "(explicit human step before export)")
+    rsp.add_argument("--id", type=int, required=True)
+    rsp.add_argument("--reason", default="")
+    rsp.set_defaults(func=cmd_review_approve)
+
+    rsp = rv_sub.add_parser("reject", help="reject a review (terminal)")
+    rsp.add_argument("--id", type=int, required=True)
+    rsp.add_argument("--reason", default="")
+    rsp.set_defaults(func=cmd_review_reject)
+
+    rsp = rv_sub.add_parser("edit", help="edit an approved review's fields")
+    rsp.add_argument("--id", type=int, required=True)
+    rsp.add_argument("--exact-failure", default="")
+    rsp.add_argument("--correct-reasoning", default="")
+    rsp.add_argument("--tempting-answer", default="")
+    rsp.add_argument("--reason", default="")
+    rsp.set_defaults(func=cmd_review_edit)
+
+    rsp = rv_sub.add_parser("export", help="write an approved review to the "
+                             "versioned Markdown vault (kb/wiki/reviews/)")
+    rsp.add_argument("--id", type=int, required=True)
+    rsp.add_argument("--dry-run", action="store_true",
+                     help="print the target path without writing")
+    rsp.set_defaults(func=cmd_review_export)
+
+    rsp = rv_sub.add_parser("delete", help="delete a draft/rejected review")
+    rsp.add_argument("--id", type=int, required=True)
+    rsp.set_defaults(func=cmd_review_delete)
 
     sp = sub.add_parser("restore", help="rebuild questions from a JSONL archive")
     sp.add_argument("--file", default=None)
