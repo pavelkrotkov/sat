@@ -214,17 +214,18 @@ def _infer_trap(tags):
 # Periods that are not sentence boundaries. Protected before splitting so
 # they do not end the excerpt mid-sentence (PR-50 review findings):
 #   - title abbreviations (Dr., Mr., ...) and always-nonterminal ones
-#     (e.g., vs., e.g., i.e.) are protected unconditionally;
-#   - initials are protected only as a pair ("J. K. Rowling"), so a lone
-#     capital-period ("The correct answer is A. Choice B...") still splits;
-#   - other abbreviations (Inc., U.S., ...) are non-terminal only when a
-#     lowercase continuation follows, so "Acme Inc. Choice B..." still
-#     splits at the real sentence end.
+#     (vs., e.g., i.e.) are protected unconditionally — in the corpus
+#     (1,965 rationales) these never occur sentence-final;
+#   - other abbreviations (etc., Inc., U.S., ...) are non-terminal only
+#     when a lowercase continuation follows, so "..., etc. Choice B..."
+#     and "Acme Inc. Choice B..." still split at the real sentence end.
+# Name initials ("J. K. Rowling") are deliberately not special-cased:
+# they do not occur in the corpus, and a lone capital-period there would
+# be indistinguishable from an answer label ("The correct answer is A.").
 _TITLE_ABBREVIATIONS = ("Dr.", "Mr.", "Mrs.", "Ms.", "St.", "Jr.", "Sr.")
-_ALWAYS_ABBREVIATIONS = ("e.g.", "i.e.", "vs.", "etc.")
-_OTHER_ABBREVIATIONS = ("Inc.", "Co.", "U.S.", "U.K.", "A.D.", "B.C.",
-                        "Ph.D.", "M.D.")
-_INITIAL_PERIOD = re.compile(r"\b[A-Z]\.(?=\s+[A-Z]\.)")
+_ALWAYS_ABBREVIATIONS = ("e.g.", "i.e.", "vs.")
+_OTHER_ABBREVIATIONS = ("etc.", "Inc.", "Co.", "U.S.", "U.K.", "A.D.",
+                        "B.C.", "Ph.D.", "M.D.")
 # Sentence terminator, optional closing quotes/brackets, then whitespace.
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])([\"'\u201d\u2019)\]]*)\s+")
 
@@ -234,7 +235,6 @@ def _protect_abbreviations(text: str) -> str:
     splitter skips them; restored before returning the excerpt."""
     for abbr in _TITLE_ABBREVIATIONS + _ALWAYS_ABBREVIATIONS:
         text = text.replace(abbr, abbr.replace(".", "\x00"))
-    text = _INITIAL_PERIOD.sub(lambda m: m.group(0).replace(".", "\x00"), text)
     for abbr in _OTHER_ABBREVIATIONS:
         text = re.sub(re.escape(abbr) + r"(?=\s+[a-z])",
                       abbr.replace(".", "\x00"), text)

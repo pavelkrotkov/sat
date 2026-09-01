@@ -208,11 +208,22 @@ def test_excerpt_sentences_does_not_split_on_abbreviations():
     assert out.split("e.g.", 1)[1].strip()
 
 
-def test_excerpt_sentences_initials_are_not_boundaries():
-    text = ("J. K. Rowling wrote the series. The second sentence is long and "
-            "continues well past the cap to test the boundary logic. " * 10)
-    out = excerpt_sentences(text, max_chars=50)
-    assert out.startswith("J. K. Rowling wrote the series.")
+def test_excerpt_sentences_etc_terminal_still_splits():
+    """PR-50 round-4 finding: a sentence ending in 'etc.' must still be a
+    boundary. 'etc.' is conditional (like Inc.), so '..., etc. Choice B...'
+    splits at the real sentence end."""
+    s1 = "The examples include apples, pears, etc."
+    s2 = ("Choice B is the best answer because it stays within the scope "
+          "of the passage and does not overstate the evidence.")
+    out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
+    assert out == s1
+
+
+def test_excerpt_sentences_etc_nonterminal_kept():
+    """'etc.' followed by a lowercase continuation stays protected."""
+    out = excerpt_sentences("The list includes apples, pears, etc. and other fruit.",
+                            max_chars=200)
+    assert "etc." in out and "other fruit" in out
 
 
 def test_excerpt_sentences_still_splits_on_real_periods():
