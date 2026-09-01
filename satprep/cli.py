@@ -160,11 +160,19 @@ def _run_drill(conn, mode: str, args) -> None:
         if q["passage"]:
             print(q["passage"][:1800])
             print()
-        for img in q.get("images") or []:
-            print(f"  [figure: {img}]")
-        for v in q.get("visuals") or []:
-            if v.get("kind") == "table":
-                print(f"  [table: {' | '.join(_cell_text(v.get('html', '')))}]")
+        visuals = q.get("visuals") or []
+        if visuals:
+            # Round-3 (finding 6): iterate the ordered records once so a
+            # mixed table→image question prints in source order.
+            for v in visuals:
+                if v.get("kind") == "image":
+                    print(f"  [figure: {v.get('file')}]")
+                elif v.get("kind") == "table":
+                    print(f"  [table: {' | '.join(_cell_text(v.get('html', '')))}]")
+        else:
+            # legacy rows (pre-visuals) render their images directly
+            for img in q.get("images") or []:
+                print(f"  [figure: {img}]")
         print(q["stem"])
         for c in sorted(q["choices"], key=lambda c: c["letter"]):
             print(f"  {c['letter']}. {c['text'][:300]}")

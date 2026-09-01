@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .. import config
 from ..clock import utc_now
+from .qbank_fetch import sanitize_table
 from .questions import Question
 from .tags import all_tags_with_origin, restore_tag
 
@@ -50,6 +51,36 @@ def _question_line(conn, question: Question) -> dict:
         "provenance": question.provenance,
         "tags": tags,
     }
+
+
+_RESTORE_VISUAL_KINDS = {"image", "table"}
+
+
+def _restore_visuals(raw) -> list[dict]:
+    """Validate/sanitize visual records from an archive before persisting.
+
+    Round-3 finding: a crafted or modified v2 archive can carry arbitrary
+    markup in visuals[].html, which the template renders with |safe. Table
+    records are re-run through `sanitize_table` (the same allowlist the
+    live ingest uses) so no script/event/URL content survives a restore;
+    image records are reduced to their filename; anything else is dropped.
+    """
+    out = []
+    for v in raw if isinstance(raw, list) else []:
+        if not isinstance(v, dict) or v.get("kind") not in _RESTORE_VISUAL_KINDS:
+            continue
+        if v["kind"] == "image":
+            fname = v.get("file")
+            if isinstance(fname, str) and fname:
+                out.append({"kind": "image", "file": fname})
+            continue
+        # table: re-sanitize — never trust archive html verbatim
+        html = v.get("html")
+        if isinstance(html, str):
+            safe = sanitize_table(html)
+            if safe is not None:
+                out.append({"kind": "table", "html": safe})
+    return out
 
 
 def export_corpus(conn, out_path: Path | None = None) -> Path:
@@ -99,7 +130,14 @@ def restore_corpus(conn, archive_path: Path | None = None) -> dict:
         else config.REPO_ROOT / "exports" / f"corpus-v{ARCHIVE_VERSION}.jsonl"
     )
     if not archive_path.exists():
-        raise FileNotFoundError(f"No archive at {archive_path}")
+        # Round-3 finding: an upgraded host has only the pre-visuals v1
+        # archive file; the default path must fall back to it so `satprep
+        # restore` keeps working after the v1->v2 bump.
+        legacy = config.REPO_ROOT / "exports" / f"corpus-v{min(LEGACY_ARCHIVE_VERSIONS)}.jsonl"
+        if legacy.exists():
+            archive_path = legacy
+        else:
+            raise FileNotFoundError(f"No archive at {archive_path}")
     stats = {"lines": 0, "restored": 0, "duplicates": 0, "invalid": 0}
     _restore_lines(conn, archive_path, stats)
     return stats
@@ -130,6 +168,7 @@ def _restore_lines(conn, archive_path: Path, stats: dict) -> None:
             continue
         # A restore must be FAITHFUL: keep the archived fingerprint verbatim
         # (recomputing would break reconciled rows whose content changed).
+        visuals = _restore_visuals(rec.get("visuals", []))
         cur = conn.execute(
             """INSERT OR IGNORE INTO questions
               (fingerprint, source, source_test, source_question_number, module,
@@ -150,7 +189,7 @@ def _restore_lines(conn, archive_path: Path, stats: dict) -> None:
                 rec["correct_letter"],
                 rec.get("rationale", ""),
                 json.dumps(rec.get("images", [])),
-                json.dumps(rec.get("visuals", [])),
+                json.dumps(visuals),
                 rec.get("official_domain", ""),
                 rec.get("official_skill", ""),
                 rec.get("skill_source") or ("archive" if rec.get("official_skill") else "unknown"),

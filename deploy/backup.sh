@@ -46,7 +46,7 @@ gzip -f "$out"
 UV="${SATPREP_UV:-$(command -v uv || true)}"
 if [ -n "$UV" ] && [ -x "$UV" ]; then
     "$UV" run --frozen satprep export >/dev/null 2>&1 \
-        && cp "$REPO/exports/corpus-v1.jsonl" "$DEST/corpus-$stamp.jsonl" \
+        && cp "$REPO/exports/corpus-v2.jsonl" "$DEST/corpus-$stamp.jsonl" \
         && gzip -f "$DEST/corpus-$stamp.jsonl"
 else
     echo "backup: uv not found; corpus snapshot skipped" >&2

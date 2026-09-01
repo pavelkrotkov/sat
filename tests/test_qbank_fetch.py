@@ -532,7 +532,9 @@ def test_backfill_figures_attaches_figures_to_imageless_rows(db, fig_dirs, monke
     figrow = _normalize(DETAIL_FIG, FIG_META)
     insert_qbank_row(conn, figrow, batch="bfill")
     # simulate the pre-fix ingest that dropped the figure
-    conn.execute("UPDATE questions SET images_json='[]' WHERE provenance_json LIKE '%ext-fig%'")
+    conn.execute(
+        "UPDATE questions SET images_json='[]', visuals_json='[]' WHERE provenance_json LIKE '%ext-fig%'"
+    )
     conn.execute("""INSERT INTO questions (fingerprint, source, source_test, source_question_number,
                      module, passage, stem, choices_json, correct_letter, rationale, images_json,
                      official_domain, official_skill, skill_source, difficulty, pool,
@@ -578,7 +580,9 @@ def test_backfill_figures_hint_only_targets_stems_naming_assets(db, fig_dirs, mo
     # named-assets row: figure-less in storage, stem mentions a "scatterplot"
     figrow = _normalize(DETAIL_FIG, FIG_META)
     insert_qbank_row(conn, figrow, batch="bfill-hint")
-    conn.execute("UPDATE questions SET images_json='[]' WHERE provenance_json LIKE '%ext-fig%'")
+    conn.execute(
+        "UPDATE questions SET images_json='[]', visuals_json='[]' WHERE provenance_json LIKE '%ext-fig%'"
+    )
     # plain row: no asset-language in stem, no figures
     conn.execute("""INSERT INTO questions (fingerprint, source, source_test, source_question_number,
                      module, passage, stem, choices_json, correct_letter, rationale, images_json,
@@ -635,7 +639,9 @@ def test_backfill_figures_respects_limit(db, fig_dirs, monkeypatch):
         detail["stimulus"] = f"<p>The scatterplot shows yield versus rainfall. Variant {n}.</p>"
         row = _normalize(detail, meta)
         insert_qbank_row(conn, row, batch="bfill-lim")
-    conn.execute("UPDATE questions SET images_json='[]' WHERE source='college_board_question_bank'")
+    conn.execute(
+        "UPDATE questions SET images_json='[]', visuals_json='[]' WHERE source='college_board_question_bank'"
+    )
     conn.commit()
 
     fetched = []

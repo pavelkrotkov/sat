@@ -362,7 +362,9 @@ def test_backfill_audit_reports_without_writing(db, fig_dirs, monkeypatch):
     # filter would exclude the only candidate; the audit sweeps everything.
     stats = qbank_fetch.backfill_visuals(conn, hint=False, sleep_s=0, audit_only=True)
 
-    assert stats["now_visuals"] == 0  # nothing written
+    # Round-3: the audit counts visuals it WOULD preserve (now_* != 0) but
+    # never writes them — the DB stays untouched.
+    assert stats["now_visuals"] == 1
     assert stats["candidate"] >= 1
     after = conn.execute(
         "SELECT visuals_json FROM questions WHERE provenance_json LIKE '%ext-table-audit%'"
@@ -475,3 +477,101 @@ def test_extract_visuals_table_text_fallback_preserves_fingerprint(db, fig_dirs)
     # mirror that here so the comparison is apples-to-apples.
     cleaned = qbank_fetch._clean_html(remaining)
     assert fingerprint(cleaned, "", []) == fingerprint(legacy, "", [])
+
+
+# ------------------------------------------------- round-3 findings (#52) --
+
+
+def test_restore_sanitizes_table_visuals():
+    """Round-3 P1: a crafted archive must not be able to persist arbitrary
+    visuals[].html (rendered with |safe). Restore runs table records through
+    sanitize_table and drops anything that does not survive."""
+    from satprep.corpus.archive import _restore_visuals
+
+    cleaned = _restore_visuals(
+        [
+            {
+                "kind": "table",
+                "html": "<table onclick='alert(1)'><tr><td>"
+                "<script>evil()</script>cell</td></tr></table>",
+            },
+            {"kind": "image", "file": "eqb-1-figure-1.svg"},
+            {"kind": "bogus", "html": "<script>x</script>"},
+            {"kind": "image", "file": ""},
+        ]
+    )
+    assert len(cleaned) == 2
+    assert cleaned[0]["kind"] == "table"
+    assert "alert" not in cleaned[0]["html"] and "<script" not in cleaned[0]["html"]
+    assert "cell" in cleaned[0]["html"]
+    assert cleaned[1] == {"kind": "image", "file": "eqb-1-figure-1.svg"}
+
+
+def test_backfill_skips_complete_table_only_rows(db, fig_dirs):
+    """Round-3 P2: a successfully ingested table-only question has populated
+    visuals_json and legitimately EMPTY images_json. The backfill predicate
+    keyed on missing visuals_json must not re-select (and rewrite) it."""
+    conn, _path = db
+    detail = {
+        **DETAIL,
+        "stem": "Which choice completes the text?",
+        "stimulus": f"<p>The table shows yields.</p>{TABLE_HTML}",
+        "externalid": "ext-complete",
+    }
+    row = _normalize(detail, dict(META, external_id="ext-complete"))
+    insert_qbank_row(conn, row, batch="b-complete")
+    conn.commit()
+
+    rows = conn.execute(
+        "SELECT provenance_json FROM questions WHERE source='college_board_question_bank'"
+        " AND active=1 AND visuals_json IN ('[]','','null')"
+    ).fetchall()
+    assert not any("ext-complete" in (r["provenance_json"] or "") for r in rows), (
+        "complete table-only row re-selected by the backfill predicate"
+    )
+
+
+def test_audit_counts_preserved_visuals(db, fig_dirs, monkeypatch):
+    """Round-3 P2: --audit-visuals reports what WOULD be preserved; now_*
+    must be non-zero even though nothing is written."""
+    from satprep.corpus import qbank_fetch
+
+    conn, _path = db
+    detail = {
+        **DETAIL,
+        "stimulus": f"<p>The table shows yields.</p>{TABLE_HTML}",
+        "externalid": "ext-audit-count",
+    }
+    row = _normalize(detail, dict(META, external_id="ext-audit-count"))
+    insert_qbank_row(conn, row, batch="b-ac")
+    conn.execute(
+        "UPDATE questions SET visuals_json='[]' WHERE provenance_json LIKE '%ext-audit-count%'"
+    )
+    conn.commit()
+
+    monkeypatch.setattr(qbank_fetch, "fetch_question", lambda ext: detail)
+    stats = qbank_fetch.backfill_visuals(conn, hint=False, sleep_s=0, audit_only=True)
+    assert stats["now_visuals"] == 1
+    assert stats["now_tables"] == 1
+
+
+def test_table_wins_over_nested_svg(fig_dirs):
+    """Round-3 P2: a <figure class="table"> whose cell contains an inline SVG
+    must be preserved as a table (caption/headers/rows), not flattened into a
+    single image by the svg-first branch."""
+    svg_cell = (
+        "<figure class='table'><table><caption>Table S. Data</caption>"
+        "<thead><tr><th scope='col'>A</th><th scope='col'>B</th></tr></thead>"
+        f"<tbody><tr><td>{SVG}</td><td>1.0</td></tr></tbody></table></figure>"
+    )
+    detail = {
+        **DETAIL,
+        "stimulus": svg_cell,
+        "externalid": "ext-svgcell",
+    }
+    row = _normalize(detail, dict(META, external_id="ext-svgcell"))
+    tables = [v for v in row["visuals"] if v.get("kind") == "table"]
+    assert len(tables) == 1, f"expected a table visual, got {row['visuals']}"
+    assert "Table S. Data" in tables[0]["html"]
+    assert "1.0" in tables[0]["html"]
+    assert not any(v.get("kind") == "image" for v in row["visuals"])

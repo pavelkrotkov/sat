@@ -282,6 +282,17 @@ def _extract_visuals(
         block = match.group(0)
         data = match.group(1)  # set only by the bare data-URI <img> branch
         if data is None:
+            # Round-3 (finding 7): a <figure class="table"> containing an
+            # inline SVG inside a data cell must be extracted as a TABLE, not
+            # as an image — the table branch owns the wrapper; only a figure
+            # with NO table but an SVG/photo is a figure.
+            table = _TABLE_RE.search(block)
+            if table:
+                sanitized = sanitize_table(table.group(0), id_prefix=f"eqb-t{tseq}")
+                if sanitized is not None:
+                    tseq += 1
+                    return "table", sanitized.encode("utf-8"), "html"
+                # sanitize failed (e.g. no cells): fall through to svg/img
             svg = _SVG_RE.search(block)
             if svg:
                 return "image", svg.group(0).encode("utf-8"), "svg"
@@ -289,21 +300,6 @@ def _extract_visuals(
             if inner:
                 data = inner.group(2)
             else:
-                # College Board renders data tables as <figure class="table">
-                # wrapping a real <table>; the <figure> regex branch consumes
-                # the whole wrapper (up to the wrapper's </figure>, which
-                # closes AFTER the table's </table>), so the table is found
-                # INSIDE this match's region — `block`, not the whole html —
-                # preserving document order when several tables exist.
-                # A bare <table> (its own regex alternative) is found the
-                # same way.
-                table = _TABLE_RE.search(block)
-                if table:
-                    sanitized = sanitize_table(table.group(0), id_prefix=f"eqb-t{tseq}")
-                    if sanitized is None:
-                        return None
-                    tseq += 1
-                    return "table", sanitized.encode("utf-8"), "html"
                 return None  # <figure> with no savable asset: keep its text
         if "," not in data:  # malformed data URI: skip, keep as text
             return None
@@ -730,7 +726,7 @@ def backfill_visuals(
         "SELECT id, source_question_number, provenance_json, images_json, visuals_json"
         " FROM questions"
         " WHERE source='college_board_question_bank' AND active=1"
-        " AND (images_json IN ('[]','','null') OR visuals_json IN ('[]','','null'))"
+        " AND visuals_json IN ('[]','','null')"
     )
     if hint:
         # Stems that name the embedded asset in any common word; the full
@@ -758,11 +754,15 @@ def backfill_visuals(
     # Round-2 (finding 4): the missing-file audit inspects PERSISTED refs —
     # including rows the sweep would not touch — BEFORE any extraction that
     # re-saves figures. This is the only way a genuinely deleted file is
-    # reported rather than silently recreated by normalization.
+    # reported rather than silently recreated by normalization. Round-3
+    # (finding 5): count each unique missing file once per row — current-format
+    # rows store a filename both as an images_json string AND as an image
+    # record in visuals_json, so a per-reference count would double-report.
     for r in conn.execute(
         "SELECT images_json, visuals_json FROM questions"
         " WHERE source='college_board_question_bank' AND active=1"
     ).fetchall():
+        seen: set[str] = set()
         for blob in (r["images_json"] or "[]", r["visuals_json"] or "[]"):
             try:
                 refs = json.loads(blob) if blob else []
@@ -770,7 +770,12 @@ def backfill_visuals(
                 continue
             for ref in refs or []:
                 fname = ref if isinstance(ref, str) else (ref or {}).get("file", "")
-                if fname and not (config.IMAGES_DIR / fname).exists():
+                if not fname:
+                    continue
+                if fname in seen:
+                    continue
+                seen.add(fname)
+                if not (config.IMAGES_DIR / fname).exists():
                     stats["missing_files"] += 1
     if audit_only:
         # Round-2 (finding 3/4): audit must be purely read-only — do not
@@ -810,6 +815,13 @@ def backfill_visuals(
                 stats["still_empty"] += 1
                 if had_markup:
                     stats["unsupported_markup"] += 1
+            else:
+                # Round-3 (finding 4): the audit reports what WOULD be
+                # preserved, so count discovered visuals here — before the
+                # early exits — so now_* are non-zero in audit mode too.
+                stats["now_visuals"] += 1
+                stats["now_images"] += len(images)
+                stats["now_tables"] += sum(1 for v in visuals if v.get("kind") == "table")
             if audit_only:
                 if i % 50 == 0:
                     print(f"  audit {i}/{len(rows)} … {stats}")
@@ -827,9 +839,6 @@ def backfill_visuals(
                 "UPDATE questions SET images_json=?, visuals_json=? WHERE id=?",
                 (json.dumps(images), json.dumps(visuals), r["id"]),
             )
-            stats["now_visuals"] += 1
-            stats["now_images"] += len(images)
-            stats["now_tables"] += sum(1 for v in visuals if v.get("kind") == "table")
             if i % 50 == 0:
                 conn.commit()
                 print(f"  backfill {i}/{len(rows)} … {stats}")
