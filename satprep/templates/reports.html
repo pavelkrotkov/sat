@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Reports — satprep{% endblock %}
+{% block content %}
+<section class="stack">
+  <h2>Periodic review</h2>
+  <p class="lede">Your wrong-answer review, diagnosed with the SAT llm-wiki strategy framework:
+    the passage, both your answer and the correct one, and the mental shortcut that would have got
+    you there fast.</p>
+
+  {% if report %}
+    <div class="btn-row">
+      <a class="btn" href="{{ report.url }}">Open the latest report</a>
+    </div>
+    <p class="muted">{{ report.name }} · generated {{ report.generated }}</p>
+  {% else %}
+    <p class="muted">No report has been generated yet.</p>
+  {% endif %}
+</section>
+{% endblock %}
