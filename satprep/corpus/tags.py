@@ -52,6 +52,7 @@ EFFECTIVE_TAGS = _EFFECTIVE_TAGS
 
 # ------------------------------------------------------------------ reads --
 
+
 def effective_tags(conn, question_id: int) -> list[str]:
     """Tags that apply to one question, suppressions honoured."""
     return [
@@ -104,6 +105,7 @@ def all_tags_with_origin(conn, question_id: int) -> list[tuple[str, str]]:
 
 
 # ----------------------------------------------------------------- writes --
+
 
 def _upsert(conn, question_id: int, tag: str, origin: str) -> None:
     conn.execute(

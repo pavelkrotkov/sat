@@ -25,6 +25,7 @@ Design (from the issue):
 This module is read-only over the DB (writes nothing except through the
 standard session/persist path when a remediation drill is started).
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -32,26 +33,27 @@ import json
 from datetime import datetime, timedelta
 
 from .sampler import select_drill
-from .weakness import _recency, _weight_for
+from .weakness import _parse_ts, _recency, _weight_for
 
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
 
+
 @dataclasses.dataclass(frozen=True)
 class ErrorPattern:
     tag: str
     # Aggregated stats (recency-decayed).
-    evidence_count: int          # raw number of wrong attempts carrying this tag
-    recency_weighted_n: float    # decayed evidence mass
-    recent_wrong: int            # wrong attempts in the last ~30 days
-    recent_total: int            # all attempts (wrong+correct) in the last ~30 days
-    recent_error_rate: float     # recent_wrong / max(1, recent_total)
-    confidence_weighted: float   # sum of confidence multipliers on wrong attempts
-    score: float                 # 0..100 remediation priority (higher = more urgent)
-    kb_tactic_refs: list[str]    # linked KB pages
-    explanation: str             # one-line why-this-is-weak
-    status: str                  # ok | cold_start | sparse | conflicting | no_match
+    evidence_count: int  # raw number of wrong attempts carrying this tag
+    recency_weighted_n: float  # decayed evidence mass
+    recent_wrong: int  # wrong attempts in the last ~30 days
+    recent_total: int  # all attempts (wrong+correct) in the last ~30 days
+    recent_error_rate: float  # recent_wrong / max(1, recent_total)
+    confidence_weighted: float  # sum of confidence multipliers on wrong attempts
+    score: float  # 0..100 remediation priority (higher = more urgent)
+    kb_tactic_refs: list[str]  # linked KB pages
+    explanation: str  # one-line why-this-is-weak
+    status: str  # ok | cold_start | sparse | conflicting | no_match
 
 
 @dataclasses.dataclass(frozen=True)
@@ -59,7 +61,7 @@ class RemediationPlan:
     patterns: list[ErrorPattern]
     improvement: dict[str, dict]  # tag -> {recent_error_rate, older_error_rate, delta, n}
     recommended_tags: list[str]
-    drill: dict | None            # select_drill() result, or None if no match
+    drill: dict | None  # select_drill() result, or None if no match
 
 
 # ---------------------------------------------------------------------------
@@ -121,14 +123,16 @@ def _error_tag_attempts(conn) -> dict[str, list[dict]]:
         # Avoid inflating mass: an attempt may carry multiple error tags,
         # but each tag should only see this attempt once.
         for t in tags:
-            per_tag.setdefault(t, []).append({
-                "question_id": d["question_id"],
-                "attempt_id": d["attempt_id"],
-                "correct": d["correct"],
-                "confidence": d["confidence"],
-                "attempted_at": d["attempted_at"],
-                "time_ms": d["time_ms"],
-            })
+            per_tag.setdefault(t, []).append(
+                {
+                    "question_id": d["question_id"],
+                    "attempt_id": d["attempt_id"],
+                    "correct": d["correct"],
+                    "confidence": d["confidence"],
+                    "attempted_at": d["attempted_at"],
+                    "time_ms": d["time_ms"],
+                }
+            )
     return per_tag
 
 
@@ -175,10 +179,8 @@ def _error_rate(rows: list[dict], now: datetime, window_days: float) -> tuple[in
     wrong = total = 0
     for r in rows:
         ts = r.get("attempted_at")
-        try:
-            if datetime.fromisoformat(ts).replace(tzinfo=None) < cutoff.replace(tzinfo=None):
-                continue
-        except (TypeError, ValueError):
+        parsed_ts = _parse_ts(ts)
+        if parsed_ts is not None and parsed_ts.replace(tzinfo=None) < cutoff.replace(tzinfo=None):
             continue
         total += 1
         wrong += 1 if r["correct"] == 0 else 0
@@ -230,8 +232,7 @@ def compute_patterns(conn, now: datetime | None = None) -> list[ErrorPattern]:
     patterns: list[ErrorPattern] = []
     for tag, rows in per_tag.items():
         status = _pattern_status(tag, rows, now)
-        recent_wrong, recent_total, recent_rate = _error_rate(
-            rows, now, _RECENT_WINDOW_DAYS)
+        recent_wrong, recent_total, recent_rate = _error_rate(rows, now, _RECENT_WINDOW_DAYS)
         # Decayed evidence mass: each wrong attempt counts with recency
         # decay and confidence weight (confident wrong = stronger signal).
         mass = 0.0
@@ -256,18 +257,25 @@ def compute_patterns(conn, now: datetime | None = None) -> list[ErrorPattern]:
         score = round(min(100.0, score), 1)
         kb = _kb_tactics_for(tag)
         expl = (
-            f"{tag}: {recent_wrong}/{max(1,recent_total)} wrong in the last "
+            f"{tag}: {recent_wrong}/{max(1, recent_total)} wrong in the last "
             f"{int(_RECENT_WINDOW_DAYS)}d, "
             f"evidence mass {mass:.2f}, confidence {conf_w:.2f}"
         )
-        patterns.append(ErrorPattern(
-            tag=tag, evidence_count=len(rows), recency_weighted_n=round(mass, 3),
-            recent_wrong=recent_wrong, recent_total=recent_total,
-            recent_error_rate=round(recent_rate, 3),
-            confidence_weighted=round(conf_w, 3), score=score,
-            kb_tactic_refs=kb, explanation=expl,
-            status=status,
-        ))
+        patterns.append(
+            ErrorPattern(
+                tag=tag,
+                evidence_count=len(rows),
+                recency_weighted_n=round(mass, 3),
+                recent_wrong=recent_wrong,
+                recent_total=recent_total,
+                recent_error_rate=round(recent_rate, 3),
+                confidence_weighted=round(conf_w, 3),
+                score=score,
+                kb_tactic_refs=kb,
+                explanation=expl,
+                status=status,
+            )
+        )
     patterns.sort(key=lambda p: -p.score)
     return patterns
 
@@ -276,8 +284,10 @@ def compute_patterns(conn, now: datetime | None = None) -> list[ErrorPattern]:
 # Improvement measurement
 # ---------------------------------------------------------------------------
 
-def measure_improvement(conn, patterns: list[ErrorPattern],
-                        now: datetime | None = None) -> dict[str, dict]:
+
+def measure_improvement(
+    conn, patterns: list[ErrorPattern], now: datetime | None = None
+) -> dict[str, dict]:
     """Compare recent (last 30d) vs older (before that) error rate per
     tag. A negative delta means the student got better."""
     now = now or datetime.now().astimezone()
@@ -290,10 +300,10 @@ def measure_improvement(conn, patterns: list[ErrorPattern],
         older_w = older_t = 0
         for r in rows:
             ts = r.get("attempted_at")
-            try:
-                if datetime.fromisoformat(ts).replace(tzinfo=None) >= cutoff.replace(tzinfo=None):
-                    continue
-            except (TypeError, ValueError):
+            parsed_ts = _parse_ts(ts)
+            if parsed_ts is not None and parsed_ts.replace(tzinfo=None) >= cutoff.replace(
+                tzinfo=None
+            ):
                 continue
             older_t += 1
             older_w += 1 if r["correct"] == 0 else 0
@@ -323,9 +333,10 @@ def measure_improvement(conn, patterns: list[ErrorPattern],
 # Remediation drill selection
 # ---------------------------------------------------------------------------
 
-def _recommended_tags(patterns: list[ErrorPattern],
-                      min_score: float = 40.0, max_tags: int = 3,
-                      min_evidence: int = 3) -> list[str]:
+
+def _recommended_tags(
+    patterns: list[ErrorPattern], min_score: float = 40.0, max_tags: int = 3, min_evidence: int = 3
+) -> list[str]:
     """Top patterns above the priority floor, excluding noise-level
     evidence. A pattern needs at least `min_evidence` wrong attempts to
     be recommended (cold-start / single-attempt noise never dominates
@@ -376,8 +387,9 @@ def build_remediation_plan(
         # Thread `now` so due-date eligibility and candidate recency
         # in the drill line up with the evidence snapshot used to
         # build the rest of the plan.
-        result = select_drill(conn, mode="remediation", count=count,
-                              seed=seed, focus_tag=tags[0], now=now)
+        result = select_drill(
+            conn, mode="remediation", count=count, seed=seed, focus_tag=tags[0], now=now
+        )
         # Explicit no-match handling: documented contract is drill=None
         # when no eligible question matches the focus tag. A drill
         # whose items came entirely from the sampler's FALLBACK_BUCKET
@@ -385,13 +397,12 @@ def build_remediation_plan(
         # a generic drill dressed as remediation; collapse to None so
         # callers see the truth.
         items = result.get("items") or []
-        remediation_items = [it for it in items
-                             if any(label.startswith("remediation:error-tag:")
-                                    for label, _ in (it.get("why") or []))]
-        if not remediation_items:
-            drill = None
-        else:
-            drill = result
+        remediation_items = [
+            it
+            for it in items
+            if any(label.startswith("remediation:error-tag:") for label, _ in (it.get("why") or []))
+        ]
+        drill = None if not remediation_items else result
     return RemediationPlan(
         patterns=patterns,
         improvement=improvement,
@@ -412,8 +423,10 @@ def explain_selection(plan: RemediationPlan) -> list[str]:
     """
     out = []
     if not plan.drill:
-        out.append("no matching remediation questions found; recommended tags: "
-                   + ", ".join(plan.recommended_tags or ["(none)"]))
+        out.append(
+            "no matching remediation questions found; recommended tags: "
+            + ", ".join(plan.recommended_tags or ["(none)"])
+        )
         return out
     for item in plan.drill["items"]:
         qid = item.get("question_id") or item.get("id")
@@ -426,7 +439,5 @@ def explain_selection(plan: RemediationPlan) -> list[str]:
         else:
             breakdown = {label: value for label, value in why_pairs}
         weak_hits = [k for k in breakdown if k.startswith(("weak-tag:", "remediation:"))]
-        out.append(
-            f"q{qid}: selected because {weak_hits or 'general weakness match'}"
-        )
+        out.append(f"q{qid}: selected because {weak_hits or 'general weakness match'}")
     return out

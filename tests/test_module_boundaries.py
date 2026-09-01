@@ -21,7 +21,7 @@ SATPREP = pathlib.Path(__file__).resolve().parent.parent / "satprep"
 #: Imports that may stay inside a function body. Everything else at function
 #: scope is a cycle that was dodged rather than broken.
 ALLOWED_DEFERRED = {
-    "uvicorn",   # optional heavyweight dependency, only `satprep serve` needs it
+    "uvicorn",  # optional heavyweight dependency, only `satprep serve` needs it
 }
 
 
@@ -50,8 +50,8 @@ def test_corpus_never_imports_training():
         for name in _imported_names(tree):
             if "training" in name:
                 offenders.append(f"{path.name}: {name}")
-    assert offenders == [], (
-        "satprep.corpus must not depend on satprep.training: " + "; ".join(offenders)
+    assert offenders == [], "satprep.corpus must not depend on satprep.training: " + "; ".join(
+        offenders
     )
 
 
@@ -103,8 +103,12 @@ def test_every_module_imports_cleanly_on_its_own():
 
     failures = []
     for module in modules:
-        result = subprocess.run([sys.executable, "-c", f"import {module}"],
-                                capture_output=True, text=True, cwd=SATPREP.parent)
+        result = subprocess.run(
+            [sys.executable, "-c", f"import {module}"],
+            capture_output=True,
+            text=True,
+            cwd=SATPREP.parent,
+        )
         if result.returncode != 0:
             # a non-zero exit with no stderr would otherwise IndexError here,
             # hiding the import failure behind an unrelated one
@@ -134,7 +138,7 @@ def test_session_id_gives_up_rather_than_spinning():
         session_id("hard_mixed", "seed", exists=lambda c: calls.append(c) or True)
 
     assert len(calls) == MAX_ID_ATTEMPTS
-    assert len(set(calls)) == MAX_ID_ATTEMPTS   # each attempt is freshly salted
+    assert len(set(calls)) == MAX_ID_ATTEMPTS  # each attempt is freshly salted
 
 
 def test_session_id_is_stable_and_collision_free():

@@ -61,6 +61,7 @@ class Question:
     skill_source: str = "unknown"
     import_batch: str = ""
     images: tuple[str, ...] = ()
+    visuals: tuple[dict, ...] = ()
     provenance: dict = field(default_factory=dict)
     is_new_bank: int = 0
     seen_benchmark: int = 0
@@ -102,6 +103,7 @@ class Question:
         Missing columns fail here, at the seam, naming the column - rather
         than several modules downstream inside a comprehension.
         """
+
         def get(name, default=None):
             try:
                 value = row[name]
@@ -117,7 +119,9 @@ class Question:
             fingerprint=get("fingerprint", ""),
             passage=get("passage", ""),
             stem=get("stem", ""),
-            choices=tuple(Choice.from_dict(c) for c in json.loads(get("choices_json", "[]") or "[]")),
+            choices=tuple(
+                Choice.from_dict(c) for c in json.loads(get("choices_json", "[]") or "[]")
+            ),
             correct_letter=get("correct_letter", ""),
             pool=get("pool", ""),
             official_skill=get("official_skill", ""),
@@ -131,6 +135,7 @@ class Question:
             skill_source=get("skill_source", "unknown"),
             import_batch=get("import_batch", ""),
             images=tuple(json.loads(get("images_json", "[]") or "[]")),
+            visuals=tuple(json.loads(get("visuals_json", "[]") or "[]")),
             provenance=json.loads(get("provenance_json", "{}") or "{}"),
             is_new_bank=int(get("is_new_bank", 0)),
             seen_benchmark=int(get("seen_benchmark", 0)),
@@ -139,6 +144,7 @@ class Question:
 
 
 # ------------------------------------------------------------------ reads --
+
 
 def load(conn, question_id: int) -> Question | None:
     row = conn.execute("SELECT * FROM questions WHERE id=?", (question_id,)).fetchone()

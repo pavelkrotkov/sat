@@ -9,7 +9,7 @@ end-to-end safety net; this one pins the behaviour directly.
 """
 
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -17,24 +17,41 @@ from satprep import config
 from satprep.corpus.questions import Choice, Question
 from satprep.training.candidates import Candidate
 from satprep.training.composition import (
-    FALLBACK_BUCKET, MODE_COMPOSITIONS, allocate, compose, eligible_for,
-    fallback_allowed, pools_for,
+    FALLBACK_BUCKET,
+    MODE_COMPOSITIONS,
+    allocate,
+    compose,
+    eligible_for,
+    fallback_allowed,
+    pools_for,
 )
 
-WEAKNESS = {"tag": {"qualifier_strength": {"score": 80.0},
-                    "chronology": {"score": 10.0}}}
+WEAKNESS = {"tag": {"qualifier_strength": {"score": 80.0}, "chronology": {"score": 10.0}}}
 
 
 def question(qid, *, pool="fresh_training", skill="Inferences"):
     return Question(
-        id=qid, fingerprint=f"fp{qid}", passage="p", stem="s?",
+        id=qid,
+        fingerprint=f"fp{qid}",
+        passage="p",
+        stem="s?",
         choices=(Choice("A", "a", True), Choice("B", "b")),
-        correct_letter="A", pool=pool, official_skill=skill,
+        correct_letter="A",
+        pool=pool,
+        official_skill=skill,
     )
 
 
-def cand(qid, *, pool="fresh_training", hist_correct=None, tags=("qualifier_strength",),
-         skill="Inferences", score=1.0, state=None):
+def cand(
+    qid,
+    *,
+    pool="fresh_training",
+    hist_correct=None,
+    tags=("qualifier_strength",),
+    skill="Inferences",
+    score=1.0,
+    state=None,
+):
     c = Candidate(question(qid, pool=pool, skill=skill), list(tags))
     c.hist_correct = hist_correct
     c.state = state
@@ -46,10 +63,11 @@ def rng():
     return random.Random("fixed")
 
 
-NOW = datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
 
 
 # ------------------------------------------------------------ allocation --
+
 
 @pytest.mark.parametrize("mode", sorted(m for m in MODE_COMPOSITIONS if m != "fresh_benchmark"))
 @pytest.mark.parametrize("target", range(1, 31))
@@ -74,6 +92,7 @@ def test_allocation_handles_degenerate_shares():
 
 
 # ---------------------------------------------------------- bucket rules --
+
 
 def test_old_wrong_due_needs_a_previous_miss():
     missed = cand(1, pool="historical", hist_correct=0)
@@ -118,6 +137,7 @@ def test_fresh_weak_needs_some_classification():
 
 # ------------------------------------------------------------- compose ----
 
+
 def test_compose_fills_buckets_by_score():
     """Within a bucket, the highest-scoring eligible candidates win.
 
@@ -138,8 +158,10 @@ def test_underfilled_buckets_cascade_without_overshooting():
     """error_clinic wants 8 old_wrong_due and 2 fresh_weak. Given only two of
     the former, the rest must come from the fallback and the total must still
     land on the target."""
-    scored = [cand(1, pool="historical", hist_correct=0),
-              cand(2, pool="historical", hist_correct=0)]
+    scored = [
+        cand(1, pool="historical", hist_correct=0),
+        cand(2, pool="historical", hist_correct=0),
+    ]
     scored += [cand(i, pool="fresh_training") for i in range(3, 15)]
 
     chosen = compose("error_clinic", scored, 10, WEAKNESS, rng(), NOW)
@@ -165,6 +187,7 @@ def test_compose_returns_everything_available_when_short():
 
 # --------------------------------------------------- mode-specific rules --
 
+
 def test_transfer_drill_never_serves_a_memorized_error():
     """Spec section 11C. The fallback fill is the path that used to threaten
     this: when a bucket runs dry it reaches across the whole scored set."""
@@ -174,7 +197,7 @@ def test_transfer_drill_never_serves_a_memorized_error():
     chosen = compose("transfer_drill", memorized + transferable, 12, WEAKNESS, rng(), NOW)
 
     assert set(chosen).isdisjoint({c.question.id for c in memorized})
-    assert set(chosen) == {100}   # only the transferable item survives
+    assert set(chosen) == {100}  # only the transferable item survives
 
 
 def test_fallback_allowed_is_mode_specific():
@@ -213,12 +236,14 @@ def test_protected_benchmark_is_not_composition_s_job():
 
 # --------------------------------------------------------------- clock ---
 
+
 def _due_at(moment):
     class State(dict):
         def __getitem__(self, key):
             if key == "due_at":
                 return moment.isoformat()
             raise KeyError(key)
+
     return State()
 
 
@@ -227,8 +252,7 @@ def test_due_eligibility_is_evaluated_against_the_passed_clock():
     datetime.now() internally - so composition was not actually reproducible
     from its arguments, and a test sitting near a due boundary could flip
     depending on when it ran."""
-    due_soon = cand(1, pool="historical", hist_correct=0,
-                    state=_due_at(NOW + timedelta(hours=1)))
+    due_soon = cand(1, pool="historical", hist_correct=0, state=_due_at(NOW + timedelta(hours=1)))
 
     assert not eligible_for("old_wrong_due", due_soon, WEAKNESS, NOW)
     assert eligible_for("old_wrong_due", due_soon, WEAKNESS, NOW + timedelta(hours=2))
@@ -236,9 +260,16 @@ def test_due_eligibility_is_evaluated_against_the_passed_clock():
 
 def test_compose_is_reproducible_from_its_arguments():
     """Same inputs, same clock, same seed -> byte-identical plan."""
-    scored = [cand(i, pool="historical", hist_correct=0,
-                   state=_due_at(NOW + timedelta(days=i - 5)), score=float(i))
-              for i in range(1, 15)]
+    scored = [
+        cand(
+            i,
+            pool="historical",
+            hist_correct=0,
+            state=_due_at(NOW + timedelta(days=i - 5)),
+            score=float(i),
+        )
+        for i in range(1, 15)
+    ]
 
     first = compose("error_clinic", scored, 6, WEAKNESS, rng(), NOW)
     second = compose("error_clinic", scored, 6, WEAKNESS, rng(), NOW)

@@ -163,12 +163,12 @@ TAG_LESSONS: dict[str, str] = {
 
 # ------------------------------------------------------------- weakness ----
 
-WEAKNESS_PRIOR_STRENGTH = 6.0      # beta prior pseudo-count (smoothing)
+WEAKNESS_PRIOR_STRENGTH = 6.0  # beta prior pseudo-count (smoothing)
 WEAKNESS_RECENCY_HALF_LIFE_DAYS = 120.0
-WEAKNESS_SHRINK_N = 10.0           # evidence shrinkage toward baseline
-SLOW_CORRECT_THRESHOLD_S = 90.0    # spec section 12: slow-correct friction signal
-CONFIDENT_WRONG_MULTIPLIER = 1.6   # wrong + confidence 3 counts extra
-LOW_CONF_CORRECT_WEIGHT = 0.55     # correct-but-guessing proves less
+WEAKNESS_SHRINK_N = 10.0  # evidence shrinkage toward baseline
+SLOW_CORRECT_THRESHOLD_S = 90.0  # spec section 12: slow-correct friction signal
+CONFIDENT_WRONG_MULTIPLIER = 1.6  # wrong + confidence 3 counts extra
+LOW_CONF_CORRECT_WEIGHT = 0.55  # correct-but-guessing proves less
 MASTERY_RECENT_CORRECT_DISCOUNT = 0.25
 
 # A tag counts as "weak enough to train against" above this model score.

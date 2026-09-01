@@ -1,34 +1,60 @@
 import re
 
 import pytest
-
-from satprep.training.sessions import (complete_session, create_session,
-                                       excerpt_sentences, review_payload,
-                                       submit_answer)
 from conftest import add_question
+
+from satprep.training.sessions import (
+    complete_session,
+    create_session,
+    excerpt_sentences,
+    review_payload,
+    submit_answer,
+)
 
 
 def _setup(db):
-    conn, path = db
+    conn, _path = db
     # historical errors + rights + fresh pool
     wq = []
     for i in range(5):
-        qid = add_question(conn, passage=f"wp{i}", stem=f"ws{i}?",
-                           choices=[f"a{i}", f"b{i}", f"c{i}", f"d{i}"], correct="A",
-                           source="bluebook_test", pool="historical",
-                           tags=("qualifier_strength",))
-        conn.execute("INSERT INTO attempts (session_id, question_id, chosen_letter, correct, confidence, time_ms, mode, attempted_at) VALUES (?,?,?,?,0,0,'historical','2026-03-01')",
-                     (f"sw{i}", qid, "C", 0))
+        qid = add_question(
+            conn,
+            passage=f"wp{i}",
+            stem=f"ws{i}?",
+            choices=[f"a{i}", f"b{i}", f"c{i}", f"d{i}"],
+            correct="A",
+            source="bluebook_test",
+            pool="historical",
+            tags=("qualifier_strength",),
+        )
+        conn.execute(
+            "INSERT INTO attempts (session_id, question_id, chosen_letter, correct, confidence, time_ms, mode, attempted_at) VALUES (?,?,?,?,0,0,'historical','2026-03-01')",
+            (f"sw{i}", qid, "C", 0),
+        )
         wq.append(qid)
     for i in range(8):
-        add_question(conn, passage=f"rp{i}", stem=f"rs{i}?",
-                     choices=["ra", "rb", "rc", "rd"], correct="B",
-                     source="bluebook_test", pool="historical", tags=("qualifier_strength",))
+        add_question(
+            conn,
+            passage=f"rp{i}",
+            stem=f"rs{i}?",
+            choices=["ra", "rb", "rc", "rd"],
+            correct="B",
+            source="bluebook_test",
+            pool="historical",
+            tags=("qualifier_strength",),
+        )
     for i in range(10):
-        add_question(conn, passage=f"fp{i}", stem=f"fs{i}?",
-                     choices=["fa", "fb", "fc", "fd"], correct="D",
-                     source="college_board_question_bank", pool="fresh_training",
-                     difficulty="hard", tags=("qualifier_strength",))
+        add_question(
+            conn,
+            passage=f"fp{i}",
+            stem=f"fs{i}?",
+            choices=["fa", "fb", "fc", "fd"],
+            correct="D",
+            source="college_board_question_bank",
+            pool="fresh_training",
+            difficulty="hard",
+            tags=("qualifier_strength",),
+        )
     conn.commit()
     return conn
 
@@ -53,7 +79,6 @@ def test_full_lifecycle_records_scores_and_review(db):
 
 
 def test_benchmark_answer_marks_seen(db):
-    from satprep.db import connect
 
     conn = _setup(db)
     sess = create_session(conn, "fresh_benchmark", count=4, seed="b")
@@ -62,8 +87,9 @@ def test_benchmark_answer_marks_seen(db):
     sid = sess["plan"]["session_id"]
     q = sess["questions"][0]
     submit_answer(conn, sid, q["id"], "Z", 2, 1000)
-    row = conn.execute("SELECT pool, seen_benchmark FROM questions WHERE id=?",
-                       (q["id"],)).fetchone()
+    row = conn.execute(
+        "SELECT pool, seen_benchmark FROM questions WHERE id=?", (q["id"],)
+    ).fetchone()
     assert row["seen_benchmark"] == 1 and row["pool"] != "protected_benchmark"
 
 
@@ -71,9 +97,17 @@ def test_confidence_clamped(db):
     conn = _setup(db)
     sess = create_session(conn, "error_clinic", count=3, seed="c")
     q = sess["questions"][0]
-    submit_answer(conn, sid := sess["plan"]["session_id"], q["id"],
-                  sess["questions"][0]["choices"][0]["letter"], 9, 5)
-    row = conn.execute("SELECT MAX(confidence) FROM attempts WHERE session_id=?", (sid,)).fetchone()[0]
+    submit_answer(
+        conn,
+        sid := sess["plan"]["session_id"],
+        q["id"],
+        sess["questions"][0]["choices"][0]["letter"],
+        9,
+        5,
+    )
+    row = conn.execute(
+        "SELECT MAX(confidence) FROM attempts WHERE session_id=?", (sid,)
+    ).fetchone()[0]
     assert row <= 3
 
 
@@ -82,26 +116,30 @@ def test_duplicate_submission_does_not_double_count(db):
     sess = create_session(conn, "error_clinic", count=3, seed="dup")
     sid = sess["plan"]["session_id"]
     q = sess["questions"][0]
-    r1 = submit_answer(conn, sid, q["id"], "Z", 2, 100)
+    submit_answer(conn, sid, q["id"], "Z", 2, 100)
     r2 = submit_answer(conn, sid, q["id"], "Z", 2, 100)
     assert r2.get("duplicate") is True
     n = conn.execute(
         "SELECT COUNT(*) FROM attempts WHERE session_id=? AND question_id=?",
         (sid, q["id"]),
     ).fetchone()[0]
-    st = conn.execute("SELECT times_seen FROM question_state WHERE question_id=?", (q["id"],)).fetchone()
+    st = conn.execute(
+        "SELECT times_seen FROM question_state WHERE question_id=?", (q["id"],)
+    ).fetchone()
     conn.close()
     assert n == 1 and (st is None or st["times_seen"] <= 1)
 
 
 def test_submission_outside_session_plan_rejected(db):
     from conftest import add_question
+
     conn = _setup(db)
     sess = create_session(conn, "targeted_drill", count=4, seed="rogue")
     sid = sess["plan"]["session_id"]
     rogue = add_question(db[0], passage="X", stem="x?", choices=["1", "2"], correct="A")
     db[0].commit()
     import pytest
+
     with pytest.raises(ValueError):
         submit_answer(conn, sid, rogue, "A", 3, 10)
 
@@ -109,21 +147,34 @@ def test_submission_outside_session_plan_rejected(db):
 def test_benchmark_release_requires_plan_membership(db):
     """Greptile P1: protected items can only be released via their own session plan."""
     from conftest import add_question
+
     conn, path = db
     fp = __import__("satprep.corpus.fingerprint", fromlist=["fingerprint"]).fingerprint(
-        "prot-p", "prot-s?", ["pa", "pb", "pc", "pd"])
-    pid = add_question(conn, passage="prot-p", stem="prot-s?",
-                       choices=["pa", "pb", "pc", "pd"],
-                       source="college_board_question_bank",
-                       pool="protected_benchmark", fingerprint=fp)
+        "prot-p", "prot-s?", ["pa", "pb", "pc", "pd"]
+    )
+    pid = add_question(
+        conn,
+        passage="prot-p",
+        stem="prot-s?",
+        choices=["pa", "pb", "pc", "pd"],
+        source="college_board_question_bank",
+        pool="protected_benchmark",
+        fingerprint=fp,
+    )
     conn.commit()
     sess = create_session(conn, "targeted_drill", count=2, seed="leak")
     sid = sess["plan"]["session_id"]
     import pytest
+
     with pytest.raises(ValueError):
         submit_answer(conn, sid, pid, "A", 3, 10)
     from satprep.db import connect
-    row = connect(path).execute("SELECT pool, seen_benchmark FROM questions WHERE id=?", (pid,)).fetchone()
+
+    row = (
+        connect(path)
+        .execute("SELECT pool, seen_benchmark FROM questions WHERE id=?", (pid,))
+        .fetchone()
+    )
     assert row["pool"] == "protected_benchmark" and row["seen_benchmark"] == 0
 
 
@@ -139,23 +190,29 @@ def test_interrupted_drill_rolls_back_as_a_unit(db, tmp_path):
 
     conn, path = db
     for i in range(6):
-        add_question(conn, passage=f"p{i}", stem=f"s{i}?",
-                     choices=[f"c{i}{l}" for l in "abcd"],
-                     source="bluebook_test", pool="historical")
+        add_question(
+            conn,
+            passage=f"p{i}",
+            stem=f"s{i}?",
+            choices=[f"c{i}{c}" for c in "abcd"],
+            source="bluebook_test",
+            pool="historical",
+        )
     conn.commit()
     conn.close()
 
-    with pytest.raises(RuntimeError, match="interrupted"):
-        with db_context(path) as tx:
-            sess = create_session(tx, "error_clinic", count=3, seed="boom")
-            sid = sess["plan"]["session_id"]
-            submit_answer(tx, sid, sess["questions"][0]["id"], "A", 2, 100)
-            raise RuntimeError("interrupted")
+    with pytest.raises(RuntimeError, match="interrupted"), db_context(path) as tx:
+        sess = create_session(tx, "error_clinic", count=3, seed="boom")
+        sid = sess["plan"]["session_id"]
+        submit_answer(tx, sid, sess["questions"][0]["id"], "A", 2, 100)
+        raise RuntimeError("interrupted")
 
     after = connect(path)
     assert after.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
     assert after.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 0
-    assert after.execute("SELECT COUNT(*) FROM question_state WHERE times_seen > 0").fetchone()[0] == 0
+    assert (
+        after.execute("SELECT COUNT(*) FROM question_state WHERE times_seen > 0").fetchone()[0] == 0
+    )
     after.close()
 
 
@@ -163,6 +220,7 @@ def test_interrupted_drill_rolls_back_as_a_unit(db, tmp_path):
 # Issue #48: the compact "why the key works" preview must never cut the
 # official rationale mid-sentence, and the full rationale is rendered
 # verbatim on the review page (see test_drill_ui render tests).
+
 
 def test_excerpt_sentences_never_cuts_mid_sentence():
     s1 = "Choice B is best because it stays within the passage's scope."
@@ -179,8 +237,8 @@ def test_excerpt_sentences_single_overlong_sentence_cuts_at_word_boundary():
     long = "word " * 300 + "tail."
     out = excerpt_sentences(long, max_chars=600)
     assert len(out) <= 600
-    assert not out.endswith(" ")           # no dangling space at the cut
-    assert out.count(" ") > 0              # word boundary kept, not mid-word
+    assert not out.endswith(" ")  # no dangling space at the cut
+    assert out.count(" ") > 0  # word boundary kept, not mid-word
 
 
 def test_excerpt_sentences_includes_whole_sentences_that_fit():
@@ -199,9 +257,11 @@ def test_excerpt_sentences_does_not_split_on_abbreviations():
     """PR-50 review finding: 'e.g.', 'Dr.', 'U.S.' are not sentence
     boundaries. The preview must continue past the abbreviation rather
     than end the excerpt there."""
-    text = ("Some claim e.g. that the evidence overwhelmingly supports the "
-            "treatment in every case observed so far and the results are "
-            "consistent with the hypothesis. " * 10)
+    text = (
+        "Some claim e.g. that the evidence overwhelmingly supports the "
+        "treatment in every case observed so far and the results are "
+        "consistent with the hypothesis. " * 10
+    )
     out = excerpt_sentences(text, max_chars=90)
     assert "e.g." in out
     # the excerpt continues past the abbreviation, it does not stop at it
@@ -213,16 +273,17 @@ def test_excerpt_sentences_etc_terminal_still_splits():
     boundary. 'etc.' is conditional (like Inc.), so '..., etc. Choice B...'
     splits at the real sentence end."""
     s1 = "The examples include apples, pears, etc."
-    s2 = ("Choice B is the best answer because it stays within the scope "
-          "of the passage and does not overstate the evidence.")
+    s2 = (
+        "Choice B is the best answer because it stays within the scope "
+        "of the passage and does not overstate the evidence."
+    )
     out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
     assert out == s1
 
 
 def test_excerpt_sentences_etc_nonterminal_kept():
     """'etc.' followed by a lowercase continuation stays protected."""
-    out = excerpt_sentences("The list includes apples, pears, etc. and other fruit.",
-                            max_chars=200)
+    out = excerpt_sentences("The list includes apples, pears, etc. and other fruit.", max_chars=200)
     assert "etc." in out and "other fruit" in out
 
 
@@ -236,8 +297,10 @@ def test_excerpt_sentences_suffix_abbreviation_terminal_still_splits():
     """PR-50 round-5 finding: 'Jr.' at a real sentence end is a boundary —
     suffix abbreviations are terminal-aware like Inc./etc."""
     s1 = "The speaker was Martin Luther King Jr."
-    s2 = ("Choice B is the best answer because it stays within the scope "
-          "of the passage and does not overstate the evidence.")
+    s2 = (
+        "Choice B is the best answer because it stays within the scope "
+        "of the passage and does not overstate the evidence."
+    )
     out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
     assert out == s1
 
@@ -245,14 +308,17 @@ def test_excerpt_sentences_suffix_abbreviation_terminal_still_splits():
 def test_excerpt_sentences_ellipsis_is_not_a_boundary():
     """PR-50 round-7 finding: nonterminal ellipses ('...' and '. . .')
     followed by a lowercase continuation must not split the sentence."""
-    text = ("The evidence suggests ... a stronger conclusion than previously "
-            "thought and the data support this in every case observed. " * 10)
+    text = (
+        "The evidence suggests ... a stronger conclusion than previously "
+        "thought and the data support this in every case observed. " * 10
+    )
     out = excerpt_sentences(text, max_chars=40)
     assert out.startswith("The evidence suggests ...")
     assert "..." in out and len(out.split("...", 1)[1].strip()) > 0
 
-    spaced = ("One . . . two . . . three and the rest of the sentence "
-              "continues well past the cap. " * 10)
+    spaced = (
+        "One . . . two . . . three and the rest of the sentence continues well past the cap. " * 10
+    )
     out2 = excerpt_sentences(spaced, max_chars=30)
     assert "One . . ." in out2
 
@@ -261,8 +327,10 @@ def test_excerpt_sentences_sentence_final_ellipsis_still_splits():
     """PR-50 round-8 finding: an ellipsis ending a sentence before a
     capitalized sentence ('inconclusive... Choice B') is a boundary."""
     s1 = "The evidence remains inconclusive..."
-    s2 = ("Choice B is correct because it stays within the scope of the "
-          "passage and does not overstate the evidence.")
+    s2 = (
+        "Choice B is correct because it stays within the scope of the "
+        "passage and does not overstate the evidence."
+    )
     out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
     assert out == s1
 
@@ -271,9 +339,11 @@ def test_excerpt_sentences_capitalized_abbreviation_variants():
     """PR-50 round-9 finding: capitalized variants ('E.g.', 'I.e.') at
     sentence start must be protected case-insensitively, preserving
     their casing."""
-    text = ("E.g. the evidence overwhelmingly supports the treatment in "
-            "every case observed so far and the results are consistent "
-            "with the hypothesis. " * 10)
+    text = (
+        "E.g. the evidence overwhelmingly supports the treatment in "
+        "every case observed so far and the results are consistent "
+        "with the hypothesis. " * 10
+    )
     out = excerpt_sentences(text, max_chars=25)
     assert out.startswith("E.g. the evidence")
     assert "E.g." in out and len(out.split("E.g.", 1)[1].strip()) > 0
@@ -284,8 +354,10 @@ def test_excerpt_sentences_abbreviation_does_not_match_word_suffixes():
     (and 'Ms.' the suffix of 'claims.'). A real sentence-ending period
     stays a boundary."""
     s1 = "Choice B is best."
-    s2 = ("Choice A is wrong because it overstates the evidence and does "
-          "not stay within the scope of the passage.")
+    s2 = (
+        "Choice A is wrong because it overstates the evidence and does "
+        "not stay within the scope of the passage."
+    )
     out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
     assert out == s1
 
@@ -293,8 +365,10 @@ def test_excerpt_sentences_abbreviation_does_not_match_word_suffixes():
 def test_excerpt_sentences_quoted_question_stays_inside_sentence():
     """PR-50 round-10 finding: an embedded quoted question ('asks "Why?"
     before explaining') with a lowercase continuation is not a boundary."""
-    text = ("The author asks \u201cWhy?\u201d before explaining the result in "
-            "detail and continuing with the full explanation. " * 10)
+    text = (
+        "The author asks \u201cWhy?\u201d before explaining the result in "
+        "detail and continuing with the full explanation. " * 10
+    )
     out = excerpt_sentences(text, max_chars=40)
     assert out.startswith("The author asks \u201cWhy?\u201d before")
     assert "Why?" in out and len(out.split("Why?", 1)[1].strip()) > 0
@@ -305,8 +379,10 @@ def test_excerpt_sentences_abbreviation_before_whitespace_protected():
     broke 'Dr. Smith' / 'St. Louis' (a space follows the abbreviation).
     The leading-boundary + whitespace-lookahead pattern protects them."""
     s1 = "Dr. Smith concluded the study."
-    s2 = ("The data support the conclusion in every case observed and the "
-          "results are consistent with the hypothesis.")
+    s2 = (
+        "The data support the conclusion in every case observed and the "
+        "results are consistent with the hypothesis."
+    )
     out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
     assert out == s1
 
@@ -319,8 +395,7 @@ def test_excerpt_sentences_sentence_starting_with_digit_still_splits():
     """PR-50 round-11 finding: a sentence beginning with a number
     ('1990. 200 participants') is a real boundary."""
     s1 = "The study began in 1990."
-    s2 = ("200 participants were enrolled and the results support the "
-          "hypothesis strongly.")
+    s2 = "200 participants were enrolled and the results support the hypothesis strongly."
     out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
     assert out == s1
 
@@ -330,8 +405,10 @@ def test_excerpt_sentences_non_ascii_uppercase_sentence_start():
     uppercase letter ('Émile Zola', 'Čapek') is a real boundary. The
     boundary check is Unicode-aware (isupper), not a Latin-1 whitelist."""
     s1 = "The claim is supported."
-    s2 = ("\u00c9mile Zola provides the evidence and the conclusion follows "
-          "directly from the passage.")
+    s2 = (
+        "\u00c9mile Zola provides the evidence and the conclusion follows "
+        "directly from the passage."
+    )
     out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
     assert out == s1
 
@@ -351,8 +428,7 @@ def test_excerpt_sentences_curly_single_quote_sentence_start():
     """PR-50 round-14 finding: a sentence beginning with a curly single
     quote ('‘Choice B’ follows') is a real boundary."""
     s1 = "The claim is supported."
-    s2 = ("\u2018Choice B\u2019 follows because the evidence is clear and "
-          "the conclusion is direct.")
+    s2 = "\u2018Choice B\u2019 follows because the evidence is clear and the conclusion is direct."
     out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
     assert out == s1
 
@@ -362,8 +438,10 @@ def test_excerpt_sentences_terminal_abbreviation_still_splits():
     boundary — protecting it unconditionally hid the boundary and the
     fallback cut the next sentence midstream."""
     s1 = "The company is Acme Inc."
-    s2 = ("Choice B is the best answer because it stays within the scope "
-          "of the passage and does not overstate the evidence.")
+    s2 = (
+        "Choice B is the best answer because it stays within the scope "
+        "of the passage and does not overstate the evidence."
+    )
     out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
     # the first (complete) sentence fits; the excerpt must stop there,
     # not word-cut into the second sentence
@@ -375,8 +453,10 @@ def test_excerpt_sentences_terminator_before_closing_punctuation():
     parenthesized text ('unexpected.") must still be recognized as a
     boundary even though whitespace follows the quote, not the period."""
     s1 = "The result was \u201cunexpected.\u201d"
-    s2 = ("Choice B is the best answer because it stays within the scope "
-          "of the passage and does not overstate the evidence.")
+    s2 = (
+        "Choice B is the best answer because it stays within the scope "
+        "of the passage and does not overstate the evidence."
+    )
     out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
     assert out == s1
 
@@ -390,8 +470,10 @@ def test_excerpt_sentences_answer_label_is_not_an_initial():
     the lone capital-period answer label is a real boundary, not a name
     initial, so the excerpt must stop at the complete first sentence."""
     s1 = "The correct answer is A."
-    s2 = ("Choice B is the best answer because it stays within the scope "
-          "of the passage and does not overstate the evidence.")
+    s2 = (
+        "Choice B is the best answer because it stays within the scope "
+        "of the passage and does not overstate the evidence."
+    )
     out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
     assert out == s1
 
@@ -401,14 +483,14 @@ def test_excerpt_sentences_abbreviation_before_uppercase_word():
     abbreviation before an uppercase proper noun must stay protected, not
     split the sentence at the abbreviation."""
     s1 = "Brown vs. Board of Education established the principle."
-    s2 = ("The second sentence is long and continues well past the cap "
-          "to test the boundary logic.")
+    s2 = "The second sentence is long and continues well past the cap to test the boundary logic."
     out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
     assert out == s1
 
 
 def test_why_key_works_uses_first_paragraph_only():
     from satprep.training.sessions import _why_key_works
+
     para1 = "The key works because it matches the passage."
     para2 = "A second paragraph with more official detail."
     out = _why_key_works(f"{para1}\n\n{para2}")
@@ -418,11 +500,13 @@ def test_why_key_works_uses_first_paragraph_only():
 
 def test_why_key_works_empty_rationale():
     from satprep.training.sessions import _why_key_works
+
     assert _why_key_works("") == ""
 
 
 def test_paragraphs_preserve_boundaries_and_drop_blanks():
     from satprep.training.sessions import _paragraphs
+
     assert _paragraphs("first\n\nsecond\nthird") == ["first", "second", "third"]
     assert _paragraphs("") == []
     assert _paragraphs("single block, no newlines") == ["single block, no newlines"]
@@ -433,4 +517,5 @@ def test_paragraphs_null_rationale_does_not_crash():
     DEFAULT ''), so a NULL must not raise AttributeError in the review
     payload."""
     from satprep.training.sessions import _paragraphs
+
     assert _paragraphs(None) == []

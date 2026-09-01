@@ -13,12 +13,14 @@ revealing the key before an answer is committed.
 
 import re
 
-from satprep.training.sessions import (answer_feedback, create_session,
-                                       review_payload, submit_answer)
 from conftest import add_question
 
-PASSAGE = ("Marine biologists once assumed the deep-sea anglerfish was rare. "
-           "Recent trawls, however, suggest it is abundant below 1,000 meters.")
+from satprep.training.sessions import answer_feedback, create_session, review_payload, submit_answer
+
+PASSAGE = (
+    "Marine biologists once assumed the deep-sea anglerfish was rare. "
+    "Recent trawls, however, suggest it is abundant below 1,000 meters."
+)
 STEM = "Which choice best describes the author's main claim about the anglerfish?"
 CHOICES = {
     "A": "It is much more common than previously believed.",
@@ -45,16 +47,29 @@ def _answer_all(conn, sid, questions, wrong=True):
 
 # ------------------------------------------------------------- view model --
 
-def _seed_question(conn, *, images=(), source_test="SAT Practice Test 9",
-                   source_question_number="14", module="Module 2"):
+
+def _seed_question(
+    conn,
+    *,
+    images=(),
+    source_test="SAT Practice Test 9",
+    source_question_number="14",
+    module="Module 2",
+):
     """Insert the fixture question into the `historical` pool so the
     error_clinic sampler (historical only) actually serves it."""
-    return add_question(conn, passage=PASSAGE, stem=STEM,
-                        choices=list(CHOICES.values()), correct=KEY,
-                        images=images, source="bluebook_test",
-                        source_test=source_test,
-                        source_question_number=source_question_number,
-                        module=module)
+    return add_question(
+        conn,
+        passage=PASSAGE,
+        stem=STEM,
+        choices=list(CHOICES.values()),
+        correct=KEY,
+        images=images,
+        source="bluebook_test",
+        source_test=source_test,
+        source_question_number=source_question_number,
+        module=module,
+    )
 
 
 def test_review_payload_carries_the_full_question(db):
@@ -103,6 +118,7 @@ def test_answer_feedback_carries_the_full_question(db):
 
 # ---------------------------------------------------------- templates --
 
+
 def _render_review(db, *, images=()):
     conn, _ = db
     _seed_question(conn, images=images)
@@ -125,7 +141,7 @@ def test_review_page_shows_the_original_question_before_the_rationale(db):
     assert STEM_ESCAPED in html
     for text in CHOICES.values():
         assert text in html
-    assert f'/figures/{FIG.rsplit("/", 1)[-1]}' in html
+    assert f"/figures/{FIG.rsplit('/', 1)[-1]}" in html
     # chosen and key are both marked
     assert "your answer" in html
     assert "key" in html
@@ -206,7 +222,7 @@ def test_feedback_page_shows_the_original_question(db):
     assert STEM_ESCAPED in html
     for text in CHOICES.values():
         assert text in html
-    assert f'/figures/{FIG.rsplit("/", 1)[-1]}' in html
+    assert f"/figures/{FIG.rsplit('/', 1)[-1]}" in html
     assert "your answer" in html
     assert "key" in html
     # the verdict leads, the question comes right after, the key-line below
@@ -226,6 +242,7 @@ def test_question_page_uses_the_shared_partial_and_stays_submittable(db):
     assert "_question_context.html" in markup
     # the drill passes `selectable` (radios) — asserted in server.py's handler
     import inspect
+
     src = inspect.getsource(server_mod.question)
     assert '"selectable": True' in src
     # radios preserved in the shared partial: the form still submits a `letter`
@@ -254,8 +271,10 @@ def test_question_context_is_escaped(db):
 
     conn, _ = db
     _seed_question(conn)
-    conn.execute("UPDATE questions SET passage='<script>alert(1)</script>' WHERE id=?",
-                 (conn.execute("SELECT id FROM questions").fetchone()["id"],))
+    conn.execute(
+        "UPDATE questions SET passage='<script>alert(1)</script>' WHERE id=?",
+        (conn.execute("SELECT id FROM questions").fetchone()["id"],),
+    )
     conn.commit()
     sid, questions = _drill(conn)
     _answer_all(conn, sid, questions)

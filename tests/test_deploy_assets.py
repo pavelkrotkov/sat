@@ -24,7 +24,10 @@ SUBSTITUTED = {"__USER__", "__DIR__", "__UV__", "__HOST__", "__PORT__"}
 def test_the_expected_assets_are_present():
     assert {p.name for p in SCRIPTS} == {"backup.sh", "install.sh", "sync-to-hermes.sh"}
     assert {p.name for p in UNITS} == {
-        "satprep.service", "satprep-backup.service", "satprep-backup.timer"}
+        "satprep.service",
+        "satprep-backup.service",
+        "satprep-backup.timer",
+    }
 
 
 @pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
@@ -84,8 +87,9 @@ def test_backup_refuses_to_rotate_an_empty_database():
 
 def _code(path):
     """Executable lines only - the comments explain the rule being checked."""
-    return "\n".join(line for line in path.read_text().splitlines()
-                     if not line.lstrip().startswith("#"))
+    return "\n".join(
+        line for line in path.read_text().splitlines() if not line.lstrip().startswith("#")
+    )
 
 
 def test_sync_never_sends_the_database():
@@ -97,6 +101,7 @@ def test_sync_never_sends_the_database():
 
 
 # ------------------------------------------- invariants review turned up --
+
 
 def test_sync_does_not_restart_the_service():
     """server.py takes one connection per request, so a new corpus is visible
@@ -146,7 +151,7 @@ def test_retention_survives_a_missing_corpus_snapshot():
     database snapshot had already been written."""
     body = _code(DEPLOY / "backup.sh")
     assert "find " in body
-    assert "ls -1t \"$DEST\"" not in body
+    assert 'ls -1t "$DEST"' not in body
 
 
 def test_restore_clears_the_wal_sidecars():
@@ -165,6 +170,7 @@ def test_seed_transfer_keeps_each_path_in_its_own_directory():
 
 
 # ------------------------------------------- invariants review turned up --
+
 
 def test_backup_unit_carries_an_absolute_uv_path():
     """systemd gives no login shell, so ~/.local/bin is off PATH and a bare

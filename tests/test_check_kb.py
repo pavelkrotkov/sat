@@ -1,8 +1,10 @@
 """Tests for the deterministic KB lint script (issue #39)."""
+
 from __future__ import annotations
 
-import dataclasses
+import hashlib
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -16,13 +18,16 @@ SCRIPT = REPO_ROOT / "scripts" / "check_kb.py"
 def _run(*args: str, cwd: pathlib.Path | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
-        capture_output=True, text=True, cwd=cwd or REPO_ROOT,
+        capture_output=True,
+        text=True,
+        cwd=cwd or REPO_ROOT,
     )
 
 
 # ---------------------------------------------------------------------------
 # End-to-end against the real repo: must be clean (this is the gate).
 # ---------------------------------------------------------------------------
+
 
 def test_real_vault_lints_clean():
     r = _run("--check")
@@ -57,8 +62,7 @@ def test_index_has_required_shape():
     types = {p["type"] for p in idx["pages"]}
     assert types == {"concept", "summary"}
     for p in idx["pages"]:
-        for k in ("path", "type", "title", "tags", "sources", "wikilinks",
-                  "question_fingerprint"):
+        for k in ("path", "type", "title", "tags", "sources", "wikilinks", "question_fingerprint"):
             assert k in p, f"missing key {k} in {p.get('path')}"
 
 
@@ -67,16 +71,19 @@ def test_index_has_required_shape():
 # finding class surfaces an error and a non-zero exit.
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def tmp_vault(tmp_path) -> pathlib.Path:
     """Copy the real vault into a tempdir so we can break it without touching
     the working tree. We deliberately keep the .openkb/ runtime directory and
     kb/build/ out of the copy — neither is required for linting."""
     import shutil
+
     src = REPO_ROOT / "kb"
     dst = tmp_path / "kb"
-    shutil.copytree(src, dst, ignore=shutil.ignore_patterns(
-        "build", ".openkb", "wiki" + os.sep + "reports"))
+    shutil.copytree(
+        src, dst, ignore=shutil.ignore_patterns("build", ".openkb", "wiki" + os.sep + "reports")
+    )
     # check_kb.py resolves the repo root from a sentinel (kb/wiki/index.md).
     # tmp_path/kb/wiki/index.md exists, so the script will treat tmp_path as
     # the repo root. Good.
@@ -87,10 +94,14 @@ def _run_in(vault_root: pathlib.Path, *args: str) -> subprocess.CompletedProcess
     # Run the script with SAT_KB_ROOT pointed at the temp vault so the
     # script's find_repo_root() uses the broken copy, not the real repo.
     import os
+
     env = {**os.environ, "SAT_KB_ROOT": str(vault_root.parent)}
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
-        capture_output=True, text=True, cwd=vault_root.parent, env=env,
+        capture_output=True,
+        text=True,
+        cwd=vault_root.parent,
+        env=env,
     )
 
 
@@ -217,17 +228,19 @@ def test_orphaned_transcript_warns_only(tmp_vault):
     transcript = tmp_vault / "raw" / "transcripts" / "youtube-orphan.txt"
     transcript.write_text("orphan content\n")
     manifest = tmp_vault / "raw" / "source-manifest.jsonl"
-    extra = json.dumps({
-        "source_id": "s-orphan",
-        "title": "Orphan",
-        "url": "https://example.com/orphan",
-        "retrieved_at": "2026-01-01T00:00:00+00:00",
-        "content_type": "text/plain",
-        "sha256": hashlib_sha256(b"orphan content\n"),
-        "bytes": 15,
-        "authority": "unofficial",
-        "transcript": "transcripts/youtube-orphan.txt",
-    })
+    extra = json.dumps(
+        {
+            "source_id": "s-orphan",
+            "title": "Orphan",
+            "url": "https://example.com/orphan",
+            "retrieved_at": "2026-01-01T00:00:00+00:00",
+            "content_type": "text/plain",
+            "sha256": hashlib_sha256(b"orphan content\n"),
+            "bytes": 15,
+            "authority": "unofficial",
+            "transcript": "transcripts/youtube-orphan.txt",
+        }
+    )
     manifest.write_text(manifest.read_text() + extra + "\n")
     # Drop the committed index in the temp copy so the test doesn't fail
     # the (separately tested) INDEX_STALE path.
@@ -240,16 +253,17 @@ def test_orphaned_transcript_warns_only(tmp_vault):
     if r.returncode != 0:
         # INDEX_MISSING is the expected additional error; everything
         # else should be a warning, not a hard error.
-        non_warnings = [l for l in r.stderr.splitlines()
-                        if l.startswith("ERROR") and "INDEX_MISSING" not in l]
+        non_warnings = [
+            line
+            for line in r.stderr.splitlines()
+            if line.startswith("ERROR") and "INDEX_MISSING" not in line
+        ]
         assert not non_warnings, r.stderr
 
 
 def test_nav_sections_blocks(tmp_vault):
     # Replace index.md with one that drops the "Summaries" section.
-    (tmp_vault / "wiki" / "index.md").write_text(
-        "# Empty\n\n## Concepts\n- nothing\n"
-    )
+    (tmp_vault / "wiki" / "index.md").write_text("# Empty\n\n## Concepts\n- nothing\n")
     r = _run_in(tmp_vault, "--check")
     assert r.returncode == 1
     assert "NAV_SECTION" in r.stderr
@@ -275,7 +289,7 @@ def test_scalar_sources_is_rejected(tmp_vault):
         "created: 2026-01-01\n"
         "updated: 2026-01-01\n"
         "tags: [t]\n"
-        "sources: raw/transcripts/youtube-HlkBuNW-VHE.txt\n"   # string, not list
+        "sources: raw/transcripts/youtube-HlkBuNW-VHE.txt\n"  # string, not list
         "confidence: low\n"
         "---\n\nbody\n"
     )
@@ -288,9 +302,7 @@ def test_non_mapping_frontmatter_is_rejected(tmp_vault):
     """Frontmatter that parses to a list/scalar (not a mapping) must be
     rejected with a clear code rather than crashing."""
     p = tmp_vault / "wiki" / "summaries" / "list-fm.md"
-    p.write_text(
-        "---\n- just\n- a\n- list\n---\n\nbody\n"
-    )
+    p.write_text("---\n- just\n- a\n- list\n---\n\nbody\n")
     r = _run_in(tmp_vault, "--check")
     assert r.returncode == 1
     assert "FM_NOT_MAPPING" in r.stderr
@@ -366,15 +378,20 @@ def test_rebuild_refuses_vault_symlinks(tmp_path):
     target is a real file inside the vault is also rejected: the vault is
     content, not a graph of links."""
     import shutil
+
     src = REPO_ROOT / "kb"
     dst = tmp_path / "kb"
-    shutil.copytree(src, dst, ignore=shutil.ignore_patterns(
-        "build", ".openkb", "wiki" + os.sep + "reports", ".kb-index.json"))
+    shutil.copytree(
+        src,
+        dst,
+        ignore=shutil.ignore_patterns(
+            "build", ".openkb", "wiki" + os.sep + "reports", ".kb-index.json"
+        ),
+    )
     # rebuild.sh runs scripts/check_kb.py from $REPO/scripts/. Copy the
     # lint script alongside the temp kb/ so the wrapper can find it.
     (tmp_path / "scripts").mkdir(parents=True, exist_ok=True)
-    shutil.copy(REPO_ROOT / "scripts" / "check_kb.py",
-                tmp_path / "scripts" / "check_kb.py")
+    shutil.copy(REPO_ROOT / "scripts" / "check_kb.py", tmp_path / "scripts" / "check_kb.py")
     # Plant a symlink pointing at an outside file. /etc/hostname is a safe,
     # tiny, real file on every Linux box; the test just needs any file that
     # is NOT under kb/.
@@ -382,16 +399,19 @@ def test_rebuild_refuses_vault_symlinks(tmp_path):
     # Point the rebuild wrapper's defaults at our temp vault and a fake
     # builder so the script runs far enough to reach the symlink rejection.
     fake_builder = tmp_path / "fake_build_wiki.py"
-    fake_builder.write_text(
-        "import sys\n"
-        "sys.exit(0)\n"
-    )
-    env = {**os.environ, "SAT_KB_ROOT": str(tmp_path),
-           "SAT_WIKI_BUILDER": str(fake_builder),
-           "SAT_WIKI_MKDOCS": "/bin/true"}
+    fake_builder.write_text("import sys\nsys.exit(0)\n")
+    env = {
+        **os.environ,
+        "SAT_KB_ROOT": str(tmp_path),
+        "SAT_WIKI_BUILDER": str(fake_builder),
+        "SAT_WIKI_MKDOCS": "/bin/true",
+    }
     r = subprocess.run(
         [str(REPO_ROOT / "kb" / "rebuild.sh")],
-        capture_output=True, text=True, cwd=tmp_path, env=env,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
     )
     assert r.returncode != 0
     assert "symlink" in r.stderr.lower()
@@ -400,9 +420,6 @@ def test_rebuild_refuses_vault_symlinks(tmp_path):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-import hashlib
-import os
 
 
 def hashlib_sha256(data: bytes) -> str:

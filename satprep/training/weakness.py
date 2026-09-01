@@ -58,7 +58,6 @@ def _recency(attempted_at: str | None, now: datetime) -> float:
     return math.pow(0.5, age_days / config.WEAKNESS_RECENCY_HALF_LIFE_DAYS)
 
 
-
 def compute_weakness(conn, now: datetime | None = None) -> dict:
     """Compute weakness scores for skills, reasoning tags, error tags.
 
@@ -99,20 +98,26 @@ def compute_weakness(conn, now: datetime | None = None) -> dict:
             else:
                 alpha_wrong += weighted
                 wrong += 1
-        return {
-            "n": round(n, 3), "n_raw": len(rows),
-            "wrong": int(wrong), "correct": int(correct),
-            "alpha_wrong": round(alpha_wrong, 3),
-            "alpha_right": round(alpha_right, 3),
-            "slow_correct": len(times),
-        }, rows, slow_penalty
+        return (
+            {
+                "n": round(n, 3),
+                "n_raw": len(rows),
+                "wrong": int(wrong),
+                "correct": int(correct),
+                "alpha_wrong": round(alpha_wrong, 3),
+                "alpha_right": round(alpha_right, 3),
+                "slow_correct": len(times),
+            },
+            rows,
+            slow_penalty,
+        )
 
     def score_from(stats: dict, slow_penalty: float = 0.0) -> tuple[float, dict]:
         denom = stats["alpha_wrong"] + stats["alpha_right"] + k
         post_err = (stats["alpha_wrong"] + k * prior_p) / denom if denom else prior_p
         score = post_err * 100.0 + min(6.0, slow_penalty)
         if stats["correct"] >= 4 and stats["wrong"] == 0:
-            score *= (1 - config.MASTERY_RECENT_CORRECT_DISCOUNT)
+            score *= 1 - config.MASTERY_RECENT_CORRECT_DISCOUNT
         baseline = prior_p * 100.0
         vol = max(stats.get("n_raw", stats["n"]), 1)
         shrink = min(1.0, vol / (vol + config.WEAKNESS_SHRINK_N))
@@ -129,7 +134,7 @@ def compute_weakness(conn, now: datetime | None = None) -> dict:
            WHERE q.active=1 AND q.official_skill != ''"""
     ).fetchall():
         skill = skill_row["s"]
-        stats, rows, slow_pen = collect("q.official_skill", skill)
+        stats, _rows, slow_pen = collect("q.official_skill", skill)
         if stats["n"] == 0 and stats["n_raw"] == 0:
             continue
         sc, st = score_from(stats, slow_pen)
@@ -167,10 +172,15 @@ def compute_weakness(conn, now: datetime | None = None) -> dict:
                 wrong += 1
                 if (r["difficulty"] or "") == "hard":
                     hard_wrong += 1
-        stats = {"n": round(now_decayed_n, 3), "wrong": wrong, "correct": correct,
-                 "hard_questions_wrong": hard_wrong, "slow_correct": slow_correct,
-                 "alpha_wrong": round(alpha_wrong, 3),
-                 "alpha_right": round(alpha_right, 3)}
+        stats = {
+            "n": round(now_decayed_n, 3),
+            "wrong": wrong,
+            "correct": correct,
+            "hard_questions_wrong": hard_wrong,
+            "slow_correct": slow_correct,
+            "alpha_wrong": round(alpha_wrong, 3),
+            "alpha_right": round(alpha_right, 3),
+        }
         if wrong + correct == 0:
             continue
         sc, st = score_from(stats, min(6.0, 1.2 * hard_wrong + 0.3 * slow_correct))
@@ -199,8 +209,8 @@ def compute_weakness(conn, now: datetime | None = None) -> dict:
                       a.attempted_at AS attempted_at, a.time_ms AS time_ms
                FROM attempts a
                JOIN questions q ON q.id=a.question_id AND q.active=1
-               WHERE a.question_id IN (%s)"""
-            % ",".join("?" * len(qids)), qids,
+               WHERE a.question_id IN ({})""".format(",".join("?" * len(qids))),
+            qids,
         ).fetchall():
             w = _weight_for(r["correct"], r["confidence"] or 0)
             decay = _recency(r["attempted_at"], now)
@@ -211,9 +221,13 @@ def compute_weakness(conn, now: datetime | None = None) -> dict:
             else:
                 alpha_wrong += w * decay
                 wrong += 1
-        stats = {"n": round(now_decayed_n, 3), "wrong": wrong, "correct": correct,
-                 "alpha_wrong": round(alpha_wrong, 3),
-                 "alpha_right": round(alpha_right, 3)}
+        stats = {
+            "n": round(now_decayed_n, 3),
+            "wrong": wrong,
+            "correct": correct,
+            "alpha_wrong": round(alpha_wrong, 3),
+            "alpha_right": round(alpha_right, 3),
+        }
         if wrong + correct == 0:
             continue
         sc, st = score_from(stats, 0.0)
@@ -320,4 +334,6 @@ if __name__ == "__main__":
         ranked = sorted(scores[etype].items(), key=lambda kv: -kv[1]["score"])
         print(f"--- top {etype} weaknesses ---")
         for name, payload in ranked[:10]:
-            print(f"{payload['score']:5.1f}  {name}  ({payload.get('wrong', 0)}w/{payload.get('wrong', 0)+payload.get('correct', 0)}n)")
+            print(
+                f"{payload['score']:5.1f}  {name}  ({payload.get('wrong', 0)}w/{payload.get('wrong', 0) + payload.get('correct', 0)}n)"
+            )

@@ -6,10 +6,9 @@ attempts into four buckets and must never crash on a live corpus.
 """
 
 import pytest
-
-from satprep.analytics import (full_dashboard, recent_session_scores,
-                               transfer_performance)
 from conftest import add_question
+
+from satprep.analytics import full_dashboard, recent_session_scores, transfer_performance
 
 
 def _session(conn, sid, mode):
@@ -40,17 +39,36 @@ def _weak_tag(conn, tag, score=80.0):
 @pytest.fixture()
 def four_buckets(db):
     """One attempt in each transfer bucket, with a known right/wrong pattern."""
-    conn, path = db
+    conn, _path = db
     _weak_tag(conn, "qualifier_strength")
 
-    hist = add_question(conn, passage="h", stem="h?", choices=["ha", "hb", "hc", "hd"],
-                        source="bluebook_test", pool="historical")
-    weak = add_question(conn, passage="w", stem="w?", choices=["wa", "wb", "wc", "wd"],
-                        pool="fresh_training", tags=("qualifier_strength",))
-    other = add_question(conn, passage="o", stem="o?", choices=["oa", "ob", "oc", "od"],
-                         pool="fresh_training", tags=("chronology",))
-    prot = add_question(conn, passage="p", stem="p?", choices=["pa", "pb", "pc", "pd"],
-                        pool="protected_benchmark")
+    hist = add_question(
+        conn,
+        passage="h",
+        stem="h?",
+        choices=["ha", "hb", "hc", "hd"],
+        source="bluebook_test",
+        pool="historical",
+    )
+    weak = add_question(
+        conn,
+        passage="w",
+        stem="w?",
+        choices=["wa", "wb", "wc", "wd"],
+        pool="fresh_training",
+        tags=("qualifier_strength",),
+    )
+    other = add_question(
+        conn,
+        passage="o",
+        stem="o?",
+        choices=["oa", "ob", "oc", "od"],
+        pool="fresh_training",
+        tags=("chronology",),
+    )
+    prot = add_question(
+        conn, passage="p", stem="p?", choices=["pa", "pb", "pc", "pd"], pool="protected_benchmark"
+    )
 
     _session(conn, "drill1", "targeted_drill")
     _session(conn, "bench1", "fresh_benchmark")
@@ -77,8 +95,14 @@ def test_fresh_training_attempt_does_not_crash(db):
     never selected it, so the dashboard raised IndexError as soon as any
     in-app attempt landed on a fresh_training question."""
     conn, _ = db
-    qid = add_question(conn, passage="f", stem="f?", choices=["a", "b", "c", "d"],
-                       pool="fresh_training", tags=("qualifier_strength",))
+    qid = add_question(
+        conn,
+        passage="f",
+        stem="f?",
+        choices=["a", "b", "c", "d"],
+        pool="fresh_training",
+        tags=("qualifier_strength",),
+    )
     _session(conn, "s1", "targeted_drill")
     _attempt(conn, "s1", qid, correct=1, mode="targeted_drill")
     conn.commit()
@@ -94,10 +118,22 @@ def test_weak_tag_threshold_discriminates_buckets(db):
     _weak_tag(conn, "qualifier_strength", score=80.0)
     _weak_tag(conn, "chronology", score=20.0)
 
-    strong = add_question(conn, passage="s", stem="s?", choices=["sa", "sb", "sc", "sd"],
-                          pool="fresh_training", tags=("chronology",))
-    weak = add_question(conn, passage="w", stem="w?", choices=["wa", "wb", "wc", "wd"],
-                        pool="fresh_training", tags=("qualifier_strength",))
+    strong = add_question(
+        conn,
+        passage="s",
+        stem="s?",
+        choices=["sa", "sb", "sc", "sd"],
+        pool="fresh_training",
+        tags=("chronology",),
+    )
+    weak = add_question(
+        conn,
+        passage="w",
+        stem="w?",
+        choices=["wa", "wb", "wc", "wd"],
+        pool="fresh_training",
+        tags=("qualifier_strength",),
+    )
     _session(conn, "s1", "targeted_drill")
     _attempt(conn, "s1", strong, correct=1, mode="targeted_drill")
     _attempt(conn, "s1", weak, correct=1, mode="targeted_drill")
@@ -111,8 +147,14 @@ def test_weak_tag_threshold_discriminates_buckets(db):
 def test_historical_attempts_are_excluded(db):
     """Transfer is about in-app practice; the scraped history is the baseline."""
     conn, _ = db
-    qid = add_question(conn, passage="h", stem="h?", choices=["a", "b", "c", "d"],
-                       source="bluebook_test", pool="historical")
+    qid = add_question(
+        conn,
+        passage="h",
+        stem="h?",
+        choices=["a", "b", "c", "d"],
+        source="bluebook_test",
+        pool="historical",
+    )
     _session(conn, "hist:x", "historical")
     _attempt(conn, "hist:x", qid, correct=0, mode="historical")
     conn.commit()
@@ -127,8 +169,9 @@ def test_benchmark_bucket_survives_pool_flip(db):
     from satprep.corpus.ingest import mark_benchmark_seen
 
     conn, _ = db
-    qid = add_question(conn, passage="p", stem="p?", choices=["a", "b", "c", "d"],
-                       pool="protected_benchmark")
+    qid = add_question(
+        conn, passage="p", stem="p?", choices=["a", "b", "c", "d"], pool="protected_benchmark"
+    )
     _session(conn, "bench1", "fresh_benchmark")
     _attempt(conn, "bench1", qid, correct=1, mode="fresh_benchmark")
     mark_benchmark_seen(conn, [qid])
@@ -145,14 +188,24 @@ def test_full_dashboard_renders_with_in_app_attempts(four_buckets):
     conn, _ = four_buckets
 
     d = full_dashboard(conn)
-    assert set(d) == {"corpus", "skills", "tags", "misconceptions", "transfer",
-                      "recent_trend", "next_action", "recent_sessions",
-                      "practice_tags", "practice_skills"}
+    assert set(d) == {
+        "corpus",
+        "skills",
+        "tags",
+        "misconceptions",
+        "transfer",
+        "recent_trend",
+        "next_action",
+        "recent_sessions",
+        "practice_tags",
+        "practice_skills",
+    }
     # every in-app attempt is accounted for in exactly one bucket
     assert sum(b["n"] for b in d["transfer"].values()) == 4
 
 
 # ------------------------------------------------- one owner of the score --
+
 
 def test_risk_score_comes_from_the_weakness_model(db):
     """Regression: analytics used `model.get(x) or _smoothed_rate(...)`, so a
@@ -162,9 +215,16 @@ def test_risk_score_comes_from_the_weakness_model(db):
     from satprep.training.weakness import compute_weakness
 
     conn, _ = db
-    qid = add_question(conn, passage="p", stem="s?", choices=["a", "b", "c", "d"],
-                       source="bluebook_test", pool="historical",
-                       skill="Inferences", tags=("qualifier_strength",))
+    qid = add_question(
+        conn,
+        passage="p",
+        stem="s?",
+        choices=["a", "b", "c", "d"],
+        source="bluebook_test",
+        pool="historical",
+        skill="Inferences",
+        tags=("qualifier_strength",),
+    )
     _session(conn, "hist:x", "historical")
     _attempt(conn, "hist:x", qid, correct=0, mode="historical")
     conn.commit()
@@ -183,8 +243,15 @@ def test_empty_cache_is_computed_not_papered_over(db):
     from satprep.analytics import skill_accuracy
 
     conn, _ = db
-    qid = add_question(conn, passage="p", stem="s?", choices=["a", "b", "c", "d"],
-                       source="bluebook_test", pool="historical", skill="Inferences")
+    qid = add_question(
+        conn,
+        passage="p",
+        stem="s?",
+        choices=["a", "b", "c", "d"],
+        source="bluebook_test",
+        pool="historical",
+        skill="Inferences",
+    )
     _session(conn, "hist:x", "historical")
     _attempt(conn, "hist:x", qid, correct=0, mode="historical")
     conn.commit()
@@ -202,14 +269,22 @@ def test_risk_scores_recomputes_at_most_once(db, monkeypatch):
     import satprep.training.weakness as weakness_mod
 
     conn, _ = db
-    add_question(conn, passage="p", stem="s?", choices=["a", "b", "c", "d"],
-                 source="bluebook_test", pool="historical", skill="Inferences")
+    add_question(
+        conn,
+        passage="p",
+        stem="s?",
+        choices=["a", "b", "c", "d"],
+        source="bluebook_test",
+        pool="historical",
+        skill="Inferences",
+    )
     conn.commit()
 
     calls = []
     real = weakness_mod.compute_weakness
-    monkeypatch.setattr(weakness_mod, "compute_weakness",
-                        lambda *a, **k: (calls.append(1), real(*a, **k))[1])
+    monkeypatch.setattr(
+        weakness_mod, "compute_weakness", lambda *a, **k: (calls.append(1), real(*a, **k))[1]
+    )
 
     assert weakness_mod.risk_scores(conn, "skill", ["Inferences"]) == {}
     assert len(calls) == 1
@@ -222,8 +297,14 @@ def test_weak_tag_threshold_is_configurable(db, monkeypatch):
 
     conn, _ = db
     _weak_tag(conn, "qualifier_strength", score=60.0)
-    qid = add_question(conn, passage="w", stem="w?", choices=["wa", "wb", "wc", "wd"],
-                       pool="fresh_training", tags=("qualifier_strength",))
+    qid = add_question(
+        conn,
+        passage="w",
+        stem="w?",
+        choices=["wa", "wb", "wc", "wd"],
+        pool="fresh_training",
+        tags=("qualifier_strength",),
+    )
     _session(conn, "s1", "targeted_drill")
     _attempt(conn, "s1", qid, correct=1, mode="targeted_drill")
     conn.commit()
@@ -241,8 +322,7 @@ def test_cached_profile_is_ranked_and_typed(db):
     from satprep.training.weakness import cached_profile
 
     conn, _ = db
-    for tag, score in (("chronology", 20.0), ("qualifier_strength", 80.0),
-                       ("scope_shift", 50.0)):
+    for tag, score in (("chronology", 20.0), ("qualifier_strength", 80.0), ("scope_shift", 50.0)):
         _weak_tag(conn, tag, score=score)
     conn.commit()
 
@@ -259,23 +339,34 @@ def test_dashboard_sections_share_one_model_snapshot(db):
     happened while assembling the tags section, compute_weakness rewrote the
     skill scores the skills section had already read, and one response showed
     two model snapshots. full_dashboard settles the cache up front."""
-    import satprep.analytics as analytics_mod
     from satprep.training.weakness import compute_weakness
 
-    from satprep.db import connect
-
-    conn, path = db
-    old = add_question(conn, passage="o", stem="o?", choices=["oa", "ob", "oc", "od"],
-                       source="bluebook_test", pool="historical", skill="Inferences")
+    conn, _path = db
+    old = add_question(
+        conn,
+        passage="o",
+        stem="o?",
+        choices=["oa", "ob", "oc", "od"],
+        source="bluebook_test",
+        pool="historical",
+        skill="Inferences",
+    )
     _session(conn, "hist:a", "historical")
     _attempt(conn, "hist:a", old, correct=0, mode="historical")
     conn.commit()
     compute_weakness(conn)  # cache now covers Inferences, no tags
 
     # ingest arrives: more evidence for the same skill, plus a brand-new tag
-    fresh = add_question(conn, passage="n", stem="n?", choices=["na", "nb", "nc", "nd"],
-                         source="bluebook_test", pool="historical",
-                         skill="Inferences", tags=("qualifier_strength",))
+    fresh = add_question(
+        conn,
+        passage="n",
+        stem="n?",
+        choices=["na", "nb", "nc", "nd"],
+        source="bluebook_test",
+        pool="historical",
+        skill="Inferences",
+        tags=("qualifier_strength",),
+    )
     _session(conn, "hist:b", "historical")
     _attempt(conn, "hist:b", fresh, correct=0, mode="historical")
     conn.commit()
@@ -295,23 +386,30 @@ def test_ensure_current_is_a_no_op_when_cache_covers_evidence(db, monkeypatch):
     import satprep.training.weakness as weakness_mod
 
     conn, _ = db
-    qid = add_question(conn, passage="p", stem="s?", choices=["a", "b", "c", "d"],
-                       source="bluebook_test", pool="historical",
-                       skill="Inferences", tags=("qualifier_strength",))
+    qid = add_question(
+        conn,
+        passage="p",
+        stem="s?",
+        choices=["a", "b", "c", "d"],
+        source="bluebook_test",
+        pool="historical",
+        skill="Inferences",
+        tags=("qualifier_strength",),
+    )
     _session(conn, "hist:x", "historical")
     _attempt(conn, "hist:x", qid, correct=0, mode="historical")
     conn.commit()
     weakness_mod.compute_weakness(conn)
 
     calls = []
-    monkeypatch.setattr(weakness_mod, "compute_weakness",
-                        lambda *a, **k: calls.append(1))
+    monkeypatch.setattr(weakness_mod, "compute_weakness", lambda *a, **k: calls.append(1))
     weakness_mod.ensure_current(conn)
 
     assert calls == []
 
 
 # ------------------- session list for students (issue #28) ------------------
+
 
 def _completed(conn, sid, mode, qid, correct, finished_at):
     conn.execute(
@@ -333,11 +431,17 @@ def test_all_completed_sessions_returns_every_finished_session(db):
     the dashboard limit stays in place."""
     conn, _ = db
     for i in range(12):
-        qid = add_question(conn, passage=f"p{i}", stem=f"s{i}?",
-                           choices=["a", "b", "c", "d"], source="bluebook_test",
-                           pool="historical")
-        _completed(conn, f"s{i:02d}", "targeted_drill", qid, i % 2,
-                   f"2026-03-{i + 1:02d}T00:00:00+00:00")
+        qid = add_question(
+            conn,
+            passage=f"p{i}",
+            stem=f"s{i}?",
+            choices=["a", "b", "c", "d"],
+            source="bluebook_test",
+            pool="historical",
+        )
+        _completed(
+            conn, f"s{i:02d}", "targeted_drill", qid, i % 2, f"2026-03-{i + 1:02d}T00:00:00+00:00"
+        )
     conn.commit()
 
     all_sessions = recent_session_scores(conn, limit=None)
@@ -353,10 +457,22 @@ def test_all_completed_sessions_orders_by_finish_time_with_attempt_tiebreak(db):
     """Ordering must survive even when finish times tie: the tie-break is the
     id of the last attempt, not session creation order."""
     conn, _ = db
-    q1 = add_question(conn, passage="a", stem="a?", choices=["a", "b", "c", "d"],
-                      source="bluebook_test", pool="historical")
-    q2 = add_question(conn, passage="b", stem="b?", choices=["a", "b", "c", "d"],
-                      source="bluebook_test", pool="historical")
+    q1 = add_question(
+        conn,
+        passage="a",
+        stem="a?",
+        choices=["a", "b", "c", "d"],
+        source="bluebook_test",
+        pool="historical",
+    )
+    q2 = add_question(
+        conn,
+        passage="b",
+        stem="b?",
+        choices=["a", "b", "c", "d"],
+        source="bluebook_test",
+        pool="historical",
+    )
     # same finished_at on both; the later-inserted attempt in the second row
     # is the true finish order
     _completed(conn, "old", "targeted_drill", q1, 1, "2026-03-01T00:00:00+00:00")
@@ -369,32 +485,43 @@ def test_all_completed_sessions_orders_by_finish_time_with_attempt_tiebreak(db):
 
 def test_all_completed_sessions_excludes_open_abandoned_historical_and_empty(db):
     conn, _ = db
-    q = add_question(conn, passage="q", stem="q?", choices=["a", "b", "c", "d"],
-                     source="bluebook_test", pool="historical")
+    q = add_question(
+        conn,
+        passage="q",
+        stem="q?",
+        choices=["a", "b", "c", "d"],
+        source="bluebook_test",
+        pool="historical",
+    )
     # finished in-app session: the only one that may appear
     _completed(conn, "done", "targeted_drill", q, 1, "2026-03-01T00:00:00+00:00")
     # imported historical attempts, not sessions she sat
     conn.execute(
         """INSERT INTO sessions (id, mode, created_at, seed, algo_version, plan_json, status)
-           VALUES ('hist','historical','2026-03-01T00:00:00+00:00','s','v','[]','completed')""")
+           VALUES ('hist','historical','2026-03-01T00:00:00+00:00','s','v','[]','completed')"""
+    )
     conn.execute(
         """INSERT INTO attempts (session_id, question_id, chosen_letter, correct,
                                  confidence, time_ms, mode, attempted_at)
            VALUES ('hist',?,'B',1,2,1000,'historical','2026-03-01T00:00:00+00:00')""",
-        (q,))
+        (q,),
+    )
     # open session with attempts: not finished
     conn.execute(
         """INSERT INTO sessions (id, mode, created_at, seed, algo_version, plan_json, status)
-           VALUES ('open','targeted_drill','2026-03-01T00:00:00+00:00','s','v','[]','open')""")
+           VALUES ('open','targeted_drill','2026-03-01T00:00:00+00:00','s','v','[]','open')"""
+    )
     conn.execute(
         """INSERT INTO attempts (session_id, question_id, chosen_letter, correct,
                                  confidence, time_ms, mode, attempted_at)
            VALUES ('open',?,'B',1,2,1000,'targeted_drill','2026-03-01T00:00:00+00:00')""",
-        (q,))
+        (q,),
+    )
     # completed session with no in-app attempts (imported-only / empty)
     conn.execute(
         """INSERT INTO sessions (id, mode, created_at, seed, algo_version, plan_json, status)
-           VALUES ('empty','targeted_drill','2026-03-01T00:00:00+00:00','s','v','[]','completed')""")
+           VALUES ('empty','targeted_drill','2026-03-01T00:00:00+00:00','s','v','[]','completed')"""
+    )
     conn.commit()
 
     ids = [s["id"] for s in recent_session_scores(conn, limit=None)]
