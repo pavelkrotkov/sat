@@ -27,7 +27,7 @@ LEGACY_ARCHIVE_VERSIONS = {1}
 def _question_line(conn, question: Question) -> dict:
     # The archive is faithful: suppressions are decisions worth preserving.
     tags = [{"tag": t, "origin": o} for t, o in all_tags_with_origin(conn, question.id)]
-    return {
+    line = {
         "_v": ARCHIVE_VERSION,
         "fingerprint": question.fingerprint,
         "source": question.source,
@@ -51,6 +51,23 @@ def _question_line(conn, question: Question) -> dict:
         "provenance": question.provenance,
         "tags": tags,
     }
+    # T4: bluebook_occurrences carry source UIDs and placements that can be
+    # the ONLY record of deduplicated occurrences; without them a restore
+    # silently drops source identity. Serialize them per question so the
+    # standalone archive stays faithful. Optional field: v1 archives without
+    # it still restore (occurrences are reconstructible from provenance when
+    # they carry fresh fingerprints, but deduplicated ones are not).
+    if question.source == "bluebook_test":
+        occ = conn.execute(
+            """SELECT bluebook_uid, test_name, module, question_number, subject,
+                      fingerprint, answer_status, scraped_at
+               FROM bluebook_occurrences WHERE question_id=?
+               ORDER BY bluebook_uid""",
+            (question.id,),
+        ).fetchall()
+        if occ:
+            line["occurrences"] = [dict(r) for r in occ]
+    return line
 
 
 _RESTORE_VISUAL_KINDS = {"image", "table"}
@@ -145,7 +162,8 @@ def restore_corpus(conn, archive_path: Path | None = None) -> dict:
 
 def _restore_lines(conn, archive_path: Path, stats: dict) -> None:
     head = next(
-        (line for line in archive_path.read_text(encoding="utf-8").splitlines() if line.strip()), ""
+        (line for line in archive_path.read_text(encoding="utf-8").splitlines() if line.strip()),
+        "",
     )
     if head:
         v = json.loads(head).get("_v")
@@ -212,4 +230,26 @@ def _restore_lines(conn, archive_path: Path, stats: dict) -> None:
             else:
                 tag, origin = t, "archive"
             restore_tag(conn, qid, tag, origin)
+        # T4: restore source occurrences faithfully when the archive carried
+        # them. The question_id is re-linked to the freshly restored row.
+        for occ in rec.get("occurrences", []):
+            if not isinstance(occ, dict) or not occ.get("bluebook_uid"):
+                continue
+            conn.execute(
+                """INSERT OR IGNORE INTO bluebook_occurrences
+                     (bluebook_uid, test_name, module, question_number, subject,
+                      fingerprint, question_id, answer_status, scraped_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (
+                    occ["bluebook_uid"],
+                    occ.get("test_name") or "",
+                    occ.get("module") or "",
+                    str(occ.get("question_number") or ""),
+                    occ.get("subject") or "",
+                    occ.get("fingerprint") or "",
+                    qid,
+                    occ.get("answer_status") or "",
+                    occ.get("scraped_at") or "",
+                ),
+            )
         stats["restored"] += 1

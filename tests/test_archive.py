@@ -269,3 +269,46 @@ def test_restore_rebuilds_without_raw_sources_or_network(tmp_path, monkeypatch):
         # training state is deliberately NOT in the archive
         assert conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+def test_archive_preserves_bluebook_occurrences(db, tmp_path):
+    """T4: bluebook_occurrences (source UID + placement) survive an
+    export/restore round trip, including deduplicated occurrences."""
+    conn, _ = db
+    qid = add_question(
+        conn,
+        passage="P",
+        stem="Q?",
+        choices=["a", "b"],
+        correct="A",
+        source="bluebook_test",
+        pool="historical",
+    )
+    occs = [
+        (f"uid-{qid}-1", "SAT Practice Test 4", "Module 1", "1", "fp1"),
+        (f"uid-{qid}-2", "SAT Practice Test 4", "Module 1", "2", "fp2"),
+    ]
+    for uid, test, mod, qn, fp in occs:
+        conn.execute(
+            """INSERT INTO bluebook_occurrences
+                 (bluebook_uid, test_name, module, question_number, subject,
+                  fingerprint, question_id, answer_status, scraped_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (uid, test, mod, qn, "Reading and Writing", fp, qid, "Correct", "2026-01-01"),
+        )
+    conn.commit()
+    out = Path(tmp_path) / "corpus.jsonl"
+    export_corpus(conn, out)
+    line = json.loads(out.read_text().splitlines()[0])
+    assert len(line["occurrences"]) == 2
+
+    fresh = Path(tmp_path) / "fresh.db"
+    _restore(fresh, out)
+    c2 = connect(str(fresh))
+    restored = c2.execute(
+        "SELECT bluebook_uid, question_id, fingerprint FROM bluebook_occurrences ORDER BY bluebook_uid"
+    ).fetchall()
+    c2.close()
+    assert len(restored) == 2
+    assert {r["bluebook_uid"] for r in restored} == {o[0] for o in occs}
+    assert all(r["question_id"] is not None for r in restored)

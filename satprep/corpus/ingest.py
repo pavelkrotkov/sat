@@ -20,6 +20,7 @@ from ..clock import utc_now
 from . import fingerprint as fpmod
 from .parse_snapshot import ParsedQuestion, parse_snapshot
 from .qbank_fetch import insert_qbank_row
+from .repair import merge_fields
 from .tagger import diagnose_attempt
 
 
@@ -64,6 +65,8 @@ def ingest_bluebook(conn) -> dict:
         "attempts_added": 0,
         "parse_fallbacks": 0,
         "skipped_existing": 0,
+        "field_warnings": [],
+        "occurrences_upserted": 0,
     }
     if not config.BLUEBOOK_JSON.exists():
         return stats
@@ -85,29 +88,52 @@ def ingest_bluebook(conn) -> dict:
                 parsed = parse_snapshot(Path(snap_path).read_text())
             except Exception:
                 parsed = None
-        if parsed is None or not (parsed.passage or parsed.stem):
-            # snapshot truly unusable -> rebuild from scraped JSON text
+        if parsed is None:
+            # No usable snapshot at all -> rebuild from scraped JSON text.
+            # When a snapshot exists but is missing passage/stem, keep the
+            # parsed object (its recovered choices/key may be valid) and let
+            # merge_fields fill the gaps from JSON (T10) rather than
+            # discarding the parsed fields with a wholesale replacement.
             stats["parse_fallbacks"] += 1
-            parsed_json = _question_from_json_record(rec)
-            if parsed is None or not parsed.choices:
-                parsed = parsed_json
-            else:
-                parsed.passage = parsed.passage or parsed_json.passage
-                parsed.stem = parsed.stem or parsed_json.stem
+            parsed = _question_from_json_record(rec)
 
-        student_json, correct_json = _status_of(rec)
-        correct_letter = parsed.correct_letter or correct_json
+        # Issue #49: merge parsed-snapshot fields with the JSON record
+        # independently, per field. The snapshot wins for passage/stem/
+        # choices/key/rationale when present; the JSON record fills any gap.
+        # Previously a valid snapshot with an empty choice list (correct-
+        # answer reviews put the <ol> in .question-panel, which the parser
+        # did not read) beat the JSON fallback, so 432 of 479 R&W records
+        # were ingested without choices even though the saved HTML had them.
+        merged, warnings = merge_fields(parsed, rec)
+        for w in warnings:
+            stats.setdefault("field_warnings", []).append(f"{rec.get('uid')}: {w}")
+
+        correct_letter = merged["correct_letter"]
         if not correct_letter:
             continue  # cannot establish an answer key; refuse to fabricate
-        student_letter = parsed.student_letter or student_json
+        student_letter = merged["student_letter"]
 
-        passage = parsed.passage or rec.get("question_text") or ""
-        stem = parsed.stem or ""
-        choice_texts = [c["text"] for c in parsed.choices]
+        passage = merged["passage"]
+        stem = merged["stem"]
+        choice_texts = [c["text"] for c in merged["choices"]]
         fp = fpmod.fingerprint(passage, stem, choice_texts)
 
         existing = conn.execute("SELECT id FROM questions WHERE fingerprint=?", (fp,)).fetchone()
-        if existing:
+        # T1: resolve by source UID first so a record that was repaired
+        # (content fingerprint changed in bluebook_occurrences) reconciles
+        # the SAME row instead of inserting a duplicate. The occurrence table
+        # is the stable identity across repair/key changes.
+        occ = conn.execute(
+            "SELECT question_id FROM bluebook_occurrences WHERE bluebook_uid=?",
+            (rec.get("uid") or "",),
+        ).fetchone()
+        if occ is not None and occ["question_id"] is not None:
+            if existing and existing["id"] != occ["question_id"]:
+                # Content fp matches a different row than the occurrence's.
+                # Trust the occurrence's stable identity; reconcile below.
+                stats["skipped_existing"] += 1
+            qid = occ["question_id"]
+        elif existing:
             stats["skipped_existing"] += 1
             qid = existing["id"]
         else:
@@ -136,10 +162,10 @@ def ingest_bluebook(conn) -> dict:
                     rec.get("module") or "",
                     passage,
                     stem,
-                    json.dumps(parsed.choices),
+                    json.dumps(merged["choices"]),
                     correct_letter,
-                    parsed.rationale or rec.get("explanation") or "",
-                    json.dumps(rec.get("images") or []),
+                    merged["rationale"],
+                    json.dumps(merged["images"]),
                     json.dumps(rec.get("visuals") or []),
                     rec.get("domain") or "",
                     rec.get("skill") or "",
@@ -174,8 +200,39 @@ def ingest_bluebook(conn) -> dict:
             # Historical error diagnosis (spec section 6): only when both the
             # chosen wrong letter and the full choice set are known. Never
             # fabricated from bare right/wrong.
-            if correctness == 0 and student_letter and parsed.choices:
-                diagnose_attempt(conn, qid, parsed.choices, correct_letter, student_letter)
+            if correctness == 0 and student_letter and merged["choices"]:
+                diagnose_attempt(conn, qid, merged["choices"], correct_letter, student_letter)
+
+        # Source-occurrence identity (issue #49): every scraped review is
+        # one occurrence with its stable UID and placement, even when the
+        # content fingerprint collides with another occurrence.
+        conn.execute(
+            """INSERT INTO bluebook_occurrences
+                 (bluebook_uid, test_name, module, question_number, subject,
+                  fingerprint, question_id, answer_status, scraped_at)
+               VALUES (?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(bluebook_uid) DO UPDATE SET
+                 test_name=excluded.test_name,
+                 module=excluded.module,
+                 question_number=excluded.question_number,
+                 subject=excluded.subject,
+                 fingerprint=excluded.fingerprint,
+                 question_id=excluded.question_id,
+                 answer_status=excluded.answer_status,
+                 scraped_at=excluded.scraped_at""",
+            (
+                rec.get("uid") or "",
+                rec.get("test_name") or "",
+                rec.get("module") or "",
+                str(rec.get("question_number") or ""),
+                config.SUBJECT,
+                fp,
+                qid,
+                rec.get("answer_status") or "",
+                rec.get("scraped_at") or "",
+            ),
+        )
+        stats["occurrences_upserted"] = stats.get("occurrences_upserted", 0) + 1
 
     return stats
 

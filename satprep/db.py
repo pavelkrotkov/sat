@@ -133,6 +133,27 @@ CREATE TABLE IF NOT EXISTS llm_tag_cache (
     evidence_json TEXT DEFAULT '[]',
     created_at TEXT NOT NULL
 );
+
+-- Bluebook source occurrences (issue #49). Each scraped review is one
+-- occurrence with a stable identity: (test_name, module, question_number,
+-- bluebook_uid). Distinct occurrences that share identical content are
+-- allowed to collide on the content fingerprint; the occurrence row keeps
+-- their provenance and placement so no source question silently disappears.
+CREATE TABLE IF NOT EXISTS bluebook_occurrences (
+    id INTEGER PRIMARY KEY,
+    bluebook_uid TEXT NOT NULL,
+    test_name TEXT NOT NULL,
+    module TEXT NOT NULL DEFAULT '',
+    question_number TEXT NOT NULL DEFAULT '',
+    subject TEXT NOT NULL DEFAULT '',
+    fingerprint TEXT NOT NULL,
+    question_id INTEGER REFERENCES questions(id),
+    answer_status TEXT NOT NULL DEFAULT '',
+    scraped_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(bluebook_uid)
+);
+CREATE INDEX IF NOT EXISTS idx_bb_occ_fp ON bluebook_occurrences(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_bb_occ_placement ON bluebook_occurrences(test_name, module, question_number);
 """
 
 
@@ -198,13 +219,37 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    """Lightweight column migrations for pre-existing databases."""
+    """Lightweight column/table migrations for pre-existing databases."""
     cols = {r[1] for r in conn.execute("PRAGMA table_info(attempts)")}
     if "error_tags" not in cols:
         conn.execute("ALTER TABLE attempts ADD COLUMN error_tags TEXT NOT NULL DEFAULT '[]'")
     qcols = {r[1] for r in conn.execute("PRAGMA table_info(questions)")}
     if "visuals_json" not in qcols:
         conn.execute("ALTER TABLE questions ADD COLUMN visuals_json TEXT DEFAULT '[]'")
+    if "bluebook_occurrences" not in {
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }:
+        conn.execute(
+            """CREATE TABLE bluebook_occurrences (
+                id INTEGER PRIMARY KEY,
+                bluebook_uid TEXT NOT NULL,
+                test_name TEXT NOT NULL,
+                module TEXT NOT NULL DEFAULT '',
+                question_number TEXT NOT NULL DEFAULT '',
+                subject TEXT NOT NULL DEFAULT '',
+                fingerprint TEXT NOT NULL,
+                question_id INTEGER REFERENCES questions(id),
+                answer_status TEXT NOT NULL DEFAULT '',
+                scraped_at TEXT NOT NULL DEFAULT '',
+                UNIQUE(bluebook_uid)
+            )"""
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_bb_occ_fp ON bluebook_occurrences(fingerprint)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_bb_occ_placement ON bluebook_occurrences(test_name, module, question_number)"
+        )
 
 
 @contextmanager
