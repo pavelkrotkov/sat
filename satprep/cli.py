@@ -27,8 +27,10 @@ from .corpus.archive import (
     export_corpus,
     restore_corpus,
 )
+from .corpus.audit import audit_bluebook, audit_passes
 from .corpus.ingest import ingest_bluebook, ingest_qbank
 from .corpus.qbank_fetch import backfill_visuals, fetch_qbank
+from .corpus.repair import repair_bluebook
 from .corpus.tagger import run_full_tagging
 from .db import db_context
 from .explanations import explain_error
@@ -92,6 +94,33 @@ def cmd_ingest(args) -> None:
         print(f"question bank imports: {ingest_qbank(conn)}")
         print(f"tagging: {run_full_tagging(conn)}")
         _auto_export(conn)
+
+
+def cmd_repair_bluebook(args) -> None:
+    """Reconcile the historical corpus from snapshots + JSON (issue #49).
+
+    Idempotent: re-running reports the same (small) change counts. After a
+    repair, run `satprep ingest` to regenerate the archive so exports/
+    reflects the repaired rows.
+    """
+    with db_context() as conn:
+        stats = repair_bluebook(conn)
+    warnings = stats.pop("warnings", [])
+    for w in warnings[:20]:
+        print(f"  warn: {w}")
+    if len(warnings) > 20:
+        print(f"  ... and {len(warnings) - 20} more field warnings")
+    print(json.dumps(stats, indent=2))
+
+
+def cmd_audit_bluebook(args) -> None:
+    """Print the Bluebook corpus audit and exit non-zero on gate failures."""
+    with db_context() as conn:
+        report = audit_bluebook(conn)
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+    if not audit_passes(report):
+        raise SystemExit(f"audit failed: {len(report['failures'])} gate(s) not met")
+    print("audit: PASS")
 
 
 def cmd_export(args) -> None:
@@ -683,6 +712,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("ingest", help="rebuild corpus from raw sources (idempotent)")
     sp.set_defaults(func=cmd_ingest)
+
+    sp = sub.add_parser(
+        "repair-bluebook",
+        help="reconcile historical Bluebook rows from snapshots (issue #49; idempotent)",
+    )
+    sp.set_defaults(func=cmd_repair_bluebook)
+
+    sp = sub.add_parser(
+        "audit-bluebook",
+        help="audit Bluebook history against acceptance gates (issue #49; read-only)",
+    )
+    sp.set_defaults(func=cmd_audit_bluebook)
 
     sp = sub.add_parser("analyze", help="compute weakness profile")
     sp.set_defaults(func=cmd_analyze)
