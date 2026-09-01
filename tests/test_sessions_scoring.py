@@ -226,6 +226,22 @@ def test_excerpt_sentences_etc_nonterminal_kept():
     assert "etc." in out and "other fruit" in out
 
 
+def test_excerpt_sentences_sentence_exactly_filling_the_cap():
+    """PR-50 round-5 finding: 'One. Two.' at exactly max_chars must both
+    fit — the separator was double-counted, dropping the second sentence."""
+    assert excerpt_sentences("One. Two.", max_chars=9) == "One. Two."
+
+
+def test_excerpt_sentences_suffix_abbreviation_terminal_still_splits():
+    """PR-50 round-5 finding: 'Jr.' at a real sentence end is a boundary —
+    suffix abbreviations are terminal-aware like Inc./etc."""
+    s1 = "The speaker was Martin Luther King Jr."
+    s2 = ("Choice B is the best answer because it stays within the scope "
+          "of the passage and does not overstate the evidence.")
+    out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
+    assert out == s1
+
+
 def test_excerpt_sentences_still_splits_on_real_periods():
     s1 = "First sentence ends here."
     s2 = "Second sentence starts here."

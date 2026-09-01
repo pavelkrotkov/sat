@@ -216,16 +216,18 @@ def _infer_trap(tags):
 #   - title abbreviations (Dr., Mr., ...) and always-nonterminal ones
 #     (vs., e.g., i.e.) are protected unconditionally — in the corpus
 #     (1,965 rationales) these never occur sentence-final;
-#   - other abbreviations (etc., Inc., U.S., ...) are non-terminal only
-#     when a lowercase continuation follows, so "..., etc. Choice B..."
-#     and "Acme Inc. Choice B..." still split at the real sentence end.
+#   - other abbreviations (etc., Inc., U.S., Co., Jr., Sr., ...) are
+#     non-terminal only when a lowercase continuation follows, so
+#     "..., etc. Choice B...", "Acme Inc. Choice B..." and
+#     "Martin Luther King Jr. Choice B..." still split at the real
+#     sentence end.
 # Name initials ("J. K. Rowling") are deliberately not special-cased:
 # they do not occur in the corpus, and a lone capital-period there would
 # be indistinguishable from an answer label ("The correct answer is A.").
-_TITLE_ABBREVIATIONS = ("Dr.", "Mr.", "Mrs.", "Ms.", "St.", "Jr.", "Sr.")
+_TITLE_ABBREVIATIONS = ("Dr.", "Mr.", "Mrs.", "Ms.", "St.")
 _ALWAYS_ABBREVIATIONS = ("e.g.", "i.e.", "vs.")
-_OTHER_ABBREVIATIONS = ("etc.", "Inc.", "Co.", "U.S.", "U.K.", "A.D.",
-                        "B.C.", "Ph.D.", "M.D.")
+_OTHER_ABBREVIATIONS = ("etc.", "Inc.", "Co.", "Jr.", "Sr.", "U.S.",
+                        "U.K.", "A.D.", "B.C.", "Ph.D.", "M.D.")
 # Sentence terminator, optional closing quotes/brackets, then whitespace.
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])([\"'\u201d\u2019)\]]*)\s+")
 
@@ -267,7 +269,10 @@ def excerpt_sentences(text: str, max_chars: int) -> str:
     excerpt: list[str] = []
     total = 0
     for s in sentences:
-        if excerpt and total + len(s) + 1 > max_chars:
+        # total already includes the separator after the previous sentence,
+        # so a sentence that would land the joined excerpt exactly on
+        # max_chars still fits (PR-50 round-5 finding).
+        if excerpt and total + len(s) > max_chars:
             break
         excerpt.append(s)
         total += len(s) + 1
