@@ -103,11 +103,25 @@ def question(request: Request, sid: str, idx: int, conn=Conn):
     if idx >= len(items):
         return RedirectResponse(f"/results/{sid}", status_code=303)
     q = load_question(conn, items[idx]["question_id"])
+    if q is None:
+        return RedirectResponse(f"/results/{sid}", status_code=303)
     return templates.TemplateResponse(request, "question.html", {"q": q, "sid": sid, "idx": idx,
         "total": len(items),
         "streak": current_streak(conn, sid),
+        # shared partial input (issue #47): plain dict, no template
+        # comprehensions — Jinja expressions cannot build lists inline
+        "ctx": {
+            "passage": q.passage,
+            "stem": q.stem,
+            "choices": [{"letter": c.letter, "text": c.text,
+                         "is_correct": c.is_correct} for c in q.choices],
+            "images": list(q.images),
+            "chosen_letter": "",
+            "key_letter": "",
+            "selectable": True,
+            "source_label": "",
+        },
     })
-
 
 @app.post("/answer/{sid}/{idx}")
 def answer(request: Request, sid: str, idx: int,

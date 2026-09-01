@@ -1,0 +1,49 @@
+{# Shared question-context partial (issue #47).
+   Renders the full original question — passage, stem, every choice with
+   selected/key state, stored figures, and source placement — so the drill,
+   immediate feedback, and final mistake-review surfaces never show an
+   explanation without the question that motivated it.
+
+   Contract:
+     ctx.passage        — full original passage text ('' when none)
+     ctx.stem           — the question stem
+     ctx.choices        — [{letter, text, is_correct}] complete list
+     ctx.images         — stored figure paths served by /figures
+     ctx.chosen_letter  — the student's committed answer ('' / absent = not submitted)
+     ctx.key_letter     — the correct letter ('' until an answer is committed)
+     ctx.source_label   — "test · q# · module" placement for debugging
+     ctx.selectable     — true on the drill form: choices render as radios
+                          named `letter` so the answer form still submits;
+                          false on review/feedback: read-only state rows.
+   The key is never revealed for an unsubmitted question: key_letter is
+   empty until the caller sets it.
+#}
+<article class="question-context">
+  {% if ctx.passage %}<div class="passage">{% for p in ctx.passage.split('\n') %}<p>{{ p }}</p>{% endfor %}</div>{% endif %}
+  {% if ctx.images %}
+    <div class="figures">
+    {% for img in ctx.images %}<img src="/figures/{{ img|basename }}" alt="question figure {{ loop.index }}" loading="lazy">{% endfor %}
+    </div>
+  {% endif %}
+  <p class="stem">{{ ctx.stem }}</p>
+  {% if ctx.selectable %}
+    <div class="choices">
+    {% for c in ctx.choices %}
+      <label class="choice"><input type="radio" name="letter" value="{{ c.letter }}" required>
+        <span class="letter">{{ c.letter }}.</span> <span class="text">{{ c.text }}</span></label>
+    {% endfor %}
+    </div>
+  {% else %}
+    <ul class="choice-list">
+    {% for c in ctx.choices %}
+      <li class="choice{{ ' chosen' if c.letter == ctx.chosen_letter else '' }}{{ ' key' if c.letter == ctx.key_letter else '' }}">
+        <span class="letter">{{ c.letter }}.</span>
+        <span class="text">{{ c.text }}</span>
+        {% if c.letter == ctx.chosen_letter %}<span class="state">your answer</span>{% endif %}
+        {% if c.letter == ctx.key_letter and ctx.key_letter %}<span class="state key">key</span>{% endif %}
+      </li>
+    {% endfor %}
+    </ul>
+  {% endif %}
+  {% if ctx.source_label %}<p class="muted source-line">source: {{ ctx.source_label }}</p>{% endif %}
+</article>
