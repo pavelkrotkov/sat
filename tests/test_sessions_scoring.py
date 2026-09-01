@@ -267,6 +267,18 @@ def test_excerpt_sentences_sentence_final_ellipsis_still_splits():
     assert out == s1
 
 
+def test_excerpt_sentences_capitalized_abbreviation_variants():
+    """PR-50 round-9 finding: capitalized variants ('E.g.', 'I.e.') at
+    sentence start must be protected case-insensitively, preserving
+    their casing."""
+    text = ("E.g. the evidence overwhelmingly supports the treatment in "
+            "every case observed so far and the results are consistent "
+            "with the hypothesis. " * 10)
+    out = excerpt_sentences(text, max_chars=25)
+    assert out.startswith("E.g. the evidence")
+    assert "E.g." in out and len(out.split("E.g.", 1)[1].strip()) > 0
+
+
 def test_excerpt_sentences_still_splits_on_real_periods():
     s1 = "First sentence ends here."
     s2 = "Second sentence starts here."

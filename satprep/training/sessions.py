@@ -241,10 +241,20 @@ _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])([\"'\u201d\u2019)\]]*)\s+")
 
 def _protect_abbreviations(text: str) -> str:
     """Replace non-boundary periods with a placeholder so the sentence
-    splitter skips them; restored before returning the excerpt."""
+    splitter skips them; restored before returning the excerpt.
+
+    Title and always-nonterminal abbreviations are matched
+    case-insensitively so capitalized variants ("E.g. the evidence...",
+    "I.E. this means") are protected too (PR-50 round-9 finding); the
+    conditional list keeps exact-case matching because its entries are
+    already case-distinctive (Inc. vs inc. is not a boundary question).
+    """
     text = _ELLIPSIS.sub(lambda m: m.group(0).replace(".", "\x00"), text)
     for abbr in _TITLE_ABBREVIATIONS + _ALWAYS_ABBREVIATIONS:
-        text = text.replace(abbr, abbr.replace(".", "\x00"))
+        # protect only the dots in the matched abbreviation, preserving
+        # the original casing ("E.g." stays "E.g." after restore)
+        pattern = re.compile(re.escape(abbr), re.IGNORECASE)
+        text = pattern.sub(lambda m: m.group(0).replace(".", "\x00"), text)
     for abbr in _OTHER_ABBREVIATIONS:
         text = re.sub(re.escape(abbr) + r"(?=\s+[a-z])",
                       abbr.replace(".", "\x00"), text)
