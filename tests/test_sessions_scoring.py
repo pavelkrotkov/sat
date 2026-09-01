@@ -347,6 +347,16 @@ def test_excerpt_sentences_still_splits_on_real_periods():
     assert out == f"{s1} {s2}"
 
 
+def test_excerpt_sentences_curly_single_quote_sentence_start():
+    """PR-50 round-14 finding: a sentence beginning with a curly single
+    quote ('‘Choice B’ follows') is a real boundary."""
+    s1 = "The claim is supported."
+    s2 = ("\u2018Choice B\u2019 follows because the evidence is clear and "
+          "the conclusion is direct.")
+    out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
+    assert out == s1
+
+
 def test_excerpt_sentences_terminal_abbreviation_still_splits():
     """PR-50 round-2 finding: 'Acme Inc.' at a real sentence end is a
     boundary — protecting it unconditionally hid the boundary and the

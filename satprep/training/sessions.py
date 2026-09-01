@@ -244,7 +244,8 @@ _ELLIPSIS = re.compile(r"\.(?:\s*\.)+(?=\s+[a-z])")
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])([\"'\u201d\u2019)\]]*)\s+")
 
 # Characters that start a sentence even without an uppercase letter.
-_NON_LETTER_STARTS = frozenset("\u201c\"'([")
+# Both curly double and single opening quotes are included (PR-50 round-14).
+_NON_LETTER_STARTS = frozenset("\u201c\u2018\"'([")
 
 
 def _is_sentence_start(text: str) -> bool:
