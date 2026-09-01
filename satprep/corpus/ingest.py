@@ -88,8 +88,12 @@ def ingest_bluebook(conn) -> dict:
                 parsed = parse_snapshot(Path(snap_path).read_text())
             except Exception:
                 parsed = None
-        if parsed is None or not (parsed.passage or parsed.stem):
-            # snapshot truly unusable -> rebuild from scraped JSON text
+        if parsed is None:
+            # No usable snapshot at all -> rebuild from scraped JSON text.
+            # When a snapshot exists but is missing passage/stem, keep the
+            # parsed object (its recovered choices/key may be valid) and let
+            # merge_fields fill the gaps from JSON (T10) rather than
+            # discarding the parsed fields with a wholesale replacement.
             stats["parse_fallbacks"] += 1
             parsed = _question_from_json_record(rec)
 
@@ -115,7 +119,21 @@ def ingest_bluebook(conn) -> dict:
         fp = fpmod.fingerprint(passage, stem, choice_texts)
 
         existing = conn.execute("SELECT id FROM questions WHERE fingerprint=?", (fp,)).fetchone()
-        if existing:
+        # T1: resolve by source UID first so a record that was repaired
+        # (content fingerprint changed in bluebook_occurrences) reconciles
+        # the SAME row instead of inserting a duplicate. The occurrence table
+        # is the stable identity across repair/key changes.
+        occ = conn.execute(
+            "SELECT question_id FROM bluebook_occurrences WHERE bluebook_uid=?",
+            (rec.get("uid") or "",),
+        ).fetchone()
+        if occ is not None and occ["question_id"] is not None:
+            if existing and existing["id"] != occ["question_id"]:
+                # Content fp matches a different row than the occurrence's.
+                # Trust the occurrence's stable identity; reconcile below.
+                stats["skipped_existing"] += 1
+            qid = occ["question_id"]
+        elif existing:
             stats["skipped_existing"] += 1
             qid = existing["id"]
         else:
@@ -194,9 +212,14 @@ def ingest_bluebook(conn) -> dict:
                   fingerprint, question_id, answer_status, scraped_at)
                VALUES (?,?,?,?,?,?,?,?,?)
                ON CONFLICT(bluebook_uid) DO UPDATE SET
-                 question_id=excluded.question_id,
+                 test_name=excluded.test_name,
+                 module=excluded.module,
+                 question_number=excluded.question_number,
+                 subject=excluded.subject,
                  fingerprint=excluded.fingerprint,
-                 answer_status=excluded.answer_status""",
+                 question_id=excluded.question_id,
+                 answer_status=excluded.answer_status,
+                 scraped_at=excluded.scraped_at""",
             (
                 rec.get("uid") or "",
                 rec.get("test_name") or "",

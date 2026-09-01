@@ -5,7 +5,7 @@ import json
 import pytest
 
 from satprep.db import connect, db_context
-from satprep.corpus.audit import audit_bluebook, audit_passes
+from satprep.corpus.audit import audit_bluebook, audit_passes, _has_determinable_correctness
 from satprep.corpus.repair import repair_bluebook
 from tests.conftest import add_question  # noqa: F401  (fixture helper)
 
@@ -27,7 +27,8 @@ def _rec(uid, *, test="SAT Practice Test 4", module="Module 1", num="1",
 
 
 def _seed_occurrences(conn, records, qid_for=None):
-    """Insert an occurrence per record, resolving to a question row."""
+    """Insert an occurrence per record, resolving to a question row, plus the
+    matching historical attempt (per-occurrence preservation gate T3)."""
     for rec in records:
         qid = qid_for(rec) if qid_for else add_question(
             conn, passage=f"P{rec['uid']}", stem=f"Q{rec['uid']}?",
@@ -42,6 +43,13 @@ def _seed_occurrences(conn, records, qid_for=None):
              "Reading and Writing", f"fp{qid}", qid, rec["answer_status"],
              rec["scraped_at"]),
         )
+        if _has_determinable_correctness(rec):
+            conn.execute(
+                """INSERT INTO attempts (session_id, question_id, chosen_letter,
+                                          correct, confidence, time_ms, mode, attempted_at)
+                   VALUES (?,?,?,?,0,0,'historical',?)""",
+                (f"hist:{rec['uid']}", qid, "A", 1, rec["scraped_at"]),
+            )
 
 
 def test_audit_counts_source_occurrences(db, tmp_path, monkeypatch):
@@ -98,15 +106,36 @@ def test_audit_flags_missing_fields(db, tmp_path, monkeypatch):
 
 
 def test_audit_reports_attempts_preserved(db, tmp_path, monkeypatch):
+    """T3: the audit counts historical attempts and flags a missing one."""
     conn, _ = db
     recs = [_rec("u1")]
     _seed_sources(tmp_path, monkeypatch, recs)
     _seed_occurrences(conn, recs)
     report = audit_bluebook(conn)
-    assert report["attempts_preserved"] == 0
-    # with an attempt
-    from tests.conftest import add_attempt
-    qid = conn.execute("SELECT question_id FROM bluebook_occurrences").fetchone()[0]
-    add_attempt(conn, qid, correct=1, mode="historical")
-    report = audit_bluebook(conn)
     assert report["attempts_preserved"] == 1
+    assert report["attempts_missing"] == [] and audit_passes(report)
+    # delete the attempt -> the audit now flags it as missing
+    conn.execute("DELETE FROM attempts WHERE mode='historical'")
+    report = audit_bluebook(conn)
+    assert report["attempts_preserved"] == 0
+    assert report["attempts_missing"] == ["u1"]
+    assert not audit_passes(report)
+
+
+def test_audit_rejects_missing_source(db, tmp_path, monkeypatch):
+    """T5: a missing source scrape must fail the audit, never report PASS."""
+    conn, _ = db
+    # Do not write outputs/wrong_questions.json at all.
+    monkeypatch.setattr("satprep.config.BLUEBOOK_JSON", tmp_path / "outputs" / "wrong_questions.json")
+    report = audit_bluebook(conn)
+    assert not audit_passes(report)
+    assert report["failures"]
+
+
+def test_audit_rejects_zero_source_records(db, tmp_path, monkeypatch):
+    """T5: an empty R&W source (zero records) must not read as a clean PASS."""
+    conn, _ = db
+    _seed_sources(tmp_path, monkeypatch, [])
+    report = audit_bluebook(conn)
+    assert not audit_passes(report)
+    assert any("zero R&W" in f for f in report["failures"])

@@ -26,12 +26,11 @@ Repair strategy (idempotent, preserves attempts/tags):
   occurrence with its stable UID, test/module/question placement and
   resolved question_id, so identical content at different placements no
   longer erases provenance.
-* Old choice-less rows are reconciled *in place*: the same fingerprint is
-  kept when the passage+stem are unchanged (adding choices changes the
-  fingerprint, but re-keying would orphan attempts/tags/reviews). The
-  stored fingerprint column is left as the legacy collision key; the
-  occurrence table carries the placement identity. New fingerprints are
-  only used for genuinely new questions.
+* Old choice-less rows are reconciled *in place*: the same question_id is
+  kept so attempts/tags/reviews stay attached, and the stored fingerprint is
+  brought in line with the corrected content when that fingerprint is not
+  already owned by another row (a genuine content collision keeps its row
+  identity and is tracked by the occurrence table).
 * Re-running repair is a no-op: occurrences are upserted by UID and every
   write is guarded by the current stored content.
 
@@ -88,9 +87,10 @@ def merge_fields(parsed, rec: dict) -> tuple[dict, list[str]]:
 
     passage = parsed.passage or rec.get("question_text") or ""
     stem = parsed.stem or ""
-    choices = list(parsed.choices) or _json_choices(rec)
     correct_letter = parsed.correct_letter or _status_of(rec)[1]
     student_letter = parsed.student_letter or _status_of(rec)[0]
+    # Choices seen per-component so the JSON fallback marks the key (T8).
+    choices = list(parsed.choices) or _json_choices(rec, correct_letter)
     rationale = parsed.rationale or rec.get("explanation") or ""
     images = rec.get("images") or []
 
@@ -116,21 +116,23 @@ def merge_fields(parsed, rec: dict) -> tuple[dict, list[str]]:
     }, warnings
 
 
-def _json_choices(rec: dict) -> list[dict]:
+def _json_choices(rec: dict, correct_letter: str = "") -> list[dict]:
     """Choices from the JSON record's answer_choices list (best effort).
 
     The scraper stores choices as "A. text" strings when the structured
     extraction ran; the JSON fallback path in ingest historically produced
     {letter, text, is_correct} dicts from the raw answer_choices. Handle
-    both shapes.
+    both shapes and mark the key from ``correct_letter`` so a recovered
+    choice list never carries a valid ``correct_letter`` while ``is_correct``
+    is false on every option.
     """
     raw = rec.get("answer_choices") or []
     choices: list[dict] = []
     for i, item in enumerate(raw):
         letter = chr(ord("A") + i)
         if isinstance(item, dict):
-            letter = item.get("letter") or letter
-            text = item.get("text") or ""
+            letter = str(item.get("letter") or letter)
+            text = str(item.get("text") or "")
         else:
             text = str(item)
             m = re.match(r"^\s*\(?([A-H])[\.\)]\s*(.*)$", text)
@@ -139,7 +141,14 @@ def _json_choices(rec: dict) -> list[dict]:
                 text = m.group(2)
         text = text.strip()
         if text:
-            choices.append({"letter": letter, "text": text, "is_correct": False})
+            choices.append(
+                {
+                    "letter": letter,
+                    "text": text,
+                    "is_correct": letter.strip().upper()
+                    == str(correct_letter or "").strip().upper(),
+                }
+            )
     return choices
 
 
@@ -221,6 +230,16 @@ def repair_bluebook(conn) -> dict:
         )
         existing_qid = uid_to_qid.get(uid)
         if existing_qid is None:
+            # Resolve by content fingerprint first so two source UIDs with
+            # identical content share a row instead of violating the UNIQUE
+            # constraint on a second insert (T0).
+            fp_row = conn.execute("SELECT id FROM questions WHERE fingerprint=?", (fp,)).fetchone()
+            if fp_row is not None:
+                existing_qid = fp_row["id"]
+                # Keep the placement identity in uid_to_qid so a later record
+                # with the same UID does not re-insert.
+                uid_to_qid[uid] = existing_qid
+        if existing_qid is None:
             # New occurrence: insert a question row.
             existing_qid = _insert_question(conn, rec, merged, fp, uid, snap_path)
             stats["rows_inserted"] += 1
@@ -270,7 +289,7 @@ def _merge_json_only(rec: dict) -> tuple[dict, list[str]]:
     """Merge path when no snapshot exists: JSON record only."""
     parsed = ParsedQuestion()
     parsed.passage = rec.get("question_text") or ""
-    parsed.choices = _json_choices(rec)
+    parsed.choices = _json_choices(rec, _status_of(rec)[1])
     parsed.correct_letter = _status_of(rec)[1]
     parsed.student_letter = _status_of(rec)[0]
     parsed.rationale = rec.get("explanation") or ""
@@ -327,15 +346,17 @@ def _reconcile_question(conn, qid: int, rec: dict, merged: dict, fp: str) -> boo
     this question). Returns True when any column actually changed.
     """
     row = conn.execute(
-        "SELECT passage, stem, choices_json, correct_letter, rationale, images_json, provenance_json FROM questions WHERE id=?",
+        "SELECT passage, stem, choices_json, correct_letter, rationale, images_json, provenance_json, fingerprint FROM questions WHERE id=?",
         (qid,),
     ).fetchone()
     if row is None:
         return False
     updates: list[tuple[str, str]] = []
-    new_choices = json.dumps(merged["choices"])
-    if row["choices_json"] != new_choices:
-        updates.append(("choices_json", new_choices))
+    # T2: choices are only updated when the merged source actually supplies
+    # them. If the snapshot is missing and the JSON record has none, keep the
+    # stored choices rather than corrupting the row with an empty list.
+    if merged["choices"] and json.dumps(merged["choices"]) != row["choices_json"]:
+        updates.append(("choices_json", json.dumps(merged["choices"])))
     if not row["correct_letter"] and merged["correct_letter"]:
         updates.append(("correct_letter", merged["correct_letter"]))
     if not row["passage"] and merged["passage"]:
@@ -345,8 +366,27 @@ def _reconcile_question(conn, qid: int, rec: dict, merged: dict, fp: str) -> boo
     if not row["rationale"] and merged["rationale"]:
         updates.append(("rationale", merged["rationale"]))
     new_images = json.dumps(merged["images"])
-    if row["images_json"] != new_images:
+    # Images follow the same fill-if-missing rule as the other fields: when
+    # the row already has images, keep them. For content-collided rows (two
+    # occurrences sharing one question with different figure paths, e.g. the
+    # same item reused across modules) this keeps the write idempotent instead
+    # of oscillating image paths on every run.
+    if row["images_json"] in ("[]", "") and new_images not in ("[]",):
         updates.append(("images_json", new_images))
+    # T1: reconcile the content identity when the corrected fingerprint is
+    # free AND the merged source actually recovered real content (choices
+    # non-empty). Re-keying on a degenerate run (snapshot missing, JSON
+    # empty) would overwrite a meaningful fingerprint with an empty-content
+    # one. The row keeps its id (attempts/tags/reviews stay attached); only
+    # update when no OTHER row already owns that exact fingerprint (that is
+    # a genuine content collision handled by the occurrence table).
+    if merged["choices"] and fp != row["fingerprint"]:
+        owner = conn.execute(
+            "SELECT id FROM questions WHERE fingerprint=? AND id!=?",
+            (fp, qid),
+        ).fetchone()
+        if owner is None:
+            updates.append(("fingerprint", fp))
     if updates:
         sets = ", ".join(f"{col}=?" for col, _ in updates)
         conn.execute(
@@ -357,7 +397,13 @@ def _reconcile_question(conn, qid: int, rec: dict, merged: dict, fp: str) -> boo
 
 
 def _ensure_historical_attempt(conn, qid: int, rec: dict, merged: dict) -> None:
-    """Insert the historical attempt + error diagnosis once per uid."""
+    """Insert the historical attempt and backfill error diagnosis (T9).
+
+    Attempt insertion stays conditional (once per uid), but diagnosis is
+    run whenever a wrong historical attempt can now be explained — the main
+    repair case is a mobile wrong attempt whose original ingest could not
+    call ``diagnose_attempt`` because the question had no choices.
+    """
     correctness = _historical_correctness(rec)
     session_key = f"hist:{rec.get('uid')}"
     seen = conn.execute("SELECT 1 FROM attempts WHERE session_id=?", (session_key,)).fetchone()
@@ -379,10 +425,13 @@ def _ensure_historical_attempt(conn, qid: int, rec: dict, merged: dict) -> None:
                ON CONFLICT(question_id) DO NOTHING""",
             (qid,),
         )
-        if correctness == 0 and merged["student_letter"] and merged["choices"]:
-            diagnose_attempt(
-                conn, qid, merged["choices"], merged["correct_letter"], merged["student_letter"]
-            )
+    # Backfill error diagnosis idempotently when the wrong letter and the
+    # (now recovered) choice set are both known. diagnose_attempt replaces
+    # prior tags of the same question, so re-running is safe.
+    if correctness == 0 and merged["student_letter"] and merged["choices"]:
+        diagnose_attempt(
+            conn, qid, merged["choices"], merged["correct_letter"], merged["student_letter"]
+        )
 
 
 def _historical_correctness(rec: dict) -> int | None:

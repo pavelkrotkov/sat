@@ -10,11 +10,11 @@ import json
 
 import pytest
 
-from satprep.db import connect
-from satprep.db import db_context
+from satprep.clock import utc_now
 from satprep.corpus.ingest import ingest_bluebook
-from satprep.corpus.repair import repair_bluebook, merge_fields
-from satprep.corpus.parse_snapshot import parse_snapshot, ParsedQuestion
+from satprep.corpus.parse_snapshot import ParsedQuestion, parse_snapshot
+from satprep.corpus.repair import merge_fields, repair_bluebook
+from satprep.db import connect, db_context
 
 
 # --------------------------------------------------------------- fixtures --
@@ -65,6 +65,27 @@ def test_parse_incorrect_layout_yields_choices():
     assert p.correct_letter == "B"
     assert p.student_letter == "B"
     assert p.rationale
+
+
+def test_parse_prefers_answer_panel_over_passage_list():
+    """T7: a generic ordered list inside the passage must not be treated as
+    the answer choices; only .question-panel ol.answer-options is a choice
+    list, otherwise fall back to .answer-panel ol."""
+    html = """<div class="question-panel"><h3>Reading and Writing: Question 2</h3>
+      <div><p>Rank these steps:</p><ol><li>first</li><li>second</li><li>third</li></ol></div>
+      <div><p>The stem text follows?</p></div></div>
+      <div class="answer-panel"><h3>Answer</h3>
+      <ol type="A" class="cb-margin-bottom-16">
+        <li class=""><div><p>alpha</p></div></li>
+        <li class="correct"><div><p>beta</p></div></li>
+        <li class=""><div><p>gamma</p></div></li>
+      </ol>
+      <p class="incorrect response">You selected answer B. The correct answer is B.</p>
+      </div>"""
+    p = parse_snapshot(html)
+    # passage list (first/second/third) is NOT parsed as choices
+    assert [c["text"] for c in p.choices] == ["alpha", "beta", "gamma"]
+    assert p.correct_letter == "B"
 
 
 # ------------------------------------------------------------- merge -----
@@ -227,3 +248,110 @@ def test_repair_records_both_layouts(tmp_path, monkeypatch):
             "FROM questions q ORDER BY q.id").fetchall()
         assert {r["n"] for r in rows} == {4}
         assert {r["correct_letter"] for r in rows} == {"A", "B"}
+
+
+def test_repair_reuses_fingerprint_for_identical_content(tmp_path, monkeypatch):
+    """T0: two UIDs with identical content share one question row instead of
+    tripping the fingerprint UNIQUE constraint."""
+    snap = "test-dup.html"
+    recs = [
+        _rec("dup-a", snap=_abs_snap(tmp_path, snap), status="Correct", num="1"),
+        _rec("dup-b", snap=_abs_snap(tmp_path, snap), status="Incorrect",
+             my="B; Incorrect", key="A", num="1"),
+    ]
+    monkeypatch.setattr("satprep.config.BLUEBOOK_JSON", tmp_path / "outputs" / "wrong_questions.json")
+    _write_sources(tmp_path, recs, {snap: CORRECT_HTML})
+    dbp = tmp_path / "t.db"
+    with db_context(dbp) as conn:
+        stats = repair_bluebook(conn)
+    assert stats["rows_inserted"] == 1
+    # identical content -> nothing to reconcile on the second record
+    assert stats["rows_updated"] == 0
+    with db_context(dbp) as conn:
+        n = conn.execute("SELECT COUNT(*) FROM questions").fetchone()[0]
+        occ = conn.execute("SELECT COUNT(*) FROM bluebook_occurrences").fetchone()[0]
+    assert n == 1 and occ == 2
+
+
+def test_reconcile_keeps_stored_choices_when_merge_has_none(tmp_path, monkeypatch):
+    """T2: an existing row that already has choices must not have them
+    erased when the snapshot is missing and JSON has none."""
+    snap = "test-present.html"
+    rec = _rec("uid", snap=_abs_snap(tmp_path, snap), status="Correct",
+               question_text="", choices=[])
+    monkeypatch.setattr("satprep.config.BLUEBOOK_JSON", tmp_path / "outputs" / "wrong_questions.json")
+    _write_sources(tmp_path, [rec], {snap: CORRECT_HTML})
+    dbp = tmp_path / "t.db"
+    with db_context(dbp) as conn:
+        stats = repair_bluebook(conn)
+        qid = conn.execute("SELECT id FROM questions").fetchone()[0]
+    # remove the snapshot so a re-run cannot parse it -> merged choices empty
+    import os
+    os.remove(tmp_path / "artifacts" / "html" / snap)
+    with db_context(dbp) as conn:
+        new_rec = dict(rec)
+        new_rec["question_text"] = ""
+        s2 = repair_bluebook(conn)
+        row = conn.execute("SELECT choices_json FROM questions WHERE id=?", (qid,)).fetchone()
+    assert json.loads(row["choices_json"])  # stored choices preserved
+    assert s2["rows_updated"] == 0
+
+
+def test_json_fallback_marks_key(tmp_path, monkeypatch):
+    """T8: JSON fallback choices must mark the correct answer as is_correct."""
+    rec = _rec("u", status="Incorrect", my="B; Incorrect", key="A",
+               question_text="", choices=["A. correct one", "B. distractor"])
+    monkeypatch.setattr("satprep.config.BLUEBOOK_JSON", tmp_path / "outputs" / "wrong_questions.json")
+    _write_sources(tmp_path, [rec])
+    dbp = tmp_path / "t.db"
+    with db_context(dbp) as conn:
+        repair_bluebook(conn)
+        row = conn.execute("SELECT choices_json, correct_letter FROM questions").fetchone()
+    choices = json.loads(row["choices_json"])
+    assert [c["is_correct"] for c in choices] == [True, False]
+    assert row["correct_letter"] == "A"
+
+
+def test_repair_backfills_error_diagnosis(tmp_path, monkeypatch):
+    """T9: a pre-existing wrong historical attempt gets error diagnosis once
+    choices are recovered by a later repair."""
+    wrong_html = """<div class="question-panel"><h3>Reading and Writing: Question 1</h3>
+      <div><p>Passage for the wrong answer.</p></div>
+      <div><p>Which choice best describes the study?</p></div>
+      <ol type="A" class="answer-options"><li class="correct"><p>The study shows students may benefit from the program.</p></li>
+      <li class=""><p>The study proves students always benefit from the program.</p></li></ol></div>
+      <div class="answer-panel">
+      <p class="incorrect response">You selected answer B. The correct answer is A.</p>
+      <div class="rationale"><h3>Rationale</h3><p>A is correct.</p></div></div>"""
+    snap = "test-diag.html"
+    rec = _rec("diag", snap=_abs_snap(tmp_path, snap), status="Incorrect",
+               my="B; Incorrect", key="A", question_text="")
+    monkeypatch.setattr("satprep.config.BLUEBOOK_JSON", tmp_path / "outputs" / "wrong_questions.json")
+    _write_sources(tmp_path, [rec], {snap: wrong_html})
+    dbp = tmp_path / "t.db"
+    # Seed a legacy choice-less row + wrong attempt, mirroring pre-repair state.
+    from satprep.corpus.fingerprint import fingerprint as fpmod_fp
+    with db_context(dbp) as conn:
+        legacy_fp = fpmod_fp("", "", [])
+        cur = conn.execute(
+            """INSERT INTO questions (fingerprint, source, source_test, source_question_number,
+                 module, passage, stem, choices_json, correct_letter, rationale, images_json,
+                 official_domain, official_skill, skill_source, difficulty, pool, seen_benchmark,
+                 is_new_bank, import_batch, imported_at, provenance_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,'',?,?)""",
+            (legacy_fp, "bluebook_test", rec["test_name"], rec["question_number"],
+             rec["module"], "", "", "[]", "A", "", "[]", "", "", "unknown", "",
+             "historical", utc_now(), json.dumps({"bluebook_uid": rec["uid"]})),
+        )
+        qid = cur.lastrowid
+        conn.execute(
+            """INSERT INTO attempts (session_id, question_id, chosen_letter, correct,
+                                     confidence, time_ms, mode, attempted_at)
+               VALUES (?,?,?,?,0,0,'historical',?)""",
+            (f"hist:{rec['uid']}", qid, "B", 0, "2026-03-01T00:00:00+00:00"),
+        )
+    with db_context(dbp) as conn:
+        stats = repair_bluebook(conn)
+        n_diag = conn.execute("SELECT COUNT(*) FROM student_error_tags").fetchone()[0]
+    assert stats["rows_updated"] >= 1  # choices + fingerprint reconciled
+    assert n_diag > 0  # diagnosis backfilled for the repaired wrong attempt
