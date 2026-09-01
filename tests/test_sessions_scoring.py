@@ -300,6 +300,31 @@ def test_excerpt_sentences_quoted_question_stays_inside_sentence():
     assert "Why?" in out and len(out.split("Why?", 1)[1].strip()) > 0
 
 
+def test_excerpt_sentences_abbreviation_before_whitespace_protected():
+    """PR-50 round-11 finding: the trailing \\b from the round-10 fix
+    broke 'Dr. Smith' / 'St. Louis' (a space follows the abbreviation).
+    The leading-boundary + whitespace-lookahead pattern protects them."""
+    s1 = "Dr. Smith concluded the study."
+    s2 = ("The data support the conclusion in every case observed and the "
+          "results are consistent with the hypothesis.")
+    out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
+    assert out == s1
+
+    st = "St. Louis is a city."
+    out2 = excerpt_sentences(f"{st} {s2} {s2}", max_chars=len(st) + 20)
+    assert out2 == st
+
+
+def test_excerpt_sentences_sentence_starting_with_digit_still_splits():
+    """PR-50 round-11 finding: a sentence beginning with a number
+    ('1990. 200 participants') is a real boundary."""
+    s1 = "The study began in 1990."
+    s2 = ("200 participants were enrolled and the results support the "
+          "hypothesis strongly.")
+    out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
+    assert out == s1
+
+
 def test_excerpt_sentences_still_splits_on_real_periods():
     s1 = "First sentence ends here."
     s2 = "Second sentence starts here."

@@ -236,12 +236,14 @@ _OTHER_ABBREVIATIONS = ("etc.", "Inc.", "Co.", "Jr.", "Sr.", "U.S.",
 # (PR-50 round-8 finding), mirroring the etc./Inc. conditional rule.
 _ELLIPSIS = re.compile(r"\.(?:\s*\.)+(?=\s+[a-z])")
 # Sentence terminator, optional closing quotes/brackets, then whitespace,
-# then the start of a new sentence (capitalized word or a quote/bracket).
-# Requiring a capitalized continuation keeps an embedded quoted question
-# ("asks "Why?" before explaining") inside its sentence (PR-50 round-10);
-# a lowercase continuation is an abbreviation/quote already protected.
+# then the start of a new sentence (capitalized word, digit, or a
+# quote/bracket). Requiring a continuation keeps an embedded quoted
+# question ("asks "Why?" before explaining") inside its sentence
+# (PR-50 round-10); a digit start ("1990. 200 participants") is a real
+# boundary (PR-50 round-11); a lowercase continuation is an
+# abbreviation/quote already protected.
 _SENTENCE_SPLIT = re.compile(
-    r"(?<=[.!?])([\"'\u201d\u2019)\]]*)\s+(?=[A-Z\u201c\"'(\[])")
+    r"(?<=[.!?])([\"'\u201d\u2019)\]]*)\s+(?=[A-Z0-9\u201c\"'(\[])")
 
 
 def _protect_abbreviations(text: str) -> str:
@@ -258,9 +260,12 @@ def _protect_abbreviations(text: str) -> str:
     for abbr in _TITLE_ABBREVIATIONS + _ALWAYS_ABBREVIATIONS:
         # protect only the dots in the matched abbreviation, preserving
         # the original casing ("E.g." stays "E.g." after restore).
-        # \b anchors make "St." match only as a standalone token, not
-        # the suffix of "best." or "claims." (PR-50 round-10 finding).
-        pattern = re.compile(r"\b" + re.escape(abbr) + r"\b", re.IGNORECASE)
+        # A leading \b (word-start) with a whitespace/end lookahead makes
+        # "St." match only as a standalone token followed by a space —
+        # never the suffix of "best." nor broken by a trailing \b before
+        # whitespace ("Dr. Smith" stays protected; PR-50 round-10/11).
+        pattern = re.compile(
+            r"\b" + re.escape(abbr) + r"(?=[\s\x00])", re.IGNORECASE)
         text = pattern.sub(lambda m: m.group(0).replace(".", "\x00"), text)
     for abbr in _OTHER_ABBREVIATIONS:
         text = re.sub(re.escape(abbr) + r"(?=\s+[a-z])",
