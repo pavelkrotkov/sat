@@ -136,6 +136,25 @@ def test_review_page_shows_the_original_question_before_the_rationale(db):
     assert "source:" in html
 
 
+def test_feedback_page_marks_both_states_on_a_correct_answer(db):
+    """A correct (low-confidence) answer: the chosen letter IS the key, so
+    the row must show both 'your answer' and 'key' state without breaking."""
+    from satprep import server as server_mod
+
+    conn, _ = db
+    _seed_question(conn, images=(FIG,))
+    conn.commit()
+    sid, questions = _drill(conn)
+    # answer correctly (A is the key) but with low confidence
+    submit_answer(conn, sid, questions[0]["id"], "A", 1, 900)
+
+    html = server_mod.feedback(None, sid, 0, conn=conn).body.decode()
+
+    assert 'class="choice chosen key"' in html
+    assert html.count("your answer") == 1
+    assert html.count(">key<") == 1
+
+
 def test_review_page_marks_chosen_and_key_choices(db):
     conn, sid = _render_review(db)
     html = server_review_body(conn, sid)
