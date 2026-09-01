@@ -67,6 +67,23 @@ def score_candidate(cand: Candidate, weakness: dict, focus_tags: list[str] | Non
                 f"weak-tag-2nd:{second}",
                 config.W_WEAK_SECONDARY_TAG * (weak_tags[second]["score"] / 100.0),
             )
+
+    # Issue #38: remediation also boosts questions carrying a weak
+    # ERROR tag (the classifier's output from #36). error_tags come
+    # from the student_error_tags table and live under
+    # weakness['error_tag']; they are distinct from demand tags but
+    # get the same additive scoring treatment.
+    error_weak = weakness.get("error_tag", {})
+    if error_weak and focus_tags:
+        for t in error_weak:
+            if t in focus_tags:
+                cand.add(f"remediation:error-tag:{t}",
+                         config.W_WEAK_TAG_MATCH * (error_weak[t]["score"] / 100.0))
+    elif error_weak:
+        for t in tags:
+            if t in error_weak:
+                cand.add(f"remediation:error-tag:{t}",
+                         config.W_WEAK_TAG_MATCH * (error_weak[t]["score"] / 100.0))
     skill = q.official_skill
     if skill and skill in weak_skills:
         cand.add(f"skill-weakness:{skill}", config.W_SKILL_WEAKNESS * weak_skills[skill]["score"] / 100.0)

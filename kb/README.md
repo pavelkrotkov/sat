@@ -131,6 +131,34 @@ without the explicit `approve` step. Reviews are keyed to questions, not
 students — there is no student identity in the table; deletion is explicit
 and logged.
 
+### Personalized remediation (issue #38)
+
+`satprep remediate [--count N] [--focus-tag TAG] [--min-score F]` aggregates
+the student's recurring **error patterns** (the structured classifier output
+from #36, stored in `student_error_tags`) with recency, repetition,
+confidence, and evidence-count weighting, then:
+
+1. Ranks patterns by a remediation priority score (0-100): recent error
+   rate dominates; evidence mass and confidence add to it; cold-start /
+   sparse / conflicting evidence is capped so a single guess never
+   dominates.
+2. Links each weak pattern to KB tactics (`kb_tactic_refs`) via the same
+   explicit mapping the #36 explanation pipeline uses.
+3. Selects a remediation drill through the standard sampler in the new
+   `remediation` mode — same pool eligibility as a targeted drill
+   (historical due + fresh training). The **protected benchmark pool is
+   structurally excluded**, so leakage protections and anti-memorization
+   rules are unchanged.
+4. Measures improvement by comparing the error rate on each tag in the
+   last 30 days against older attempts (`improvement.delta`), reported
+   per tag with sample counts.
+
+Cold start (no attempts), sparse data (single attempt), conflicting
+classifications, and no-matching-question are all explicit outputs
+(`status`, `recommended_tags`, `drill: null`); the plan never silently
+guesses. Recommendations are explainable per question
+(`why` / `score_breakdown`).
+
 > **Why `review-templates/` and not `templates/`?** MkDocs reserves a
 > top-level `templates/` directory for custom theme overrides and excludes it
 > from the built site by default, so a page there could never render. The

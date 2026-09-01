@@ -32,6 +32,7 @@ from .reviews import (APPROVED, REJECTED, ReviewStateError, delete_review,
 from .training.sessions import (complete_session, create_session, review_payload,
                                 submit_answer)
 from .training.weakness import compute_weakness
+from .training.remediation import build_remediation_plan, explain_selection
 
 
 def _auto_export(conn) -> None:
@@ -435,6 +436,26 @@ def cmd_review_deletions(args) -> None:
     print(json.dumps(rows, indent=2))
 
 
+def cmd_remediate(args) -> None:
+    """Build and print a personalized remediation plan (issue #38)."""
+    with db_context() as conn:
+        plan = build_remediation_plan(
+            conn, count=args.count, seed=args.seed,
+            min_score=args.min_score, focus_tag=args.focus_tag)
+    print(json.dumps({
+        "recommended_tags": plan.recommended_tags,
+        "patterns": [{
+            "tag": p.tag, "score": p.score, "status": p.status,
+            "evidence_count": p.evidence_count,
+            "recent_wrong": p.recent_wrong, "recent_total": p.recent_total,
+            "kb_tactic_refs": p.kb_tactic_refs,
+        } for p in plan.patterns],
+        "improvement": plan.improvement,
+        "drill": plan.drill,
+        "why": explain_selection(plan),
+    }, indent=2, ensure_ascii=False))
+
+
 def cmd_stats(args) -> None:
     with db_context() as conn:
         d = full_dashboard(conn)
@@ -630,6 +651,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("stats", help="print dashboard statistics")
     sp.set_defaults(func=cmd_stats)
+
+    sp = sub.add_parser("remediate",
+                        help="build a personalized remediation plan from "
+                             "error patterns (issue #38)")
+    sp.add_argument("--count", type=int, default=12)
+    sp.add_argument("--seed", default=None)
+    sp.add_argument("--min-score", type=float, default=40.0,
+                    help="remediation priority floor (0-100)")
+    sp.add_argument("--focus-tag", default=None,
+                    help="focus remediation on one error tag")
+    sp.set_defaults(func=cmd_remediate)
 
     sp = sub.add_parser("serve", help="start the web UI")
     sp.add_argument("--host", default="127.0.0.1",
