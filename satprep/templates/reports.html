@@ -7,6 +7,18 @@
     the passage, both your answer and the correct one, and the mental shortcut that would have got
     you there fast.</p>
 
+  {% if status_message %}
+    <p class="callout" role="status">{{ status_message }}</p>
+  {% endif %}
+
+  <form method="post" action="/reports/generate">
+    {% if generation_in_progress %}
+      <button class="btn" type="submit" disabled>Generation in progress…</button>
+    {% else %}
+      <button class="btn" type="submit">Review mistakes since the last report</button>
+    {% endif %}
+  </form>
+
   {% if report %}
     <div class="btn-row">
       <a class="btn" href="{{ report.url }}">Open the latest report</a>
