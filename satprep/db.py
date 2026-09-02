@@ -14,7 +14,7 @@ from . import config
 #: Bumped whenever SCHEMA or _migrate changes. Stamped into PRAGMA
 #: user_version so a database swapped in underneath a running process is
 #: detected by more than the presence of one table.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 #: Join target for tag reads. Defined in SCHEMA; the semantics live in
 #: satprep.corpus.tags, which re-exports this name.
@@ -109,6 +109,29 @@ CREATE TABLE IF NOT EXISTS sessions (
     plan_json TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL DEFAULT 'open'    -- open | completed | abandoned
 );
+
+-- Report HTML is disposable; these tables hold the durable scan boundary and
+-- the registry of report files that are allowed to be student-visible.
+CREATE TABLE IF NOT EXISTS report_checkpoint (
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    committed_attempt_id INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS report_runs (
+    id INTEGER PRIMARY KEY,
+    status TEXT NOT NULL CHECK(status IN ('running', 'completed', 'failed', 'no_op')),
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    after_attempt_id INTEGER NOT NULL,
+    through_attempt_id INTEGER NOT NULL,
+    eligible_attempt_count INTEGER NOT NULL DEFAULT 0,
+    wrong_count INTEGER NOT NULL DEFAULT 0,
+    report_name TEXT,
+    error TEXT,
+    lease_expires_at TEXT,
+    lease_token TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_report_runs_status ON report_runs(status, completed_at);
 
 CREATE TABLE IF NOT EXISTS weakness_cache (
     entity_type TEXT NOT NULL,             -- skill | tag | error_tag
@@ -226,6 +249,61 @@ def _migrate(conn: sqlite3.Connection) -> None:
     qcols = {r[1] for r in conn.execute("PRAGMA table_info(questions)")}
     if "visuals_json" not in qcols:
         conn.execute("ALTER TABLE questions ADD COLUMN visuals_json TEXT DEFAULT '[]'")
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "report_checkpoint" not in tables:
+        conn.execute(
+            """CREATE TABLE report_checkpoint (
+                id INTEGER PRIMARY KEY CHECK(id=1),
+                committed_attempt_id INTEGER NOT NULL DEFAULT 0
+            )"""
+        )
+        conn.execute("INSERT INTO report_checkpoint (id, committed_attempt_id) VALUES (1, 0)")
+    else:
+        checkpoint_cols = {r[1] for r in conn.execute("PRAGMA table_info(report_checkpoint)")}
+        if "committed_attempt_id" not in checkpoint_cols:
+            conn.execute(
+                "ALTER TABLE report_checkpoint ADD COLUMN committed_attempt_id INTEGER NOT NULL DEFAULT 0"
+            )
+        conn.execute(
+            "INSERT OR IGNORE INTO report_checkpoint (id, committed_attempt_id) VALUES (1, 0)"
+        )
+    if "report_runs" not in tables:
+        conn.execute(
+            """CREATE TABLE report_runs (
+                id INTEGER PRIMARY KEY,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                after_attempt_id INTEGER NOT NULL,
+                through_attempt_id INTEGER NOT NULL,
+                eligible_attempt_count INTEGER NOT NULL DEFAULT 0,
+                wrong_count INTEGER NOT NULL DEFAULT 0,
+                report_name TEXT,
+                error TEXT,
+                lease_expires_at TEXT,
+                lease_token TEXT
+            )"""
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_report_runs_status ON report_runs(status, completed_at)"
+        )
+    else:
+        run_cols = {r[1] for r in conn.execute("PRAGMA table_info(report_runs)")}
+        additions = {
+            "completed_at": "TEXT",
+            "eligible_attempt_count": "INTEGER NOT NULL DEFAULT 0",
+            "wrong_count": "INTEGER NOT NULL DEFAULT 0",
+            "report_name": "TEXT",
+            "error": "TEXT",
+            "lease_expires_at": "TEXT",
+            "lease_token": "TEXT",
+        }
+        for name, definition in additions.items():
+            if name not in run_cols:
+                conn.execute(f"ALTER TABLE report_runs ADD COLUMN {name} {definition}")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_report_runs_status ON report_runs(status, completed_at)"
+        )
     if "bluebook_occurrences" not in {
         r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }:
