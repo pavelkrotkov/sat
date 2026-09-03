@@ -438,29 +438,53 @@ def admin_tags_save(
 
 
 # ----------------------------------------------------------------- reports ----
-# The periodic wrong-answer review is a student-facing section. For now it is a
-# static link to the newest generated report (the analysis runs offline); the
-# self-serve flow (student triggers a fresh review covering mistakes since the
-# last report) is tracked as future work in the GitHub issues.
+# The database owns the scan boundary and completed report registry. HTML is a
+# disposable rendering, so the route never shells out to a generator script.
 
 
 @app.get("/reports", response_class=HTMLResponse)
-def reports_index(request: Request):
+def reports_index(request: Request, conn=Conn):
+    status = request.query_params.get("status", "") if request else ""
+    messages = {
+        "empty": "Nothing new to review.",
+        "historical": "Only imported historical attempts were new; checkpoint updated.",
+        "failed": "The last report generation failed; try again.",
+        "in_progress": "Generation already in progress.",
+    }
     return templates.TemplateResponse(
         request,
         "reports.html",
         {
-            "report": reports_mod.report_meta(),
+            "report": reports_mod.report_meta(conn),
+            "generation_in_progress": reports_mod.generation_in_progress(conn),
+            "status_message": messages.get(status),
             "nav": "reports",
         },
     )
 
 
+@app.post("/reports/generate")
+def reports_generate(request: Request, conn=Conn):
+    result = reports_mod.run_report_generation(conn)
+    if result.status == reports_mod.COMPLETED and result.report_name:
+        return RedirectResponse(f"/reports/{result.report_name}", status_code=303)
+    status = {
+        reports_mod.NO_OP: "historical"
+        if result.through_attempt_id > result.after_attempt_id
+        else "empty",
+        reports_mod.IN_PROGRESS: "in_progress",
+        reports_mod.FAILED: "failed",
+    }.get(result.status, "failed")
+    return RedirectResponse(f"/reports?status={status}", status_code=303)
+
+
 @app.get("/reports/{name}")
-def reports_serve(request: Request, name: str):
-    # Serve only generated report HTML from the reports directory (guards
-    # directory traversal and exposure of anything else under data/).
+def reports_serve(request: Request, name: str, conn=Conn):
+    # Serve only a report registered by a completed run. This is stricter than
+    # trusting the newest filesystem mtime: orphaned HTML is never latest.
     base = reports_mod.REPORTS_DIR.resolve()
+    if not reports_mod.is_completed_report(conn, name):
+        raise HTTPException(status_code=404)
     if "/" in name or "\\" in name or not name.endswith(".html"):
         raise HTTPException(status_code=404)
     path = (base / name).resolve()
@@ -468,4 +492,4 @@ def reports_serve(request: Request, name: str):
     # outside the reports dir fails the equality check (startswith would pass it).
     if path.parent != base or not path.is_file():
         raise HTTPException(status_code=404)
-    return FileResponse(path)
+    return FileResponse(path, media_type="text/html")
