@@ -352,6 +352,18 @@ def _report_path(name: str, reports_dir: Path) -> Path:
     return path
 
 
+def _abort_if_lost(abort_event: threading.Event | None) -> None:
+    """Raise if the owning lease was lost, so generation stops promptly.
+
+    The heartbeat signals ``abort_event`` the moment renewal fails or the
+    token no longer owns the run. A generator must not keep doing or
+    publishing work it no longer owns: a reaper may have already handed the
+    same interval to a replacement, and continuing would overlap it.
+    """
+    if abort_event is not None and abort_event.is_set():
+        raise RuntimeError("report generation aborted: lease lost")
+
+
 def _atomic_write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
@@ -390,16 +402,22 @@ def generate_error_report(
     through_attempt_id: int,
     out_name: str | None = None,
     reports_dir: Path | None = None,
+    abort_event: threading.Event | None = None,
 ) -> ReportGenerationResult:
     """Generate one fixed attempt interval without changing database state.
 
     The caller owns the report-run lease and commits the returned outcome.  No
     query here can see attempts beyond ``through_attempt_id``.
+
+    ``abort_event`` is the owning lease's lost-signal: if it is set the caller
+    no longer holds the lease and this generator must raise before doing or
+    publishing work a replacement may now own.
     """
     after_attempt_id = int(after_attempt_id)
     through_attempt_id = int(through_attempt_id)
     if after_attempt_id < 0 or through_attempt_id < after_attempt_id:
         raise ValueError("attempt interval must satisfy 0 <= after <= through")
+    _abort_if_lost(abort_event)
     window = conn.execute(
         """SELECT COUNT(*) AS total,
                   COALESCE(SUM(CASE WHEN COALESCE(mode, '') != 'historical' THEN 1 ELSE 0 END), 0) AS eligible
@@ -435,6 +453,9 @@ def generate_error_report(
     ).fetchone():
         raise ValueError("report name is already registered")
     path = _report_path(name, reports_dir)
+    # Do not publish an artifact once the lease is lost: a replacement may now
+    # own this interval and (in the reaped case) has already been re-acquired.
+    _abort_if_lost(abort_event)
     _atomic_write(
         path,
         _render_report(
@@ -639,6 +660,7 @@ def run_report_generation(
                 through_attempt_id=acquired["through_attempt_id"],
                 out_name=name,
                 reports_dir=reports_dir,
+                abort_event=heartbeat[2] if heartbeat is not None else None,
             )
         else:
             result = ReportGenerationResult(
