@@ -383,7 +383,7 @@ def test_heartbeat_survives_transient_write_lock_no_duplicate_run(db, monkeypatc
 def test_heartbeat_failure_sets_lost_and_owner_refuses_commit_and_cleanup(
     db, monkeypatch, tmp_path
 ):
-    """A renewal failure marks the lease lost; the owner cannot commit or clean up a replacement artifact."""
+    """A renewal failure marks the lease lost; the owner aborts before publish and cannot commit or clean up a replacement artifact."""
     conn, path = db
     report_dir = use_report_dir(monkeypatch, tmp_path)
     qid = add_report_question(conn, "renewal-fail")
@@ -434,9 +434,85 @@ def test_heartbeat_failure_sets_lost_and_owner_refuses_commit_and_cleanup(
     # The owner refused to finalize the run (no completed row anywhere).
     rows = conn.execute("SELECT status FROM report_runs ORDER BY id").fetchall()
     assert all(r["status"] == "failed" for r in rows)
-    # ...and refused to unlink the artifact it rendered, in case a replacement
-    # now owns the same output name.
-    assert list(report_dir.glob("weekly-*.html"))
+    # ...and aborted before publishing, so it never produced an artifact that
+    # could race a replacement reusing the output name.
+    assert not list(report_dir.glob("weekly-*.html"))
+
+
+def test_renewal_failure_aborts_owner_before_replacement_takeover(db, monkeypatch, tmp_path):
+    """Lease loss is terminal: an owner still generating past expiry aborts instead of overlapping a replacement."""
+    conn, path = db
+    report_dir = use_report_dir(monkeypatch, tmp_path)
+    qid = add_report_question(conn, "takeover")
+    add_report_attempt(conn, qid, marker="takeover")
+    conn.commit()
+    original_gen = reports_mod.generate_error_report
+    original_renew = reports_mod._renew_lease
+    entered = threading.Event()
+    release = threading.Event()
+    first_result = []
+    lease_seconds = 2
+    renew_calls = []
+
+    # Fail only the owner's first renewal so it loses the lease; the
+    # replacement (second run) renews healthily and may complete.
+    def failing_renew_once(*args, **kwargs):
+        if not renew_calls:
+            renew_calls.append(1)
+            raise RuntimeError("renewal exploded")
+        return original_renew(*args, **kwargs)
+
+    monkeypatch.setattr(reports_mod, "_renew_lease", failing_renew_once)
+
+    # Only the first generator is held; the replacement passes straight through.
+    def slow_once(*args, **kwargs):
+        if entered.is_set():
+            return original_gen(*args, **kwargs)
+        entered.set()
+        assert release.wait(5)
+        time.sleep(0.1)
+        return original_gen(*args, **kwargs)
+
+    monkeypatch.setattr(reports_mod, "generate_error_report", slow_once)
+
+    def first_worker():
+        worker_conn = connect(path)
+        try:
+            first_result.append(
+                reports_mod.run_report_generation(worker_conn, lease_seconds=lease_seconds)
+            )
+        finally:
+            worker_conn.close()
+
+    thread = threading.Thread(target=first_worker)
+    thread.start()
+    assert entered.wait(5)
+    # Renewal fails (~1s: heartbeat lost) and the lease lapses (~2s) while the
+    # owner is still blocked inside generation.
+    time.sleep(2.4)
+    second_conn = connect(path)
+    second = reports_mod.run_report_generation(second_conn, lease_seconds=lease_seconds)
+    second_conn.close()
+    release.set()
+    thread.join(5)
+    monkeypatch.setattr(reports_mod, "generate_error_report", original_gen)
+    monkeypatch.setattr(reports_mod, "_renew_lease", original_renew)
+
+    assert not thread.is_alive()
+    # The replacement reaped the expired owner and is the sole completed run.
+    assert second.status == reports_mod.COMPLETED
+    rows = conn.execute(
+        "SELECT status, after_attempt_id, through_attempt_id FROM report_runs ORDER BY id"
+    ).fetchall()
+    assert [r["status"] for r in rows] == ["failed", "completed"]
+    # The old owner is gone: it aborted on lease loss, so the original request
+    # reports failure and the interval has exactly one completed owner.
+    assert first_result and first_result[0].status == reports_mod.FAILED
+    assert "lost" in first_result[0].error
+    # ...and it published nothing that could race the replacement's artifact.
+    completed = [r for r in rows if r["status"] == "completed"]
+    assert (completed[0]["after_attempt_id"], completed[0]["through_attempt_id"]) == (0, 1)
+    assert len(list(report_dir.glob("weekly-*.html"))) == 1
 
 
 def test_lease_smallest_accepted_boundary(db, monkeypatch, tmp_path):
