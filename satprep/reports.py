@@ -17,13 +17,14 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .clock import utc_now
 from .config import REPO_ROOT
-from .db import db_context
+from .db import connect, db_context
 
 REPORTS_DIR = REPO_ROOT / "data" / "reports"
 REPORT_LEASE_SECONDS = 15 * 60
@@ -78,6 +79,75 @@ def _timestamp_after(seconds: int) -> str:
         .replace(microsecond=0)
         .isoformat()
     )
+
+
+def _db_file_path(conn) -> str | None:
+    """The on-disk path backing ``conn``, for a disposable heartbeat connection."""
+    row = conn.execute("PRAGMA database_list").fetchone()
+    return str(row["file"]) if row and row["file"] else None
+
+
+def _renew_lease(conn, run_id: int, lease_token: str, lease_seconds: int) -> bool:
+    """Conditionally extend a run's lease; false when the token no longer owns it."""
+    updated = conn.execute(
+        """UPDATE report_runs
+           SET lease_expires_at=?
+           WHERE id=? AND status='running' AND lease_token=?""",
+        (_timestamp_after(lease_seconds), run_id, lease_token),
+    ).rowcount
+    conn.commit()
+    return updated == 1
+
+
+def _heartbeat_worker(
+    db_path: str,
+    run_id: int,
+    lease_token: str,
+    lease_seconds: int,
+    interval: float,
+    stop: threading.Event,
+    lost: threading.Event,
+) -> None:
+    """Renew a run's lease on a separate connection until told to stop.
+
+    Runs on its own connection because SQLite connections are not safe to
+    share across threads concurrently. If the lease was lost (another worker
+    reacquired the interval), signal ``lost`` so the owner refuses to commit.
+    """
+    hconn = connect(db_path)
+    try:
+        while not stop.wait(interval):
+            if not _renew_lease(hconn, run_id, lease_token, lease_seconds):
+                lost.set()
+                return
+    finally:
+        hconn.close()
+
+
+def _start_heartbeat(conn, acquired: dict, lease_seconds: int) -> tuple | None:
+    """Start a lease-renewal thread; None if the DB has no file path to repeat."""
+    db_path = _db_file_path(conn)
+    if not db_path:
+        return None
+    stop = threading.Event()
+    lost = threading.Event()
+    interval = max(1.0, lease_seconds / 3.0)
+    thread = threading.Thread(
+        target=_heartbeat_worker,
+        args=(
+            db_path,
+            acquired["run_id"],
+            acquired["lease_token"],
+            lease_seconds,
+            interval,
+            stop,
+            lost,
+        ),
+        daemon=True,
+        name=f"report-lease-{acquired['run_id']}",
+    )
+    thread.start()
+    return (thread, stop, lost)
 
 
 def _default_report_name(suffix: str | int) -> str:
@@ -504,6 +574,12 @@ def run_report_generation(
     acquired = _acquire_generation(conn, lease_seconds)
     if isinstance(acquired, ReportGenerationResult):
         return acquired
+    heartbeat = None
+    if acquired["eligible_attempt_count"]:
+        # Renew the lease in the background while the expensive analysis and
+        # report rendering run, so a live generator that outlives the nominal
+        # TTL is never mistaken for a crashed one and re-acquired.
+        heartbeat = _start_heartbeat(conn, acquired, lease_seconds)
     result: ReportGenerationResult | None = None
     try:
         if acquired["eligible_attempt_count"]:
@@ -530,6 +606,11 @@ def run_report_generation(
                 ),
             )
         result = replace(result, run_id=acquired["run_id"])
+        if heartbeat is not None:
+            heartbeat[1].set()  # stop renewal
+            heartbeat[0].join(max(1.0, int(lease_seconds / 3.0)))
+            if heartbeat[2].is_set():
+                raise RuntimeError("report generation lease was lost before commit")
         if not _finish_generation(conn, acquired, result):
             raise RuntimeError("report generation lease was lost before commit")
         return result
@@ -537,6 +618,9 @@ def run_report_generation(
         if result and result.report_path:
             with contextlib.suppress(OSError):
                 result.report_path.unlink(missing_ok=True)
+        if heartbeat is not None:
+            heartbeat[1].set()
+            heartbeat[0].join(max(1.0, int(lease_seconds / 3.0)))
         _fail_generation(conn, acquired, exc)
         return ReportGenerationResult(
             status=FAILED,

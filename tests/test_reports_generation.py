@@ -1,4 +1,5 @@
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -234,6 +235,69 @@ def test_concurrent_generation_has_one_database_lease(db, monkeypatch, tmp_path)
     assert (
         conn.execute("SELECT COUNT(*) FROM report_runs WHERE status='completed'").fetchone()[0] == 1
     )
+
+
+def test_live_generator_outliving_lease_is_not_reacquired(db, monkeypatch, tmp_path):
+    """A generator that outlives the nominal TTL stays owner via heartbeat renewal."""
+    conn, path = db
+    use_report_dir(monkeypatch, tmp_path)
+    qid = add_report_question(conn, "heartbeat")
+    add_report_attempt(conn, qid, marker="heartbeat")
+    conn.commit()
+    original = reports_mod.generate_error_report
+    entered = threading.Event()
+    release = threading.Event()
+    first_result = []
+
+    def slow(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        time.sleep(0.1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(reports_mod, "generate_error_report", slow)
+
+    lease_seconds = 2  # nominal TTL far shorter than the generator is alive
+    # Heartbeat interval is derived as max(1.0, lease_seconds/3).
+    actual_interval = max(1.0, lease_seconds / 3.0)
+    assert actual_interval == 1.0
+
+    def first_worker():
+        worker_conn = connect(path)
+        try:
+            first_result.append(
+                reports_mod.run_report_generation(worker_conn, lease_seconds=lease_seconds)
+            )
+        finally:
+            worker_conn.close()
+
+    thread = threading.Thread(target=first_worker)
+    thread.start()
+    assert entered.wait(5)
+    # Let the nominal 2s lease lapse fully while the first worker is still
+    # inside generation. Without heartbeat renewal, the next acquisition would
+    # reap it as stale and start an overlapping duplicate run on (0, 1].
+    time.sleep(3.0)
+    second_conn = connect(path)
+    second = reports_mod.run_report_generation(second_conn, lease_seconds=lease_seconds)
+    second_conn.close()
+    release.set()
+    thread.join(5)
+    monkeypatch.setattr(reports_mod, "generate_error_report", original)
+
+    assert not thread.is_alive()
+    # The live worker completed its interval and is the sole owner of it.
+    assert first_result and first_result[0].status == reports_mod.COMPLETED
+    assert first_result[0].through_attempt_id == 1
+    assert second.status == reports_mod.IN_PROGRESS
+    rows = conn.execute(
+        "SELECT status, after_attempt_id, through_attempt_id FROM report_runs ORDER BY id"
+    ).fetchall()
+    completed = [r for r in rows if r["status"] == "completed"]
+    assert len(completed) == 1
+    assert (completed[0]["after_attempt_id"], completed[0]["through_attempt_id"]) == (0, 1)
+    # The concurrent request never acquired a lease of its own.
+    assert len(rows) == 1
 
 
 def test_latest_and_serving_require_completed_database_registration(db, monkeypatch, tmp_path):
