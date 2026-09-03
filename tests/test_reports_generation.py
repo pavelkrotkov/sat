@@ -320,6 +320,137 @@ def test_latest_and_serving_require_completed_database_registration(db, monkeypa
         server_mod.reports_serve(None, "../secret.html", conn=conn)
 
 
+def test_heartbeat_survives_transient_write_lock_no_duplicate_run(db, monkeypatch, tmp_path):
+    """A brief writer lock across a renewal deadline is absorbed; no duplicate run starts."""
+    conn, path = db
+    use_report_dir(monkeypatch, tmp_path)
+    qid = add_report_question(conn, "lock")
+    add_report_attempt(conn, qid, marker="lock")
+    conn.commit()
+    original = reports_mod.generate_error_report
+    entered = threading.Event()
+    release = threading.Event()
+    first_result = []
+
+    def slow(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        time.sleep(0.1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(reports_mod, "generate_error_report", slow)
+    lease_seconds = 2
+
+    def first_worker():
+        worker_conn = connect(path)
+        try:
+            first_result.append(
+                reports_mod.run_report_generation(worker_conn, lease_seconds=lease_seconds)
+            )
+        finally:
+            worker_conn.close()
+
+    thread = threading.Thread(target=first_worker)
+    thread.start()
+    assert entered.wait(5)
+
+    # Hold a writer lock across the first renewal deadline (~1s) so renewal has
+    # to contend. The bounded busy timeout + retry loop must absorb it rather
+    # than treating the live generator as crashed and lapsed.
+    lock_conn = connect(path)
+    lock_conn.execute("BEGIN IMMEDIATE")
+    time.sleep(1.0)
+    lock_conn.rollback()
+    lock_conn.close()
+
+    # After the nominal 2s TTL the lease must still be alive: a second request
+    # finds the owner and must not reap it to start an overlapping run.
+    time.sleep(1.2)
+    second_conn = connect(path)
+    second = reports_mod.run_report_generation(second_conn, lease_seconds=lease_seconds)
+    second_conn.close()
+    release.set()
+    thread.join(5)
+    monkeypatch.setattr(reports_mod, "generate_error_report", original)
+
+    assert not thread.is_alive()
+    assert first_result and first_result[0].status == reports_mod.COMPLETED
+    assert second.status == reports_mod.IN_PROGRESS
+    rows = conn.execute("SELECT status FROM report_runs ORDER BY id").fetchall()
+    assert [r["status"] for r in rows] == ["completed"]
+
+
+def test_heartbeat_failure_sets_lost_and_owner_refuses_commit_and_cleanup(
+    db, monkeypatch, tmp_path
+):
+    """A renewal failure marks the lease lost; the owner cannot commit or clean up a replacement artifact."""
+    conn, path = db
+    report_dir = use_report_dir(monkeypatch, tmp_path)
+    qid = add_report_question(conn, "renewal-fail")
+    add_report_attempt(conn, qid, marker="renewal-fail")
+    conn.commit()
+    original_gen = reports_mod.generate_error_report
+    entered = threading.Event()
+    release = threading.Event()
+    first_result = []
+
+    def failing_renew(*_a, **_k):
+        raise RuntimeError("renewal exploded")
+
+    monkeypatch.setattr(reports_mod, "_renew_lease", failing_renew)
+
+    def slow(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        time.sleep(0.1)
+        return original_gen(*args, **kwargs)
+
+    monkeypatch.setattr(reports_mod, "generate_error_report", slow)
+    lease_seconds = 2
+
+    def first_worker():
+        worker_conn = connect(path)
+        try:
+            first_result.append(
+                reports_mod.run_report_generation(worker_conn, lease_seconds=lease_seconds)
+            )
+        finally:
+            worker_conn.close()
+
+    thread = threading.Thread(target=first_worker)
+    thread.start()
+    assert entered.wait(5)
+    # Let the heartbeat attempt (and fail) one renewal so the owner learns of
+    # the lost lease before it would try to finalize.
+    time.sleep(1.4)
+    release.set()
+    thread.join(5)
+    monkeypatch.setattr(reports_mod, "generate_error_report", original_gen)
+
+    assert not thread.is_alive()
+    result = first_result[0]
+    assert result.status == reports_mod.FAILED
+    assert "lost" in result.error
+    # The owner refused to finalize the run (no completed row anywhere).
+    rows = conn.execute("SELECT status FROM report_runs ORDER BY id").fetchall()
+    assert all(r["status"] == "failed" for r in rows)
+    # ...and refused to unlink the artifact it rendered, in case a replacement
+    # now owns the same output name.
+    assert list(report_dir.glob("weekly-*.html"))
+
+
+def test_lease_smallest_accepted_boundary(db, monkeypatch, tmp_path):
+    """Cadence must land strictly below the lease; too-small leases are rejected."""
+    conn, _path = db
+    use_report_dir(monkeypatch, tmp_path)
+    with pytest.raises(ValueError):
+        reports_mod.run_report_generation(conn, lease_seconds=1)
+    # The smallest accepted lease (2s) still admits a cadence strictly below it.
+    assert max(1.0, 2 / 3.0) < 2
+    result = reports_mod.run_report_generation(conn, lease_seconds=2)
+    assert result.status == reports_mod.NO_OP
+
+
 def test_report_page_exposes_generation_trigger(db, monkeypatch, tmp_path):
     conn, _path = db
     use_report_dir(monkeypatch, tmp_path)

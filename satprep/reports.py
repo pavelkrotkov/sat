@@ -15,9 +15,11 @@ import html
 import json
 import os
 import re
+import sqlite3
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -87,16 +89,41 @@ def _db_file_path(conn) -> str | None:
     return str(row["file"]) if row and row["file"] else None
 
 
+def _renewal_busy_ms() -> int:
+    """Bound sqlite's internal lock-wait far below any accepted lease window."""
+    return 200
+
+
+def _is_lock_contention(exc: sqlite3.OperationalError) -> bool:
+    note = str(exc).lower()
+    return "locked" in note or "busy" in note
+
+
 def _renew_lease(conn, run_id: int, lease_token: str, lease_seconds: int) -> bool:
-    """Conditionally extend a run's lease; false when the token no longer owns it."""
-    updated = conn.execute(
-        """UPDATE report_runs
-           SET lease_expires_at=?
-           WHERE id=? AND status='running' AND lease_token=?""",
-        (_timestamp_after(lease_seconds), run_id, lease_token),
-    ).rowcount
-    conn.commit()
-    return updated == 1
+    """Conditionally extend a run's lease; false when the token no longer owns it.
+
+    Transient SQLite write-lock contention is retried only while the lease
+    window still has runway. Beyond that the renewal can no longer protect the
+    owner, so the error is raised and the caller marks the lease lost rather
+    than silently dropping it.
+    """
+    before = time.monotonic()
+    while True:
+        conn.rollback()
+        try:
+            updated = conn.execute(
+                """UPDATE report_runs
+                   SET lease_expires_at=?
+                   WHERE id=? AND status='running' AND lease_token=?""",
+                (_timestamp_after(lease_seconds), run_id, lease_token),
+            ).rowcount
+            conn.commit()
+            return updated == 1
+        except sqlite3.OperationalError as exc:
+            conn.rollback()
+            if not _is_lock_contention(exc) or time.monotonic() - before >= lease_seconds:
+                raise
+            time.sleep(0.05)
 
 
 def _heartbeat_worker(
@@ -111,17 +138,32 @@ def _heartbeat_worker(
     """Renew a run's lease on a separate connection until told to stop.
 
     Runs on its own connection because SQLite connections are not safe to
-    share across threads concurrently. If the lease was lost (another worker
-    reacquired the interval), signal ``lost`` so the owner refuses to commit.
+    share across threads concurrently. If the lease was lost — another worker
+    reacquired the interval, or renewal failed — signal ``lost`` so the owner
+    refuses to finalize or to clean up artifacts a replacement may now own.
+    Failure is fail-closed: an uncaught connection/renewal error must never
+    kill this thread without setting ``lost``.
     """
-    hconn = connect(db_path)
+    try:
+        hconn = connect(db_path)
+        # A contending writer must not be allowed to eclipse the very lease
+        # this thread is meant to extend: bound sqlite's internal wait, let
+        # the retry loop in _renew_lease absorb short-lived contention, and
+        # surface anything longer as a lost-lease signal.
+        hconn.execute(f"PRAGMA busy_timeout={_renewal_busy_ms()}")
+    except Exception:
+        lost.set()
+        return
     try:
         while not stop.wait(interval):
             if not _renew_lease(hconn, run_id, lease_token, lease_seconds):
                 lost.set()
                 return
+    except Exception:
+        lost.set()
     finally:
-        hconn.close()
+        with contextlib.suppress(Exception):
+            hconn.close()
 
 
 def _start_heartbeat(conn, acquired: dict, lease_seconds: int) -> tuple | None:
@@ -431,8 +473,13 @@ def _error_text(exc: Exception) -> str:
 
 
 def _acquire_generation(conn, lease_seconds: int) -> dict | ReportGenerationResult:
-    if lease_seconds <= 0:
-        raise ValueError("lease_seconds must be positive")
+    # The renewal cadence is max(1.0, lease_seconds/3.0), so a lease must be
+    # large enough that the cadence lands strictly below it; otherwise a live
+    # generator could be reaped as stale before its first renewal lands.
+    if lease_seconds < 2:
+        raise ValueError(
+            "lease_seconds must be at least 2s so the renewal cadence stays strictly below it"
+        )
     if conn.in_transaction:
         conn.commit()
     conn.execute("BEGIN IMMEDIATE")
@@ -615,7 +662,11 @@ def run_report_generation(
             raise RuntimeError("report generation lease was lost before commit")
         return result
     except Exception as exc:
-        if result and result.report_path:
+        # If the lease was lost, a replacement may now own this interval and
+        # reuse this exact out_name: refuse both finalization and the stale
+        # artifact cleanup so we never race a live replacement.
+        lost_lease = heartbeat is not None and heartbeat[2].is_set()
+        if result and result.report_path and not lost_lease:
             with contextlib.suppress(OSError):
                 result.report_path.unlink(missing_ok=True)
         if heartbeat is not None:
