@@ -29,6 +29,16 @@ from .training.sessions import (
 )
 from .training.weakness import cached_profile, compute_weakness
 
+SELF_REPORT_REASONS = (
+    "didn't understand passage",
+    "didn't know word",
+    "narrowed to two",
+    "misread text",
+    "misread question",
+    "ran out of time",
+    "thought answer was definitely correct",
+)
+
 app = FastAPI(title="satprep", docs_url=None, redoc_url=None)
 # PR-43 review: guard the static mount so the module imports cleanly
 # in CI environments where artifacts/ has not been created yet. The
@@ -228,9 +238,32 @@ def feedback(request: Request, sid: str, idx: int, conn=Conn):
             "idx": idx,
             "total": len(items),
             "is_last": is_last,
+            "self_report_reasons": SELF_REPORT_REASONS,
             "next_url": (f"/results/{sid}" if is_last else f"/question/{sid}/{idx + 1}"),
         },
     )
+
+
+@app.post("/feedback/{sid}/{idx}")
+def feedback_reason(sid: str, idx: int, reason: str = Form(...), conn=Conn):
+    plan_row = conn.execute("SELECT plan_json FROM sessions WHERE id=?", (sid,)).fetchone()
+    if not plan_row:
+        return RedirectResponse("/start", status_code=303)
+    items = json.loads(plan_row["plan_json"])
+    if idx < 0 or idx >= len(items):
+        return RedirectResponse(f"/results/{sid}", status_code=303)
+    if reason not in SELF_REPORT_REASONS:
+        raise HTTPException(status_code=400, detail="invalid self-report reason")
+    updated = conn.execute(
+        """UPDATE attempts SET self_report_reason=?
+           WHERE session_id=? AND question_id=? AND correct=0""",
+        (reason, sid, items[idx]["question_id"]),
+    ).rowcount
+    if updated != 1:
+        raise HTTPException(status_code=404)
+    _commit(conn)
+    next_url = f"/results/{sid}" if idx + 1 >= len(items) else f"/question/{sid}/{idx + 1}"
+    return RedirectResponse(next_url, status_code=303)
 
 
 @app.get("/results/{sid}", response_class=HTMLResponse)
