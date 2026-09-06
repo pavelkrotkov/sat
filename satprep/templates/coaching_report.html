@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SAT Wrong-Answer Review</title>
+<style>
+:root{--ink:#182231;--mut:#5b6676;--line:#e3e7ed;--paper:#fafbfc;--card:#fff;--brand:#2f5b8f;--wrong:#a93226;--right:#197347;--code:#f2f5f8}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.wrap{max-width:1080px;margin:auto;padding:0 20px 64px}.hero{background:linear-gradient(135deg,#1f3a5c,#2f5b8f);color:#fff;padding:32px 0;margin-bottom:22px}h1{margin:0 0 5px;font-size:28px}h2{margin:34px 0 10px;border-bottom:2px solid var(--brand);padding-bottom:5px;font-size:21px}h3{margin:0 0 5px;font-size:17px}h4{margin:0 0 6px;color:var(--mut);font-size:12px;letter-spacing:.05em;text-transform:uppercase}.muted{color:var(--mut)}.sub{opacity:.94}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.stat,table,.question,.callout{background:var(--card);border:1px solid var(--line);border-radius:10px}.stat{padding:12px 14px}.stat .label{color:var(--mut);font-size:12px;text-transform:uppercase}.stat .value{font-size:25px;font-weight:700}table{width:100%;border-collapse:collapse;overflow:hidden}th,td{padding:8px 11px;border-bottom:1px solid var(--line);text-align:left}th{background:var(--code);color:var(--mut);font-size:12px;text-transform:uppercase}td.num{text-align:right;font-weight:700}.question{margin:18px 0;overflow:hidden}.question header{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:12px 15px;border-bottom:1px solid var(--line)}.metrics{padding:8px 15px;color:var(--mut);font-size:13px}.cols{display:grid;grid-template-columns:1.1fr 1fr}.cols section{padding:14px 15px}.cols section+section{border-left:1px solid var(--line)}.stem{font-weight:600}.choice{padding:7px 9px;border:1px solid var(--line);border-radius:7px;margin:6px 0}.choice.wrong{background:#fdecea;border-color:#efb5ac}.choice.right{background:#e6f5ed;border-color:#a9dcc2}.pill{display:inline-block;border-radius:20px;padding:1px 7px;margin-left:5px;font-size:11px;font-weight:600}.pill.wrong{color:var(--wrong);background:#fdecea}.pill.right{color:var(--right);background:#e6f5ed}.diagnosis{background:var(--code);border-top:1px solid var(--line);padding:14px 15px}.coach-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.coach-grid section{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:11px}.coach-grid p,.coach-grid ul{margin:0}.callout{padding:13px 15px;margin:12px 0}details{margin-top:12px}summary{cursor:pointer;font-weight:600}mark{padding:1px 4px}footer{color:var(--mut);font-size:12px;border-top:1px solid var(--line);padding-top:12px}
+@media(max-width:800px){.grid,.cols,.coach-grid{grid-template-columns:1fr}.cols section+section{border-left:0;border-top:1px solid var(--line)}.wrap{padding-left:14px;padding-right:14px}table{font-size:13px}}
+</style>
+</head>
+<body>
+<div class="hero"><div class="wrap"><div>satprep · periodic review</div><h1>Wrong-Answer Review</h1><div class="sub">Eligible attempts {{ after_attempt_id + 1 }}–{{ through_attempt_id }}; generated {{ generated_display }}.</div></div></div>
+<main class="wrap">
+<h2>At a glance</h2>
+<div class="grid">
+<div class="stat"><div class="label">Eligible attempts</div><div class="value">{{ attempt_count }}</div></div>
+<div class="stat"><div class="label">Wrong answers</div><div class="value">{{ wrong_count }}</div></div>
+<div class="stat"><div class="label">Accuracy</div><div class="value">{{ accuracy }}%</div></div>
+</div>
+<div class="callout"><b>Prediction-preventable:</b> {{ preventable }}/{{ wrong_count }} misses. {% if wrong_count and preventable * 2 >= wrong_count %}<b>Do not shop among the four answers. Build the answer first.</b>{% endif %}</div>
+
+<h2>Current coaching rules</h2>
+<ol>{% for rule in coaching_rules %}<li><b>{{ rule }}</b></li>{% endfor %}</ol>
+
+<h2>What is actually costing points</h2>
+{% if behaviors %}
+{% for b in behaviors %}<div class="callout"><h3>{{ b.label }} — {{ b.count }} miss{% if b.count != 1 %}es{% endif %} ({{ b.pct }}%)</h3><p>{{ b.rule }}</p><p class="muted">Examples: {{ b.examples|join(', ') }}</p></div>{% endfor %}
+{% else %}<div class="callout">No recurring mechanism had enough evidence to classify safely.</div>{% endif %}
+
+<h2>All eligible attempts</h2>
+<div class="grid">
+<div><h4>By domain</h4><table><tr><th>Domain</th><th>#</th></tr>{% for label,count in domains %}<tr><td>{{ label }}</td><td class="num">{{ count }}</td></tr>{% else %}<tr><td colspan="2">—</td></tr>{% endfor %}</table></div>
+<div><h4>By skill</h4><table><tr><th>Skill</th><th>#</th></tr>{% for label,count in skills %}<tr><td>{{ label }}</td><td class="num">{{ count }}</td></tr>{% else %}<tr><td colspan="2">—</td></tr>{% endfor %}</table></div>
+<div><h4>By module</h4><table><tr><th>Module</th><th>#</th></tr>{% for label,count in modules %}<tr><td>{{ label }}</td><td class="num">{{ count }}</td></tr>{% else %}<tr><td colspan="2">—</td></tr>{% endfor %}</table></div>
+</div>
+<div class="grid" style="margin-top:12px">
+<div><h4>Timing</h4><table><tr><th>Timing</th><th>Attempts</th><th>Wrong</th><th>Error rate</th></tr>{% for t in timing %}<tr><td>{{ t.label|safe }}{% if t.coach %}<div class="muted">{{ t.coach }}</div>{% endif %}</td><td class="num">{{ t.attempts }}</td><td class="num">{{ t.wrong }}</td><td class="num">{{ t.error_rate }}%</td></tr>{% endfor %}</table></div>
+<div><h4>Confidence</h4><table><tr><th>Level</th><th>#</th></tr>{% for label,count in confidence %}<tr><td>{{ label }}</td><td class="num">{{ count }}</td></tr>{% else %}<tr><td colspan="2">—</td></tr>{% endfor %}</table></div><div></div>
+</div>
+
+<h2>Question-by-question review</h2>
+{% for r in wrong %}
+<article class="question">
+<header><b>{{ r.official_skill or 'Unspecified skill' }}</b><span>{{ r.example_label }} · {{ r.attempted_display }}</span></header>
+<div class="metrics">{{ r.official_domain or 'Unspecified domain' }} · time <b>{{ r.time_label }}</b> · confidence {{ r.confidence or 0 }}{% if r.self_report_reason %} · self-report <b>{{ r.self_report_reason }}</b>{% endif %}{% if (r.confidence or 0)|int >= 3 %} · <b>high-value confident miss</b>{% endif %}</div>
+<div class="cols">
+<section><h4>Passage</h4>{% for p in r.passage_paragraphs %}<p>{{ p }}</p>{% else %}<p>—</p>{% endfor %}</section>
+<section><h4>Question</h4><p class="stem">{{ r.stem }}</p><h4>Choices</h4>{% for c in r.choices %}<div class="choice{% if c.is_chosen %} wrong{% endif %}{% if c.is_key %} right{% endif %}"><b>{{ c.letter }}</b> {{ c.text }}{% if c.is_chosen %}<span class="pill wrong">your answer</span>{% endif %}{% if c.is_key %}<span class="pill right">correct</span>{% endif %}</div>{% else %}<p>Choices unavailable.</p>{% endfor %}</section>
+</div>
+<div class="diagnosis"><div class="coach-grid">
+<section><h4>Dumb summary</h4><ul>{% for s in r.dumb_summary %}<li>{{ s }}</li>{% else %}<li>—</li>{% endfor %}</ul></section>
+<section><h4>Prediction before choices</h4><p>{{ r.prediction }}</p></section>
+<section><h4>Canonical error</h4><p><b>{{ r.canonical_error or 'Unclassified — insufficient evidence' }}</b><br><span class="muted">subtype: {{ r.error_subtype or '—' }}</span></p></section>
+<section><h4>Distractor bait</h4><p>{{ r.distractor_bait }}</p></section>
+<section><h4>Fatal defect</h4><p>{{ r.fatal_defect }}</p>{% if r.kill_phrase %}<p><b>Kill word / phrase:</b> <mark>{{ r.kill_phrase }}</mark></p>{% endif %}</section>
+<section><h4>Next-time rule</h4><p><b>{{ r.reusable_rule }}</b></p><p class="muted">Prediction-preventable: {{ r.prediction_preventable }}</p></section>
+</div>
+<details><summary>Show official College Board rationale</summary>{% for p in r.rationale_paragraphs %}<p>{{ p }}</p>{% else %}<p>—</p>{% endfor %}</details>
+</div>
+</article>
+{% else %}<div class="callout">No mistakes in this interval. The eligible attempts still count in the trend tables above.</div>{% endfor %}
+</main>
+<footer class="wrap">The database is authoritative; this HTML is a disposable rendering. The strategy framework is instructor guidance, not College Board policy.</footer>
+</body>
+</html>
