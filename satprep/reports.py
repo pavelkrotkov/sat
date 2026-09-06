@@ -380,7 +380,7 @@ def _analyze_rows(conn, rows: list[dict]) -> list[dict]:
         item.update(
             canonical_error=canonical,
             error_subtype=subtype,
-            dumb_summary=_logical_skeleton(_value(item, "passage")),
+            dumb_summary=_logical_skeleton(_value(item, "passage"))[:2],
             prediction=explanation.correct_reasoning,
             distractor_bait=_distractor_bait(explanation),
             fatal_defect=explanation.exact_failure,
@@ -442,7 +442,10 @@ def _behavior_html(wrong: list[dict], counter: collections.Counter) -> str:
             f'<div class="callout"><h3>{_esc(label)} — {count} miss{"es" if count != 1 else ""} ({pct}%)</h3>'
             f'<p>{_esc(_COACHING_RULES[label])}</p><p class="muted">Examples: {_esc(", ".join(examples))}</p></div>'
         )
-    return "".join(blocks) or '<div class="callout">No recurring mechanism had enough evidence to classify safely.</div>'
+    return (
+        "".join(blocks)
+        or '<div class="callout">No recurring mechanism had enough evidence to classify safely.</div>'
+    )
 
 
 def _timing_rows(rows: list[dict]) -> str:
@@ -457,7 +460,7 @@ def _timing_rows(rows: list[dict]) -> str:
 
 def _timing_row(label: str, attempts: int, wrong: int) -> str:
     rate = round(100 * wrong / attempts, 1) if attempts else 0.0
-    return f'<tr><td>{label}</td><td class="num">{attempts}</td><td class="num">{wrong}</td><td class="num">{rate}%</td></tr>'
+    return f'<tr><td>{_esc(label)}</td><td class="num">{attempts}</td><td class="num">{wrong}</td><td class="num">{rate}%</td></tr>'
 
 
 def _summary_html(row: dict) -> str:
@@ -468,12 +471,12 @@ def _summary_html(row: dict) -> str:
 def _miss_meta(row: dict) -> str:
     parts = [
         _esc(_value(row, "official_domain", "Unspecified domain")),
-        f'time <b>{_time_label(row.get("time_ms"))}</b>',
-        f'confidence {int(row.get("confidence") or 0)}',
+        f"time <b>{_time_label(row.get('time_ms'))}</b>",
+        f"confidence {int(row.get('confidence') or 0)}",
     ]
     reason = row.get("self_report_reason")
     if reason:
-        parts.append(f'self-report <b>{_esc(reason)}</b>')
+        parts.append(f"self-report <b>{_esc(reason)}</b>")
     if int(row.get("confidence") or 0) >= 3:
         parts.append("<b>high-value confident miss</b>")
     return " · ".join(parts)
@@ -499,7 +502,7 @@ def _render_wrong(row: dict) -> str:
     canonical = _value(row, "canonical_error", "Unclassified — insufficient evidence")
     subtype = _value(row, "error_subtype", "—")
     kill = row.get("kill_phrase")
-    kill_html = f'<p><b>Kill word / phrase:</b> <mark>{_esc(kill)}</mark></p>' if kill else ""
+    kill_html = f"<p><b>Kill word / phrase:</b> <mark>{_esc(kill)}</mark></p>" if kill else ""
     return f"""
 <article class="question">
   <header><b>{_esc(_value(row, "official_skill", "Unspecified skill"))}</b>
@@ -539,7 +542,10 @@ def _render_report(
     accuracy = round(100 * (len(rows) - len(wrong)) / len(rows), 1) if rows else 0.0
     preventable = sum(row.get("prediction_preventable") == "yes" for row in wrong)
     cards = "".join(_render_wrong(row) for row in wrong)
-    cards = cards or '<div class="callout">No mistakes in this interval. The eligible attempts still count in the trend tables above.</div>'
+    cards = (
+        cards
+        or '<div class="callout">No mistakes in this interval. The eligible attempts still count in the trend tables above.</div>'
+    )
     rules = "".join(f"<li><b>{_esc(rule)}</b></li>" for rule in _coaching_rules(canonical))
     behaviors = _behavior_html(wrong, canonical)
     return f"""<!doctype html>
