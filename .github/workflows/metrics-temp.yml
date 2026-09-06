@@ -11,5 +11,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install radon
+      - run: |
+          git fetch origin main --depth=1
+          git show origin/main:satprep/reports.py > /tmp/reports-main.py
+          git show origin/main:satprep/server.py > /tmp/server-main.py
+          git show origin/main:satprep/db.py > /tmp/db-main.py
       - run: radon cc -s satprep/reports.py satprep/server.py satprep/db.py
       - run: radon mi -s satprep/reports.py satprep/server.py satprep/db.py
+      - run: radon mi -s /tmp/reports-main.py /tmp/server-main.py /tmp/db-main.py
