@@ -1,67 +1,62 @@
-from pathlib import Path
-
-import pytest
-
 from satprep.corpus.parse_snapshot import parse_snapshot
 
-SNAP_DIR = Path(__file__).resolve().parent.parent / "artifacts" / "html"
+INCORRECT = """
+<div class="question-panel">
+  <h3>Reading and Writing: Question 7</h3>
+  <div><p>A fabricated passage about lanterns.</p></div>
+  <div><p>What does the text most strongly suggest?</p></div>
+</div>
+<div class="answer-panel">
+  <ol type="A">
+    <li>First synthetic choice</li>
+    <li class="correct">Second synthetic choice</li>
+    <li>Third synthetic choice</li>
+    <li>Fourth synthetic choice</li>
+  </ol>
+  <p class="incorrect response">You selected answer A. The correct answer is B.</p>
+  <h3>Rationale</h3><div><p>Choice B follows from the fabricated passage.</p></div>
+</div>
+"""
+
+CORRECT = """
+<div class="question-panel">
+  <h3>Reading and Writing: Question 1</h3>
+  <div><p>A fabricated passage about maps.</p></div>
+  <div><p>Which choice best completes the text?</p></div>
+  <ol class="answer-options" type="A">
+    <li>First synthetic choice</li>
+    <li>Second synthetic choice</li>
+    <li class="correct">Third synthetic choice</li>
+    <li>Fourth synthetic choice</li>
+  </ol>
+</div>
+<div class="answer-panel">
+  <p class="correct response">You selected answer C.</p>
+  <h3>Rationale</h3><div><p>Choice C completes the fabricated text.</p></div>
+</div>
+"""
 
 
-# PR-43 review: these tests require gitignored HTML fixtures in
-# artifacts/html/ that only exist on a developer's local checkout. The
-# whole directory is too large (38M+) to commit, and CI must not be
-# coupled to a developer's local scrape. Skip when the fixtures are
-# missing rather than failing collection; the test is still
-# meaningful for whoever has the fixtures.
-_FIXTURE_INCORRECT = (
-    SNAP_DIR
-    / "sat-practice-test-7-reading-and-writing-module-2-7-7-reading-and-writing-d-b-inc.html"
-)
-_FIXTURE_CORRECT = (
-    SNAP_DIR
-    / "sat-practice-test-4-reading-and-writing-module-1-1-1-reading-and-writing-correct.html"
-)
-
-
-@pytest.mark.skipif(
-    not _FIXTURE_INCORRECT.exists(),
-    reason="parse_snapshot fixture not in working tree (artifacts/html/ is gitignored; see #36)",
-)
 def test_parses_incorrect_review_snapshot():
-    p = parse_snapshot(_FIXTURE_INCORRECT.read_text())
-    assert p.section.startswith("Reading and Writing")
-    assert p.question_number == "7"
-    assert len(p.choices) == 4
-    assert [c["letter"] for c in p.choices] == list("ABCD")
-    assert p.correct_letter == "D"
-    assert p.student_letter == "B"
-    assert "Magic Mountain" in p.passage or "Hans Castorp" in p.passage
-    assert p.stem.startswith("What does the text most strongly suggest")
-    assert p.rationale.lower().startswith("choice d")
+    parsed = parse_snapshot(INCORRECT)
+    assert parsed.section == "Reading and Writing"
+    assert parsed.question_number == "7"
+    assert [choice["letter"] for choice in parsed.choices] == list("ABCD")
+    assert parsed.correct_letter == "B"
+    assert parsed.student_letter == "A"
+    assert parsed.passage == "A fabricated passage about lanterns."
+    assert parsed.stem == "What does the text most strongly suggest?"
+    assert parsed.rationale == "Choice B follows from the fabricated passage."
 
 
-@pytest.mark.skipif(
-    not _FIXTURE_CORRECT.exists(),
-    reason="parse_snapshot fixture not in working tree (artifacts/html/ is gitignored; see #36)",
-)
 def test_parses_correct_review_snapshot_with_choices():
-    """Issue #49: correct reviews put the <ol> in .question-panel; the
-    parser must read it so the choices are recovered from the saved HTML."""
-    p = parse_snapshot(_FIXTURE_CORRECT.read_text())
-    assert p.question_number == "1"
-    assert p.student_letter == "B"
-    assert p.correct_letter == "B"
-    assert len(p.choices) == 4
-    assert [c["letter"] for c in p.choices] == list("ABCD")
-    assert p.stem  # stem must still be recovered
-    assert p.rationale  # rationale present on correct reviews too
+    parsed = parse_snapshot(CORRECT)
+    assert parsed.question_number == "1"
+    assert parsed.student_letter == parsed.correct_letter == "C"
+    assert [choice["letter"] for choice in parsed.choices] == list("ABCD")
+    assert parsed.stem == "Which choice best completes the text?"
+    assert parsed.rationale == "Choice C completes the fabricated text."
 
 
-@pytest.mark.skipif(
-    not SNAP_DIR.exists() or not any(SNAP_DIR.glob("*reading-and-writing*.html")),
-    reason="parse_snapshot fixtures not in working tree",
-)
 def test_snapshot_parse_is_deterministic():
-    files = sorted(SNAP_DIR.glob("*reading-and-writing*.html"))[:20]
-    for f in files:
-        assert parse_snapshot(f.read_text()).__dict__ == parse_snapshot(f.read_text()).__dict__
+    assert parse_snapshot(INCORRECT).__dict__ == parse_snapshot(INCORRECT).__dict__
