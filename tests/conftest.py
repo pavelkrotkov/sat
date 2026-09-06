@@ -37,7 +37,7 @@ def synthetic_kb():
     try:
         yield
     finally:
-        shutil.rmtree(kb)
+        shutil.rmtree(kb, ignore_errors=True)
 
 
 @pytest.fixture()

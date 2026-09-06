@@ -29,9 +29,17 @@ TEXT_SUFFIXES = {".md", ".txt", ".json", ".jsonl", ".html"}
 CHOICE = re.compile(r"(?m)^\s*(?:[-*]\s*)?([A-D])[.)\]:]\s+\S")
 
 
+class ScanError(RuntimeError):
+    pass
+
+
 def tracked_files() -> list[pathlib.Path]:
-    raw = subprocess.check_output(("git", "ls-files", "-z"))
-    return [pathlib.Path(name) for name in raw.decode().split("\0") if name]
+    try:
+        raw = subprocess.check_output(("git", "ls-files", "-z"), stderr=subprocess.PIPE)
+        names = raw.decode().split("\0")
+    except (OSError, subprocess.SubprocessError, UnicodeError) as error:
+        raise ScanError(f"cannot enumerate tracked files: {error}") from error
+    return [pathlib.Path(name) for name in names if name]
 
 
 def private_reason(path: pathlib.Path) -> str | None:
@@ -51,7 +59,10 @@ def private_reason(path: pathlib.Path) -> str | None:
 def looks_like_question_dump(path: pathlib.Path) -> bool:
     if path.suffix.lower() not in TEXT_SUFFIXES or not path.is_file():
         return False
-    text = path.read_text(encoding="utf-8", errors="ignore")
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError as error:
+        raise ScanError(f"cannot read tracked text {path}: {error}") from error
     lower = text.lower()
     choices = set(CHOICE.findall(text))
     has_answer = any(marker in lower for marker in ("correct answer", "answer key", '"correct_answer"', '"correct_letter"'))
@@ -71,7 +82,11 @@ def violations(paths: list[pathlib.Path]) -> list[str]:
 
 
 def main() -> int:
-    found = violations(tracked_files())
+    try:
+        found = violations(tracked_files())
+    except ScanError as error:
+        print(f"Public repository leak guard could not complete: {error}", file=sys.stderr)
+        return 2
     if found:
         print("Public repository leak guard failed:", file=sys.stderr)
         print("\n".join(f"  - {item}" for item in found), file=sys.stderr)
