@@ -18,15 +18,7 @@ def value(row: dict, key: str, default=""):
     return default if found in (None, "") else found
 
 
-def _json_list(raw) -> list[str]:
-    try:
-        values = json.loads(raw or "[]")
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return []
-    return [str(item) for item in values] if isinstance(values, list) else []
-
-
-def _choices(raw) -> list[dict]:
+def _json_array(raw) -> list:
     try:
         values = json.loads(raw or "[]")
     except (TypeError, ValueError, json.JSONDecodeError):
@@ -34,15 +26,12 @@ def _choices(raw) -> list[dict]:
     return values if isinstance(values, list) else []
 
 
-def _choice_text(choices: list[dict], letter: str) -> str:
-    for choice in choices:
-        if choice.get("letter") == letter:
-            return str(choice.get("text") or "")
-    return ""
-
-
 def _kill_phrase(choices: list[dict], letter: str) -> str:
-    match = _KILL_WORD.search(_choice_text(choices, letter))
+    text = next(
+        (str(choice.get("text") or "") for choice in choices if choice.get("letter") == letter),
+        "",
+    )
+    match = _KILL_WORD.search(text)
     return match.group(0) if match else ""
 
 
@@ -54,7 +43,7 @@ def _distractor_bait(explanation) -> str:
 
 def analyze_wrong(conn, row: dict) -> dict:
     item = dict(row)
-    choices = _choices(item.get("choices_json"))
+    choices = _json_array(item.get("choices_json"))
     explanation = explain_error(
         question_id=item["question_id"],
         passage=value(item, "passage"),
@@ -66,7 +55,9 @@ def analyze_wrong(conn, row: dict) -> dict:
         question_fingerprint=value(item, "fingerprint"),
         conn=conn,
     )
-    tags = _json_list(item.get("error_tags")) or list(explanation.error_taxonomy)
+    tags = [str(tag) for tag in _json_array(item.get("error_tags"))] or list(
+        explanation.error_taxonomy
+    )
     canonical, subtype = canonical_error(tags)
     item.update(
         canonical_error=canonical,
