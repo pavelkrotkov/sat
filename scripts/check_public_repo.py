@@ -11,7 +11,8 @@ import sys
 # `.env.example` and source files whose names mention exports remain allowed.
 PRIVATE = re.compile(
     r"^(?:data|imports|outputs|artifacts|exports|backups|cram_claude|cram_gemini|kb|playwright_profile)/"
-    r"|(?:^|/)\.env(?!\.example$)|\.(?:db(?:-|$)|sqlite3?(?:-|$)|pdf$|xlsx$|csv$)"
+    r"|(?:^|/)\.env(?!\.example$)|\.(?:db|sqlite3?)(?:-(?:wal|shm)|\.(?:gz|bz2|xz|zip)|$)"
+    r"|\.(?:pdf|xlsx|csv)(?:\.(?:gz|bz2|xz|zip)|$)"
     r"|(?:wrong_questions|drill_pack|practice_(?:questions|answers)|storage_state|cookies)(?:\.(?!py$|sh$)|$)",
     re.IGNORECASE,
 )
@@ -27,6 +28,10 @@ ANSWER = re.compile(r'correct answer|answer key|"correct_(?:answer|letter)"', re
 SHAPE = re.compile(
     r'(?is)(?:(?=.*\bquestion\b)(?=.*(?:passage|stimulus|rationale|explanation))|'
     r'(?=.*"choices")(?=.*"stem")(?=.*"(?:passage|stimulus|rationale|explanation)"))'
+)
+SCRAPER = re.compile(
+    r'(?is)(?=.*"question_text")(?=.*"answer_choices")(?=.*"correct_answer")'
+    r'(?=.*"(?:explanation|rationale)")'
 )
 
 
@@ -53,11 +58,12 @@ def looks_like_question_dump(path: pathlib.Path) -> bool:
         text = path.read_text(encoding="utf-8", errors="ignore")
     except OSError as error:
         raise ScanError(f"cannot read tracked text {path}: {error}") from error
-    return (
+    complete_record = (
         set(CHOICE.findall(text)) == set("ABCD")
         and bool(ANSWER.search(text))
         and bool(SHAPE.search(text))
     )
+    return bool(SCRAPER.search(text)) or complete_record
 
 
 def violations(paths: list[pathlib.Path]) -> list[str]:
