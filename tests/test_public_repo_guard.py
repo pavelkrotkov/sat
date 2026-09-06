@@ -16,6 +16,8 @@ def test_private_paths_and_exports_are_rejected():
     assert private_reason(Path("cram_gemini/practice_questions.pdf"))
     assert private_reason(Path("notes/wrong_questions.json"))
     assert private_reason(Path("notes/satprep.db.gz"))
+    assert private_reason(Path(".env.local"))
+    assert not private_reason(Path(".env.example"))
 
 
 def test_full_question_dump_is_rejected_but_normal_docs_are_not(tmp_path, monkeypatch):
@@ -49,6 +51,11 @@ def test_native_json_question_records_are_rejected(tmp_path):
 
 
 def test_scan_errors_fail_closed(tmp_path, monkeypatch):
+    invalid = tmp_path / "invalid.json"
+    invalid.write_bytes(b"\xff")
+    with pytest.raises(ScanError):
+        looks_like_question_dump(invalid)
+
     text = tmp_path / "tracked.md"
     text.write_text("safe")
 
