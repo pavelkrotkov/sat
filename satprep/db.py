@@ -14,7 +14,7 @@ from . import config
 #: Bumped whenever SCHEMA or _migrate changes. Stamped into PRAGMA
 #: user_version so a database swapped in underneath a running process is
 #: detected by more than the presence of one table.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 #: Join target for tag reads. Defined in SCHEMA; the semantics live in
 #: satprep.corpus.tags, which re-exports this name.
@@ -116,6 +116,15 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS report_checkpoint (
     id INTEGER PRIMARY KEY CHECK(id=1),
     committed_attempt_id INTEGER NOT NULL DEFAULT 0
+);
+
+-- Post-answer metadata can change after an attempt crossed the checkpoint.
+-- Append-only events let the next report replay that attempt without moving
+-- the monotonic checkpoint backward; event ids also make in-flight mutations
+-- survive a generation that started before the mutation arrived.
+CREATE TABLE IF NOT EXISTS report_dirty_events (
+    id INTEGER PRIMARY KEY,
+    attempt_id INTEGER NOT NULL REFERENCES attempts(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS report_runs (
@@ -269,6 +278,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
             )
         conn.execute(
             "INSERT OR IGNORE INTO report_checkpoint (id, committed_attempt_id) VALUES (1, 0)"
+        )
+    if "report_dirty_events" not in tables:
+        conn.execute(
+            """CREATE TABLE report_dirty_events (
+                id INTEGER PRIMARY KEY,
+                attempt_id INTEGER NOT NULL REFERENCES attempts(id) ON DELETE CASCADE
+            )"""
         )
     if "report_runs" not in tables:
         conn.execute(
