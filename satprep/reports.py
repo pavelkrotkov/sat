@@ -458,16 +458,15 @@ def generate_error_report(
     # Do not publish an artifact once the lease is lost: a replacement may now
     # own this interval and (in the reaped case) has already been re-acquired.
     _abort_if_lost(abort_event)
-    _atomic_write(
-        path,
-        render_report(
-            conn,
-            rows,
-            after_attempt_id=after_attempt_id,
-            through_attempt_id=through_attempt_id,
-            generated_at=generated_at,
-        ),
+    rendered = render_report(
+        conn,
+        rows,
+        after_attempt_id=after_attempt_id,
+        through_attempt_id=through_attempt_id,
+        generated_at=generated_at,
     )
+    _abort_if_lost(abort_event)
+    _atomic_write(path, rendered)
     wrong_count = sum(1 for row in rows if not row.get("correct"))
     return ReportGenerationResult(
         status=COMPLETED,
