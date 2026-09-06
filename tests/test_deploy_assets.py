@@ -96,6 +96,12 @@ def test_sync_never_sends_the_database():
     assert "satprep ingest" in body, "ingest must run on the far side"
 
 
+def test_sync_requires_the_actual_server_host():
+    body = _code(DEPLOY / "sync-to-server.sh")
+    assert "${SATPREP_HOST:?" in body
+    assert "satprep.local" not in body
+
+
 def test_sync_does_not_restart_the_service():
     """server.py takes one connection per request, so a new corpus is visible
     on the next page load without a privileged remote restart."""
@@ -156,8 +162,8 @@ def test_seed_transfer_keeps_each_path_in_its_own_directory():
     """Several rsync sources with one destination flatten into it, leaving the
     database where nothing looks for it."""
     runbook = (DEPLOY / "README.md").read_text()
-    assert "satprep.local:dev/sat/data/" in runbook
-    assert "satprep.local:dev/sat/outputs/" in runbook
+    assert '"$SATPREP_HOST:dev/sat/data/"' in runbook
+    assert '"$SATPREP_HOST:dev/sat/outputs/"' in runbook
 
 
 def test_backup_unit_carries_an_absolute_uv_path():
@@ -197,5 +203,5 @@ def test_remote_paths_are_not_expanded_by_the_local_shell():
     /Users/example) instead of on the remote host."""
     for path in [DEPLOY / "sync-to-server.sh", DEPLOY / "README.md"]:
         for line in _code(path).splitlines():
-            if "satprep.local:" in line or "$TARGET" in line:
+            if "$SATPREP_HOST:" in line or "$TARGET" in line:
                 assert "$HOME" not in line, f"{path.name}: {line.strip()}"

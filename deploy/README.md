@@ -13,13 +13,15 @@ mkdir -p ~/dev && git clone https://github.com/pavelkrotkov/sat ~/dev/sat
 cd ~/dev/sat && uv sync --frozen
 ```
 
-Seed the database once before taking drills on the serving box:
+Use the serving box's actual hostname (Avahi normally advertises
+`<hostname>.local`) or another resolvable DNS name/IP:
 
 ```sh
-ssh satprep.local 'mkdir -p ~/dev/sat/{data,outputs,artifacts}'
-rsync -avz data/satprep.db              satprep.local:dev/sat/data/
-rsync -avz outputs/wrong_questions.json satprep.local:dev/sat/outputs/
-rsync -avz artifacts/                   satprep.local:dev/sat/artifacts/
+export SATPREP_HOST=server-hostname.local
+ssh "$SATPREP_HOST" 'mkdir -p ~/dev/sat/{data,outputs,artifacts}'
+rsync -avz data/satprep.db              "$SATPREP_HOST:dev/sat/data/"
+rsync -avz outputs/wrong_questions.json "$SATPREP_HOST:dev/sat/outputs/"
+rsync -avz artifacts/                   "$SATPREP_HOST:dev/sat/artifacts/"
 ```
 
 The remote paths are intentionally relative to the remote home directory; a
@@ -36,16 +38,16 @@ defaults. Avahi provides the machine's normal `<hostname>.local` mDNS name.
 
 ## Keeping the corpus current
 
-After a local scrape:
+After a local scrape, set the serving host and sync:
 
 ```sh
-deploy/sync-to-server.sh
+SATPREP_HOST=server-hostname.local deploy/sync-to-server.sh
 ```
 
 The script sends only `outputs/wrong_questions.json` plus the HTML/images that
 ingest needs. It never sends `data/satprep.db`; ingest and analysis run on the
-serving box. Override the destination with `SATPREP_HOST`, `SATPREP_USER`, and
-`SATPREP_REMOTE_DIR` (default host: `satprep.local`, remote directory:
+serving box. `SATPREP_HOST` is required rather than guessed. `SATPREP_USER` and
+`SATPREP_REMOTE_DIR` are optional overrides (remote directory default:
 `dev/sat`).
 
 ## Backups
@@ -57,8 +59,8 @@ uses SQLite `.backup` and `integrity_check` rather than copying a live WAL file.
 Keep an off-box recovery copy, including figures referenced by the corpus:
 
 ```sh
-rsync -avz satprep.local:dev/sat/backups/         ~/satprep-backups/
-rsync -avz satprep.local:dev/sat/artifacts/images/ ~/satprep-backups/images/
+rsync -avz "$SATPREP_HOST:dev/sat/backups/"          ~/satprep-backups/
+rsync -avz "$SATPREP_HOST:dev/sat/artifacts/images/" ~/satprep-backups/images/
 ```
 
 Restore with the service stopped and remove newer WAL sidecars before opening

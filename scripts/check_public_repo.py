@@ -27,6 +27,9 @@ PRIVATE_NAME = re.compile(
 )
 TEXT_SUFFIXES = {".md", ".txt", ".json", ".jsonl", ".html"}
 CHOICE = re.compile(r"(?m)^\s*(?:[-*]\s*)?([A-D])[.)\]:]\s+\S")
+JSON_CHOICE = re.compile(r'"letter"\s*:\s*"([A-D])"')
+ANSWER_MARKERS = ("correct answer", "answer key", '"correct_answer"', '"correct_letter"')
+QUESTION_MARKERS = ("passage", "stimulus", "rationale", "explanation")
 
 
 class ScanError(RuntimeError):
@@ -64,10 +67,13 @@ def looks_like_question_dump(path: pathlib.Path) -> bool:
     except OSError as error:
         raise ScanError(f"cannot read tracked text {path}: {error}") from error
     lower = text.lower()
-    choices = set(CHOICE.findall(text))
-    has_answer = any(marker in lower for marker in ("correct answer", "answer key", '"correct_answer"', '"correct_letter"'))
-    has_question = "question" in lower and any(marker in lower for marker in ("passage", "stimulus", "rationale", "explanation"))
-    return choices == set("ABCD") and has_answer and has_question
+    choices = set(CHOICE.findall(text)) | set(JSON_CHOICE.findall(text))
+    has_answer = any(marker in lower for marker in ANSWER_MARKERS)
+    rendered = "question" in lower and any(marker in lower for marker in QUESTION_MARKERS)
+    structured = '"choices"' in lower and '"stem"' in lower and any(
+        f'"{marker}"' in lower for marker in QUESTION_MARKERS
+    )
+    return choices == set("ABCD") and has_answer and (rendered or structured)
 
 
 def violations(paths: list[pathlib.Path]) -> list[str]:

@@ -29,6 +29,17 @@ def test_full_question_dump_is_rejected_but_normal_docs_are_not(tmp_path, monkey
     assert not looks_like_question_dump(safe)
 
 
+def test_native_json_question_record_is_rejected(tmp_path):
+    dump = tmp_path / "corpus.jsonl"
+    dump.write_text(
+        '{"stem":"Fabricated?","passage":"Synthetic","choices":['
+        '{"letter":"A","text":"one"},{"letter":"B","text":"two"},'
+        '{"letter":"C","text":"three"},{"letter":"D","text":"four"}],'
+        '"correct_letter":"A","rationale":"Synthetic"}\n'
+    )
+    assert looks_like_question_dump(dump)
+
+
 def test_scan_errors_fail_closed(tmp_path, monkeypatch):
     text = tmp_path / "tracked.md"
     text.write_text("safe")

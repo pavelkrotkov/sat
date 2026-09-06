@@ -4,7 +4,7 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HOST="${SATPREP_HOST:-satprep.local}"
+HOST="${SATPREP_HOST:?set SATPREP_HOST to the serving box hostname or IP}"
 USER="${SATPREP_USER:-$USER}"
 REMOTE="${SATPREP_REMOTE_DIR:-dev/sat}"
 TARGET="$USER@$HOST:$REMOTE"
