@@ -1,0 +1,33 @@
+name: Finish Issue 57 Formatting
+on:
+  push:
+    branches: [ fix/57-coaching-review ]
+permissions:
+  contents: write
+jobs:
+  finish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/57-coaching-review
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --dev
+      - name: Canonical Ruff formatting
+        run: |
+          uv run ruff check --fix satprep/report_coaching*.py tests/test_issue57_coaching.py
+          uv run ruff format satprep/report_coaching*.py tests/test_issue57_coaching.py
+          uv run ruff check satprep/report_coaching*.py tests/test_issue57_coaching.py
+          uv run ruff format --check satprep/report_coaching*.py tests/test_issue57_coaching.py
+      - name: Remove temporary workflows and commit
+        run: |
+          rm -f .github/workflows/metrics57-temp.yml .github/workflows/finish57-temp.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "style: finalize issue 57 coaching modules"
+          git push origin HEAD:fix/57-coaching-review
