@@ -1,4 +1,8 @@
-"""Aggregate recurring error patterns and timing for coaching reports."""
+"""Aggregate recurring error patterns and timing for coaching reports.
+
+Timing always uses every eligible attempt, not only misses. Canonical behavior
+counts use misses because they describe failure mechanisms rather than volume.
+"""
 
 import bisect
 import collections
