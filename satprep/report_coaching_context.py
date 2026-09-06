@@ -37,7 +37,11 @@ def _paragraphs(raw) -> list[str]:
 def _marked_choices(row: dict) -> list[dict]:
     chosen, correct = value(row, "chosen_letter"), value(row, "correct_letter")
     return [
-        {**choice, "is_chosen": choice.get("letter") == chosen, "is_key": choice.get("letter") == correct}
+        {
+            **choice,
+            "is_chosen": choice.get("letter") == chosen,
+            "is_key": choice.get("letter") == correct,
+        }
         for choice in row.get("choices", [])
     ]
 
@@ -56,19 +60,25 @@ def _prepare_wrong(row: dict) -> dict:
 
 
 def _confidence(rows: list[dict]) -> list[tuple[str, int]]:
-    labels = (str(row.get("confidence")) if row.get("confidence") else "not recorded" for row in rows)
+    labels = (
+        str(row.get("confidence")) if row.get("confidence") else "not recorded" for row in rows
+    )
     return collections.Counter(labels).most_common()
 
 
 def _summary(analyzed: list[dict]) -> tuple[list[dict], collections.Counter, float, int]:
     wrong = [row for row in analyzed if not row.get("correct")]
-    canonical = collections.Counter(row.get("canonical_error") for row in wrong if row.get("canonical_error"))
+    canonical = collections.Counter(
+        row.get("canonical_error") for row in wrong if row.get("canonical_error")
+    )
     accuracy = round(100 * (len(analyzed) - len(wrong)) / len(analyzed), 1) if analyzed else 0.0
     preventable = sum(row.get("prediction_preventable") == "yes" for row in wrong)
     return wrong, canonical, accuracy, preventable
 
 
-def build_context(conn, rows: list[dict], *, after_attempt_id: int, through_attempt_id: int, generated_at: str) -> dict:
+def build_context(
+    conn, rows: list[dict], *, after_attempt_id: int, through_attempt_id: int, generated_at: str
+) -> dict:
     analyzed = analyze_rows(conn, rows)
     wrong, canonical, accuracy, preventable = _summary(analyzed)
     prepared_wrong = [_prepare_wrong(row) for row in wrong]

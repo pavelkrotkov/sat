@@ -61,7 +61,9 @@ def behaviors(wrong: list[dict], counter: collections.Counter) -> list[dict]:
             "count": count,
             "pct": round(100 * count / len(wrong)) if wrong else 0,
             "rule": RULES[label],
-            "examples": [example_label(row) for row in wrong if row.get("canonical_error") == label][:3],
+            "examples": [
+                example_label(row) for row in wrong if row.get("canonical_error") == label
+            ][:3],
         }
         for label, count in counter.most_common(3)
     ]
