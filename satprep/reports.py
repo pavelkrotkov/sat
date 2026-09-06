@@ -528,25 +528,40 @@ def _render_wrong(row: dict) -> str:
 </article>"""
 
 
+def _report_parts(rows: list[dict]) -> tuple[list[dict], collections.Counter]:
+    wrong = []
+    confidence = collections.Counter()
+    for row in rows:
+        confidence[str(row.get("confidence") or "not recorded")] += 1
+        if not row.get("correct"):
+            wrong.append(row)
+    return wrong, confidence
+
+
+def _cards_html(wrong: list[dict]) -> str:
+    cards = "".join(map(_render_wrong, wrong))
+    return (
+        cards
+        or '<div class="callout">No mistakes in this interval. The eligible attempts still count in the trend tables above.</div>'
+    )
+
+
+def _rules_html(counter: collections.Counter) -> str:
+    return "".join(f"<li><b>{_esc(rule)}</b></li>" for rule in _coaching_rules(counter))
+
+
 def _render_report(
     rows: list[dict], *, after_attempt_id: int, through_attempt_id: int, generated_at: str
 ) -> str:
-    wrong = [row for row in rows if not row.get("correct")]
+    wrong, confidence = _report_parts(rows)
     canonical = _canonical_counts(wrong)
     domains = _field_counter(rows, "official_domain", "Unspecified")
     skills = _field_counter(rows, "official_skill", "Unspecified")
     modules = _field_counter(rows, "module", "Unspecified")
-    confidence = collections.Counter(
-        str(row.get("confidence")) if row.get("confidence") else "not recorded" for row in rows
-    )
     accuracy = round(100 * (len(rows) - len(wrong)) / len(rows), 1) if rows else 0.0
     preventable = sum(row.get("prediction_preventable") == "yes" for row in wrong)
-    cards = "".join(_render_wrong(row) for row in wrong)
-    cards = (
-        cards
-        or '<div class="callout">No mistakes in this interval. The eligible attempts still count in the trend tables above.</div>'
-    )
-    rules = "".join(f"<li><b>{_esc(rule)}</b></li>" for rule in _coaching_rules(canonical))
+    cards = _cards_html(wrong)
+    rules = _rules_html(canonical)
     behaviors = _behavior_html(wrong, canonical)
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
