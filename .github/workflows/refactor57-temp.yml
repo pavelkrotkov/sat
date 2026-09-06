@@ -82,8 +82,8 @@ jobs:
       - name: Complexity
         run: |
           uv pip install radon
-          radon cc -s satprep/report_coaching.py
-          radon mi -s satprep/report_coaching.py satprep/reports.py
+          uv run radon cc -s satprep/report_coaching.py
+          uv run radon mi -s satprep/report_coaching.py satprep/reports.py
       - name: Remove temporary workflows and commit
         run: |
           rm -f .github/workflows/metrics-temp.yml .github/workflows/refactor57-temp.yml
