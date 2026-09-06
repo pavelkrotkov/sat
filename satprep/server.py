@@ -249,6 +249,10 @@ def feedback_reason(sid: str, idx: int, reason: str = Form(...), conn=Conn):
     plan_row = conn.execute("SELECT plan_json FROM sessions WHERE id=?", (sid,)).fetchone()
     if not plan_row:
         return RedirectResponse("/start", status_code=303)
+    if _is_measurement(conn, sid):
+        # This POST is guessable just like the GET route. Never let UPDATE
+        # rowcount reveal wrong-versus-correct during a protected benchmark.
+        return RedirectResponse(f"/question/{sid}/{idx + 1}", status_code=303)
     items = json.loads(plan_row["plan_json"])
     if idx < 0 or idx >= len(items):
         return RedirectResponse(f"/results/{sid}", status_code=303)
