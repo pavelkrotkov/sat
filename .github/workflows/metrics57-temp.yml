@@ -1,0 +1,41 @@
+name: Issue 57 Metrics
+on:
+  push:
+    branches: [ fix/57-coaching-review ]
+permissions:
+  contents: read
+jobs:
+  metrics:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install radon
+      - name: Enforce new-code metrics
+        run: |
+          radon cc -s satprep/report_coaching.py satprep/report_coaching_analysis.py satprep/report_coaching_stats.py satprep/report_coaching_rules.py
+          radon mi -s satprep/report_coaching.py satprep/report_coaching_analysis.py satprep/report_coaching_stats.py satprep/report_coaching_rules.py satprep/reports.py
+          python - <<'PY'
+          from pathlib import Path
+          from radon.complexity import cc_visit
+          from radon.metrics import mi_visit
+
+          paths = [
+              Path("satprep/report_coaching.py"),
+              Path("satprep/report_coaching_analysis.py"),
+              Path("satprep/report_coaching_stats.py"),
+              Path("satprep/report_coaching_rules.py"),
+          ]
+          failed = []
+          for path in paths:
+              source = path.read_text()
+              max_cc = max((item.complexity for item in cc_visit(source)), default=0)
+              mi = mi_visit(source, multi=True)
+              print(f"GATE {path}: max_cc={max_cc} mi={mi:.2f}")
+              if max_cc > 7 or mi <= 50:
+                  failed.append((str(path), max_cc, mi))
+          if failed:
+              raise SystemExit(f"metric gate failed: {failed}")
+          PY
