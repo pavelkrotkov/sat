@@ -260,11 +260,13 @@ def feedback_reason(sid: str, idx: int, reason: str = Form(...), conn=Conn):
         raise HTTPException(status_code=400, detail="invalid self-report reason")
     updated = conn.execute(
         """UPDATE attempts SET self_report_reason=?
-           WHERE session_id=? AND question_id=? AND correct=0""",
+           WHERE session_id=? AND question_id=? AND correct=0
+           RETURNING id""",
         (reason, sid, items[idx]["question_id"]),
-    ).rowcount
-    if updated != 1:
+    ).fetchone()
+    if updated is None:
         raise HTTPException(status_code=404)
+    reports_mod.mark_report_dirty(conn, updated["id"])
     _commit(conn)
     next_url = f"/results/{sid}" if idx + 1 >= len(items) else f"/question/{sid}/{idx + 1}"
     return RedirectResponse(next_url, status_code=303)
