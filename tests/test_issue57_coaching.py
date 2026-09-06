@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from conftest import add_question
 
-from satprep import report_coaching as coaching_mod
+from satprep import report_coaching_analysis as coaching_analysis
 from satprep import reports as reports_mod
 from satprep import server as server_mod
 
@@ -63,7 +63,7 @@ def test_report_aggregates_canonical_errors_and_timing(db, monkeypatch, tmp_path
     conn.commit()
     monkeypatch.setattr(reports_mod, "REPORTS_DIR", tmp_path)
     monkeypatch.setattr(
-        coaching_mod,
+        coaching_analysis,
         "explain_error",
         lambda **_: SimpleNamespace(
             mode="rule",
