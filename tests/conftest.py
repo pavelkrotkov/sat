@@ -37,7 +37,8 @@ def synthetic_kb():
     try:
         yield
     finally:
-        shutil.rmtree(kb, ignore_errors=True)
+        if kb.exists():
+            shutil.rmtree(kb)
 
 
 @pytest.fixture()
