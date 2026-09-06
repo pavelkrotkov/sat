@@ -1,13 +1,91 @@
 """Canonical coaching taxonomy and reusable rules for report analysis."""
 
 _GROUPS = (
-    ("Unsupported addition / over-inference", frozenset("qualifier_strength over_inference absolute_vs_tentative_language unsupported_inference quantifier_mismatch scope_shift".split())),
-    ("Wrong relationship / direction", frozenset("direction_reversal cause_vs_correlation wrong_reference_group comparison_relationship hypothesis_vs_result chronology".split())),
-    ("Failed to combine all evidence", frozenset("failed_synthesis ignored_finding ignored_contrast incomplete_indirect_chain abstract_relationship_extraction".split())),
-    ("Missed governing constraint / keyword", frozenset("contrast_concession logical_connector governing_constraint keyword".split())),
-    ("Right topic, wrong job / neighboring answer", frozenset("true_but_not_supported same_topic_wrong_relationship irrelevant_detail main_claim_vs_detail evidence_relevance claim_vs_evidence".split())),
-    ("Literal factual misread", frozenset("literal_misread misread_method misread_premise explicit_contradiction".split())),
-    ("Vocabulary / semantic precision", frozenset("word_sense_in_context near_synonym_distinction paraphrase_precision collocation degree_or_intensity".split())),
+    (
+        "Unsupported addition / over-inference",
+        frozenset(
+            {
+                "qualifier_strength",
+                "over_inference",
+                "absolute_vs_tentative_language",
+                "unsupported_inference",
+                "quantifier_mismatch",
+                "scope_shift",
+            }
+        ),
+    ),
+    (
+        "Wrong relationship / direction",
+        frozenset(
+            {
+                "direction_reversal",
+                "cause_vs_correlation",
+                "wrong_reference_group",
+                "comparison_relationship",
+                "hypothesis_vs_result",
+                "chronology",
+            }
+        ),
+    ),
+    (
+        "Failed to combine all evidence",
+        frozenset(
+            {
+                "failed_synthesis",
+                "ignored_finding",
+                "ignored_contrast",
+                "incomplete_indirect_chain",
+                "abstract_relationship_extraction",
+            }
+        ),
+    ),
+    (
+        "Missed governing constraint / keyword",
+        frozenset(
+            {
+                "contrast_concession",
+                "logical_connector",
+                "governing_constraint",
+                "keyword",
+            }
+        ),
+    ),
+    (
+        "Right topic, wrong job / neighboring answer",
+        frozenset(
+            {
+                "true_but_not_supported",
+                "same_topic_wrong_relationship",
+                "irrelevant_detail",
+                "main_claim_vs_detail",
+                "evidence_relevance",
+                "claim_vs_evidence",
+            }
+        ),
+    ),
+    (
+        "Literal factual misread",
+        frozenset(
+            {
+                "literal_misread",
+                "misread_method",
+                "misread_premise",
+                "explicit_contradiction",
+            }
+        ),
+    ),
+    (
+        "Vocabulary / semantic precision",
+        frozenset(
+            {
+                "word_sense_in_context",
+                "near_synonym_distinction",
+                "paraphrase_precision",
+                "collocation",
+                "degree_or_intensity",
+            }
+        ),
+    ),
 )
 RULES = {
     "Unsupported addition / over-inference": "Inference = minimum warranted conclusion. Audit every added actor, cause, comparison, and degree.",
