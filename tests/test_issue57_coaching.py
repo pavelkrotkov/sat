@@ -91,7 +91,7 @@ def test_report_aggregates_canonical_errors_and_timing(db, monkeypatch, tmp_path
     assert "<details><summary>Show official College Board rationale</summary>" in body
 
 
-def test_wrong_answer_reason_is_saved_after_feedback(db):
+def test_wrong_answer_reason_is_saved_and_replayed_after_checkpoint(db, monkeypatch, tmp_path):
     conn, _ = db
     qid = add_question(conn, source="custom_generated", pool="fresh_training", correct="B")
     conn.execute(
@@ -99,17 +99,33 @@ def test_wrong_answer_reason_is_saved_after_feedback(db):
            VALUES ('issue57', 'targeted_drill', '2026-09-06', 's', 'v', ?, 'completed')""",
         (json.dumps([{"question_id": qid}]),),
     )
-    _attempt(conn, qid, correct=False, time_ms=50_000)
+    attempt_id = _attempt(conn, qid, correct=False, time_ms=50_000)
     conn.execute("UPDATE attempts SET session_id='issue57' WHERE question_id=?", (qid,))
+    conn.execute("UPDATE report_checkpoint SET committed_attempt_id=? WHERE id=1", (attempt_id,))
     conn.commit()
 
     response = server_mod.feedback_reason("issue57", 0, "misread text", conn=conn)
     saved = conn.execute(
         "SELECT self_report_reason FROM attempts WHERE session_id='issue57'"
     ).fetchone()[0]
+    dirty = conn.execute("SELECT attempt_id FROM report_dirty_events").fetchone()[0]
+    seen = []
+
+    def capture(_conn, rows, **_kwargs):
+        seen.extend(rows)
+        return "replayed"
+
+    monkeypatch.setattr(reports_mod, "render_report", capture)
+    result = reports_mod.run_report_generation(conn, reports_dir=tmp_path, lease_seconds=2)
 
     assert response.status_code == 303
     assert saved == "misread text"
+    assert dirty == attempt_id
+    assert result.status == reports_mod.COMPLETED
+    assert result.after_attempt_id == attempt_id - 1
+    assert seen[0]["self_report_reason"] == "misread text"
+    assert conn.execute("SELECT COUNT(*) FROM report_dirty_events").fetchone()[0] == 0
+    assert reports_mod.get_report_watermark(conn) == attempt_id
 
 
 def test_benchmark_self_report_post_never_reveals_verdict(db):
