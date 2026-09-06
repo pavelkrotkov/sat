@@ -14,7 +14,7 @@ from . import config
 #: Bumped whenever SCHEMA or _migrate changes. Stamped into PRAGMA
 #: user_version so a database swapped in underneath a running process is
 #: detected by more than the presence of one table.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 #: Join target for tag reads. Defined in SCHEMA; the semantics live in
 #: satprep.corpus.tags, which re-exports this name.
@@ -74,7 +74,8 @@ CREATE TABLE IF NOT EXISTS attempts (
     time_ms INTEGER DEFAULT 0,
     mode TEXT DEFAULT '',
     attempted_at TEXT NOT NULL,
-    error_tags TEXT NOT NULL DEFAULT '[]'
+    error_tags TEXT NOT NULL DEFAULT '[]',
+    self_report_reason TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_attempts_q ON attempts(question_id);
 CREATE INDEX IF NOT EXISTS idx_attempts_time ON attempts(attempted_at);
@@ -246,6 +247,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(attempts)")}
     if "error_tags" not in cols:
         conn.execute("ALTER TABLE attempts ADD COLUMN error_tags TEXT NOT NULL DEFAULT '[]'")
+    if "self_report_reason" not in cols:
+        conn.execute("ALTER TABLE attempts ADD COLUMN self_report_reason TEXT NOT NULL DEFAULT ''")
     qcols = {r[1] for r in conn.execute("PRAGMA table_info(questions)")}
     if "visuals_json" not in qcols:
         conn.execute("ALTER TABLE questions ADD COLUMN visuals_json TEXT DEFAULT '[]'")
