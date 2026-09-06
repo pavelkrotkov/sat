@@ -21,6 +21,7 @@ jobs:
         run: |
           git fetch origin main --depth=1
           python - <<'PY'
+          import re
           import subprocess
           from pathlib import Path
 
@@ -30,34 +31,40 @@ jobs:
           )
           anchor = "from .db import connect, db_context\n"
           text = text.replace(anchor, anchor + "from .report_coaching import render_report\n", 1)
-          old = '''SELECT a.id AS attempt_id, a.chosen_letter, a.correct, a.confidence, a.time_ms,
-                  a.mode, a.attempted_at, q.fingerprint, q.source_test,
-                  q.source_question_number, q.module, q.passage, q.stem,
-                  q.choices_json, q.correct_letter, q.rationale,
-                  q.official_domain, q.official_skill, q.difficulty'''
-          new = '''SELECT a.id AS attempt_id, a.question_id, a.chosen_letter, a.correct,
+          projection = re.compile(
+              r"SELECT a\.id AS attempt_id, a\.chosen_letter, a\.correct, a\.confidence, a\.time_ms,\n"
+              r"\s+a\.mode, a\.attempted_at, q\.fingerprint, q\.source_test,\n"
+              r"\s+q\.source_question_number, q\.module, q\.passage, q\.stem,\n"
+              r"\s+q\.choices_json, q\.correct_letter, q\.rationale,\n"
+              r"\s+q\.official_domain, q\.official_skill, q\.difficulty"
+          )
+          replacement = """SELECT a.id AS attempt_id, a.question_id, a.chosen_letter, a.correct,
                   a.confidence, a.time_ms, a.mode, a.attempted_at, a.error_tags,
                   a.self_report_reason, q.fingerprint, q.source_test,
                   q.source_question_number, q.module, q.passage, q.stem,
                   q.choices_json, q.correct_letter, q.rationale,
-                  q.official_domain, q.official_skill, q.difficulty'''
-          if old not in text:
-              raise SystemExit("eligible-row projection anchor not found")
-          text = text.replace(old, new, 1)
-          old_call = "        _render_report(\n            rows,\n"
-          new_call = "        render_report(\n            conn,\n            rows,\n"
-          if old_call not in text:
-              raise SystemExit("render call anchor not found")
-          text = text.replace(old_call, new_call, 1)
+                  q.official_domain, q.official_skill, q.difficulty"""
+          text, count = projection.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f"eligible-row projection replacements: {count}")
+          text, count = re.subn(
+              r"        _render_report\(\n\s+rows,\n",
+              "        render_report(\n            conn,\n            rows,\n",
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit(f"render call replacements: {count}")
           path.write_text(text)
 
           test = Path("tests/test_issue57_coaching.py")
           body = test.read_text()
-          body = body.replace(
-              "from satprep import reports as reports_mod\n",
-              "from satprep import report_coaching as coaching_mod\nfrom satprep import reports as reports_mod\n",
-              1,
-          )
+          if "report_coaching as coaching_mod" not in body:
+              body = body.replace(
+                  "from satprep import reports as reports_mod\n",
+                  "from satprep import report_coaching as coaching_mod\nfrom satprep import reports as reports_mod\n",
+                  1,
+              )
           body = body.replace(
               'monkeypatch.setattr(\n        reports_mod,\n        "explain_error",',
               'monkeypatch.setattr(\n        coaching_mod,\n        "explain_error",',
