@@ -580,7 +580,7 @@ def _kb_body_excerpt(path: str, max_chars: int = 1200) -> str:
     if text.startswith("---"):
         end = text.find("\n---\n", 4)
         if end != -1:
-            text = text[end + 5 :]
+            text = text[end + 5 :].lstrip()
     return text if len(text) <= max_chars else text[:max_chars] + "…"
 
 
