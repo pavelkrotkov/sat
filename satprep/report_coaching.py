@@ -1,4 +1,7 @@
-"""Render incremental wrong-answer coaching reports."""
+"""Render incremental wrong-answer coaching reports.
+
+The adapter keeps report orchestration separate from analysis and template data shaping.
+"""
 
 from pathlib import Path
 
