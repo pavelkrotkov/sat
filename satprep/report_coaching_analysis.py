@@ -1,4 +1,8 @@
-"""Per-miss coaching analysis for wrong-answer reports."""
+"""Per-miss coaching analysis for wrong-answer reports.
+
+The persisted attempt tags remain authoritative. Explanation output supplies
+card-level coaching detail and is only a fallback when an attempt has no tags.
+"""
 
 import json
 import re
