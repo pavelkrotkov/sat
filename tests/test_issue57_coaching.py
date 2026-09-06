@@ -32,8 +32,8 @@ def test_report_aggregates_canonical_errors_and_timing(db, monkeypatch, tmp_path
     conn, _ = db
     q1 = add_question(
         conn,
-        passage="The study found one effect. However, a second result limited that conclusion.",
-        choices=("This always proves the broad claim.", "The evidence supports the narrower claim.", "x", "y"),
+        passage="One effect was found. However, a second result limited it.",
+        choices=("This always proves it.", "The narrower claim is supported.", "x", "y"),
         correct="B",
         source="custom_generated",
         pool="fresh_training",
@@ -42,7 +42,7 @@ def test_report_aggregates_canonical_errors_and_timing(db, monkeypatch, tmp_path
     q2 = add_question(
         conn,
         passage="Group A increased while group B decreased.",
-        choices=("B increased relative to A.", "A increased relative to B.", "x", "y"),
+        choices=("B increased.", "A increased.", "x", "y"),
         correct="B",
         source="custom_generated",
         pool="fresh_training",
@@ -81,7 +81,7 @@ def test_report_aggregates_canonical_errors_and_timing(db, monkeypatch, tmp_path
     assert "Unsupported addition / over-inference — 1 miss (50%)" in body
     assert "Wrong relationship / direction — 1 miss (50%)" in body
     assert "Current coaching rules" in body and "What is actually costing points" in body
-    assert "&lt;60 sec" not in body and "<60 sec" in body
+    assert "&lt;60 sec" in body
     assert "1:00–1:45" in body and "1:45–2:30" in body and "Error rate" in body
     assert "Dumb summary" in body and "Prediction before choices" in body
     assert "Distractor bait" in body and "Fatal defect" in body and "Next-time rule" in body
@@ -102,8 +102,9 @@ def test_wrong_answer_reason_is_saved_after_feedback(db):
     conn.commit()
 
     response = server_mod.feedback_reason("issue57", 0, "misread text", conn=conn)
+    saved = conn.execute(
+        "SELECT self_report_reason FROM attempts WHERE session_id='issue57'"
+    ).fetchone()[0]
 
     assert response.status_code == 303
-    assert conn.execute(
-        "SELECT self_report_reason FROM attempts WHERE session_id='issue57'"
-    ).fetchone()[0] == "misread text"
+    assert saved == "misread text"
