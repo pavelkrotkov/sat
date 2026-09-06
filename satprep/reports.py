@@ -27,6 +27,7 @@ from pathlib import Path
 from .clock import utc_now
 from .config import REPO_ROOT
 from .db import connect, db_context
+from .report_coaching import render_report
 
 REPORTS_DIR = REPO_ROOT / "data" / "reports"
 REPORT_LEASE_SECONDS = 15 * 60
@@ -381,11 +382,12 @@ def _atomic_write(path: Path, content: str) -> None:
 
 def _eligible_rows(conn, after_attempt_id: int, through_attempt_id: int) -> list[dict]:
     rows = conn.execute(
-        """SELECT a.id AS attempt_id, a.chosen_letter, a.correct, a.confidence, a.time_ms,
-                  a.mode, a.attempted_at, q.fingerprint, q.source_test,
-                  q.source_question_number, q.module, q.passage, q.stem,
-                  q.choices_json, q.correct_letter, q.rationale,
-                  q.official_domain, q.official_skill, q.difficulty
+        """SELECT a.id AS attempt_id, a.question_id, a.chosen_letter, a.correct,
+        a.confidence, a.time_ms, a.mode, a.attempted_at, a.error_tags,
+        a.self_report_reason, q.fingerprint, q.source_test,
+        q.source_question_number, q.module, q.passage, q.stem,
+        q.choices_json, q.correct_letter, q.rationale,
+        q.official_domain, q.official_skill, q.difficulty
            FROM attempts a JOIN questions q ON q.id=a.question_id
            WHERE a.id > ? AND a.id <= ?
              AND COALESCE(a.mode, '') != 'historical'
@@ -456,15 +458,15 @@ def generate_error_report(
     # Do not publish an artifact once the lease is lost: a replacement may now
     # own this interval and (in the reaped case) has already been re-acquired.
     _abort_if_lost(abort_event)
-    _atomic_write(
-        path,
-        _render_report(
-            rows,
-            after_attempt_id=after_attempt_id,
-            through_attempt_id=through_attempt_id,
-            generated_at=generated_at,
-        ),
+    rendered = render_report(
+        conn,
+        rows,
+        after_attempt_id=after_attempt_id,
+        through_attempt_id=through_attempt_id,
+        generated_at=generated_at,
     )
+    _abort_if_lost(abort_event)
+    _atomic_write(path, rendered)
     wrong_count = sum(1 for row in rows if not row.get("correct"))
     return ReportGenerationResult(
         status=COMPLETED,
@@ -486,6 +488,11 @@ def get_report_watermark(conn) -> int:
         conn.execute("INSERT INTO report_checkpoint (id, committed_attempt_id) VALUES (1, 0)")
         return 0
     return int(row["committed_attempt_id"])
+
+
+def mark_report_dirty(conn, attempt_id: int) -> None:
+    """Queue a mutated, possibly already-reported attempt for replay."""
+    conn.execute("INSERT INTO report_dirty_events (attempt_id) VALUES (?)", (int(attempt_id),))
 
 
 def _error_text(exc: Exception) -> str:
@@ -527,7 +534,15 @@ def _acquire_generation(conn, lease_seconds: int) -> dict | ReportGenerationResu
             through_attempt_id=active["through_attempt_id"],
             message="Generation already in progress.",
         )
-    after = get_report_watermark(conn)
+    checkpoint = get_report_watermark(conn)
+    dirty = conn.execute(
+        """SELECT COALESCE(MAX(id), 0) AS through_id, MIN(attempt_id) AS first_attempt
+           FROM report_dirty_events"""
+    ).fetchone()
+    dirty_through_id = int(dirty["through_id"] or 0)
+    after = checkpoint
+    if dirty["first_attempt"] is not None:
+        after = min(after, max(0, int(dirty["first_attempt"]) - 1))
     through = int(conn.execute("SELECT COALESCE(MAX(id), 0) FROM attempts").fetchone()[0])
     eligible = int(
         conn.execute(
@@ -557,6 +572,8 @@ def _acquire_generation(conn, lease_seconds: int) -> dict | ReportGenerationResu
         "run_id": run_id,
         "lease_token": token,
         "after_attempt_id": after,
+        "checkpoint_attempt_id": checkpoint,
+        "dirty_through_id": dirty_through_id,
         "through_attempt_id": through,
         "eligible_attempt_count": eligible,
         "wrong_count": wrong,
@@ -585,7 +602,7 @@ def _finish_generation(conn, acquired: dict, result: ReportGenerationResult) -> 
         conn.rollback()
         return False
     watermark = get_report_watermark(conn)
-    if watermark != acquired["after_attempt_id"]:
+    if watermark != acquired["checkpoint_attempt_id"]:
         conn.rollback()
         return False
     status = COMPLETED if result.status == COMPLETED else NO_OP
@@ -593,6 +610,10 @@ def _finish_generation(conn, acquired: dict, result: ReportGenerationResult) -> 
         "UPDATE report_checkpoint SET committed_attempt_id=? WHERE id=1",
         (max(watermark, result.through_attempt_id),),
     )
+    if acquired["dirty_through_id"]:
+        conn.execute(
+            "DELETE FROM report_dirty_events WHERE id <= ?", (acquired["dirty_through_id"],)
+        )
     updated = conn.execute(
         """UPDATE report_runs
            SET status=?, completed_at=?, eligible_attempt_count=?, wrong_count=?,
