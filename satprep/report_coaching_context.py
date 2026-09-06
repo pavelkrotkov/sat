@@ -1,4 +1,8 @@
-"""Build display-ready context for the coaching report template."""
+"""Build display-ready context for the coaching report template.
+
+This layer only reshapes derived analysis for presentation. It does not persist
+canonical mechanisms or mutate attempts; SQLite remains the source of truth.
+"""
 
 import collections
 import datetime
@@ -56,11 +60,18 @@ def _confidence(rows: list[dict]) -> list[tuple[str, int]]:
     return collections.Counter(labels).most_common()
 
 
-def build_context(conn, rows: list[dict], *, after_attempt_id: int, through_attempt_id: int, generated_at: str) -> dict:
-    analyzed = analyze_rows(conn, rows)
+def _summary(analyzed: list[dict]) -> tuple[list[dict], collections.Counter, float, int]:
     wrong = [row for row in analyzed if not row.get("correct")]
     canonical = collections.Counter(row.get("canonical_error") for row in wrong if row.get("canonical_error"))
     accuracy = round(100 * (len(analyzed) - len(wrong)) / len(analyzed), 1) if analyzed else 0.0
+    preventable = sum(row.get("prediction_preventable") == "yes" for row in wrong)
+    return wrong, canonical, accuracy, preventable
+
+
+def build_context(conn, rows: list[dict], *, after_attempt_id: int, through_attempt_id: int, generated_at: str) -> dict:
+    analyzed = analyze_rows(conn, rows)
+    wrong, canonical, accuracy, preventable = _summary(analyzed)
+    prepared_wrong = [_prepare_wrong(row) for row in wrong]
     return {
         "after_attempt_id": after_attempt_id,
         "through_attempt_id": through_attempt_id,
@@ -68,7 +79,7 @@ def build_context(conn, rows: list[dict], *, after_attempt_id: int, through_atte
         "attempt_count": len(analyzed),
         "wrong_count": len(wrong),
         "accuracy": accuracy,
-        "preventable": sum(row.get("prediction_preventable") == "yes" for row in wrong),
+        "preventable": preventable,
         "coaching_rules": coaching_rules(canonical),
         "behaviors": behaviors(wrong, canonical),
         "domains": counts(analyzed, "official_domain", "Unspecified"),
@@ -76,5 +87,5 @@ def build_context(conn, rows: list[dict], *, after_attempt_id: int, through_atte
         "modules": counts(analyzed, "module", "Unspecified"),
         "confidence": _confidence(analyzed),
         "timing": timing(analyzed),
-        "wrong": [_prepare_wrong(row) for row in wrong],
+        "wrong": prepared_wrong,
     }
