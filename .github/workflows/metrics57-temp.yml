@@ -15,19 +15,14 @@ jobs:
       - run: pip install radon
       - name: Enforce new-code metrics
         run: |
-          radon cc -s satprep/report_coaching.py satprep/report_coaching_analysis.py satprep/report_coaching_stats.py satprep/report_coaching_rules.py
-          radon mi -s satprep/report_coaching.py satprep/report_coaching_analysis.py satprep/report_coaching_stats.py satprep/report_coaching_rules.py satprep/reports.py
+          radon cc -s satprep/report_coaching*.py
+          radon mi -s satprep/report_coaching*.py satprep/reports.py
           python - <<'PY'
           from pathlib import Path
           from radon.complexity import cc_visit
           from radon.metrics import mi_visit
 
-          paths = [
-              Path("satprep/report_coaching.py"),
-              Path("satprep/report_coaching_analysis.py"),
-              Path("satprep/report_coaching_stats.py"),
-              Path("satprep/report_coaching_rules.py"),
-          ]
+          paths = sorted(Path("satprep").glob("report_coaching*.py"))
           failed = []
           for path in paths:
               source = path.read_text()
