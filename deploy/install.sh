@@ -57,13 +57,7 @@ sudo -u "$RUN_AS" sh -lc "cd '$REPO' && uv sync --frozen"
 systemctl daemon-reload
 systemctl enable --now satprep.service satprep-backup.timer
 
-# hermes.local, so nobody has to remember a DHCP lease.
-#
-# `enable --now` runs unconditionally, because enablement and activity are
-# independent states: guarding on either one alone leaves the other broken.
-# is-enabled skips a stopped daemon, is-active skips a running-but-disabled
-# one that then vanishes at the next reboot. The command is idempotent, so
-# there is nothing to guard.
+# mDNS keeps the service reachable without pinning a DHCP lease.
 if ! command -v avahi-daemon >/dev/null; then
     echo "  installing avahi-daemon for mDNS"
     apt-get install -y avahi-daemon >/dev/null

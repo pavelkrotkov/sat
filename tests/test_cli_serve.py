@@ -62,7 +62,7 @@ def test_loopback_forms_are_recognised(host):
 
 
 @pytest.mark.parametrize(
-    "host", ["0.0.0.0", "::", "192.168.1.42", "10.0.0.5", "hermes.local", "", "   "]
+    "host", ["0.0.0.0", "::", "192.168.1.42", "10.0.0.5", "server.local", "", "   "]
 )
 def test_routable_forms_are_not_mistaken_for_loopback(host):
     """0.0.0.0 is every interface, not this machine. An unresolvable name is
@@ -108,7 +108,7 @@ def test_bracketed_ipv6_is_normalized_before_it_reaches_the_socket(uvicorn):
 
 
 def test_normalize_host_leaves_ordinary_forms_alone():
-    for host in ("127.0.0.1", "::1", "0.0.0.0", "hermes.local"):
+    for host in ("127.0.0.1", "::1", "0.0.0.0", "server.local"):
         assert normalize_host(host) == host
     assert normalize_host("  127.0.0.1  ") == "127.0.0.1"
 

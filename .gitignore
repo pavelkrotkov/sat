@@ -1,31 +1,40 @@
-# Python caches
+# Python / packaging
 __pycache__/
 *.py[cod]
+.venv/
+*.egg-info/
+dist/
 
-# Browser/session state
+# Local secrets and browser state
+.env
+.env.*
+!.env.example
 playwright_profile/
+storage_state*.json
+cookies*.json
 
-# Generated reports and debug artifacts
+# Private SAT/runtime data — never commit
+data/
+imports/
 outputs/
 artifacts/
+exports/
+backups/
+cram_claude/
+cram_gemini/
+kb/
+
+# Data/export formats that do not belong in the code-only repository
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.pdf
+*.xlsx
+*.csv
 
 # OS metadata
 .DS_Store
-
-# satprep generated state
-data/
-.venv/
-imports/
-
-# SAT Prep knowledge base — generated/runtime artifacts (see kb/README.md)
-# OpenKB runtime state, generated lint reports, and local MkDocs build output
-# belong to the controller host or a disposable build dir, not the vault.
-kb/.openkb/
-kb/wiki/reports/
-kb/build/
-
-# python packaging
-*.egg-info/
-dist/
-exports/
-backups/
