@@ -36,7 +36,7 @@
 <div><h4>By module</h4><table><tr><th>Module</th><th>#</th></tr>{% for label,count in modules %}<tr><td>{{ label }}</td><td class="num">{{ count }}</td></tr>{% else %}<tr><td colspan="2">—</td></tr>{% endfor %}</table></div>
 </div>
 <div class="grid" style="margin-top:12px">
-<div><h4>Timing</h4><table><tr><th>Timing</th><th>Attempts</th><th>Wrong</th><th>Error rate</th></tr>{% for t in timing %}<tr><td>{{ t.label|safe }}{% if t.coach %}<div class="muted">{{ t.coach }}</div>{% endif %}</td><td class="num">{{ t.attempts }}</td><td class="num">{{ t.wrong }}</td><td class="num">{{ t.error_rate }}%</td></tr>{% endfor %}</table></div>
+<div><h4>Timing</h4><table><tr><th>Timing</th><th>Attempts</th><th>Wrong</th><th>Error rate</th></tr>{% for t in timing %}<tr><td>{{ t.label }}{% if t.coach %}<div class="muted">{{ t.coach }}</div>{% endif %}</td><td class="num">{{ t.attempts }}</td><td class="num">{{ t.wrong }}</td><td class="num">{{ t.error_rate }}%</td></tr>{% endfor %}</table></div>
 <div><h4>Confidence</h4><table><tr><th>Level</th><th>#</th></tr>{% for label,count in confidence %}<tr><td>{{ label }}</td><td class="num">{{ count }}</td></tr>{% else %}<tr><td colspan="2">—</td></tr>{% endfor %}</table></div><div></div>
 </div>
 
