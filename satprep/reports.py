@@ -490,6 +490,11 @@ def get_report_watermark(conn) -> int:
     return int(row["committed_attempt_id"])
 
 
+def mark_report_dirty(conn, attempt_id: int) -> None:
+    """Queue a mutated, possibly already-reported attempt for replay."""
+    conn.execute("INSERT INTO report_dirty_events (attempt_id) VALUES (?)", (int(attempt_id),))
+
+
 def _error_text(exc: Exception) -> str:
     text = f"{type(exc).__name__}: {exc}".strip()
     return text[:2000]
@@ -529,7 +534,15 @@ def _acquire_generation(conn, lease_seconds: int) -> dict | ReportGenerationResu
             through_attempt_id=active["through_attempt_id"],
             message="Generation already in progress.",
         )
-    after = get_report_watermark(conn)
+    checkpoint = get_report_watermark(conn)
+    dirty = conn.execute(
+        """SELECT COALESCE(MAX(id), 0) AS through_id, MIN(attempt_id) AS first_attempt
+           FROM report_dirty_events"""
+    ).fetchone()
+    dirty_through_id = int(dirty["through_id"] or 0)
+    after = checkpoint
+    if dirty["first_attempt"] is not None:
+        after = min(after, max(0, int(dirty["first_attempt"]) - 1))
     through = int(conn.execute("SELECT COALESCE(MAX(id), 0) FROM attempts").fetchone()[0])
     eligible = int(
         conn.execute(
@@ -559,6 +572,8 @@ def _acquire_generation(conn, lease_seconds: int) -> dict | ReportGenerationResu
         "run_id": run_id,
         "lease_token": token,
         "after_attempt_id": after,
+        "checkpoint_attempt_id": checkpoint,
+        "dirty_through_id": dirty_through_id,
         "through_attempt_id": through,
         "eligible_attempt_count": eligible,
         "wrong_count": wrong,
@@ -587,7 +602,7 @@ def _finish_generation(conn, acquired: dict, result: ReportGenerationResult) -> 
         conn.rollback()
         return False
     watermark = get_report_watermark(conn)
-    if watermark != acquired["after_attempt_id"]:
+    if watermark != acquired["checkpoint_attempt_id"]:
         conn.rollback()
         return False
     status = COMPLETED if result.status == COMPLETED else NO_OP
@@ -595,6 +610,10 @@ def _finish_generation(conn, acquired: dict, result: ReportGenerationResult) -> 
         "UPDATE report_checkpoint SET committed_attempt_id=? WHERE id=1",
         (max(watermark, result.through_attempt_id),),
     )
+    if acquired["dirty_through_id"]:
+        conn.execute(
+            "DELETE FROM report_dirty_events WHERE id <= ?", (acquired["dirty_through_id"],)
+        )
     updated = conn.execute(
         """UPDATE report_runs
            SET status=?, completed_at=?, eligible_attempt_count=?, wrong_count=?,
