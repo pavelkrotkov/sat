@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from conftest import add_question
 
 from satprep import report_coaching_analysis as coaching_analysis
+from satprep import report_coaching_stats as coaching_stats
 from satprep import reports as reports_mod
 from satprep import server as server_mod
 
@@ -184,3 +185,16 @@ def test_report_rechecks_lease_after_render_before_publish(db, monkeypatch, tmp_
         raise AssertionError("lost lease should abort report publication")
 
     assert not (tmp_path / "lease-loss.html").exists()
+
+
+def test_timing_keeps_untimed_attempts_visible():
+    rows = [
+        {"time_ms": 0, "correct": False},
+        {"time_ms": None, "correct": True},
+        {"time_ms": 50_000, "correct": True},
+    ]
+    buckets = {row["label"]: row for row in coaching_stats.timing(rows)}
+
+    assert buckets["not recorded"]["attempts"] == 2
+    assert buckets["not recorded"]["wrong"] == 1
+    assert sum(bucket["attempts"] for bucket in buckets.values()) == len(rows)
