@@ -55,8 +55,8 @@ def looks_like_question_dump(path: pathlib.Path) -> bool:
     if path.suffix.lower() not in TEXT or not path.is_file():
         return False
     try:
-        text = path.read_text(encoding="utf-8", errors="ignore")
-    except OSError as error:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
         raise ScanError(f"cannot read tracked text {path}: {error}") from error
     complete_record = (
         set(CHOICE.findall(text)) == set("ABCD")
