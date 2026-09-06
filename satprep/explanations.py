@@ -168,12 +168,7 @@ def _retrieve_pages(
     """
     if not index or not index.get("pages"):
         return []
-    # PR-43 review: the task tags from `reasoning_tags` and `effective_tags`
-    # use granular labels (e.g. "unsupported_inference") while the KB
-    # index tags use the broader family name ("inference"). Exact-set
-    # intersection therefore scores every relevant page as zero for many
-    # ordinary questions. Normalise both sides to the same family
-    # vocabulary so the frontmatter-tag signal actually fires.
+    # Normalize granular reasoning tags to the broader KB vocabulary.
     tagset = {_tag_family(t) for t in (task_tags or [])}
     errset = set(error_taxonomy or [])
     errset_lower = {t.lower() for t in errset}
@@ -201,9 +196,7 @@ def _retrieve_pages(
             mapping_hits += 3
         if tag_overlap <= 0 and mapping_hits <= 0:
             continue
-        # PR-43 review: error-taxonomy hits rank above pure tag overlap,
-        # so pack mapping_hits first and total score second for a useful
-        # tie-breaker.
+        # Error-taxonomy evidence outranks plain tag overlap.
         scored.append((mapping_hits, tag_overlap + mapping_hits, path, page))
     # Sort by mapping hits (error taxonomy matches rank higher), then
     # total, then path for deterministic tie-breaking.
@@ -275,11 +268,7 @@ def _tag_family(tag: str) -> str:
 
 
 def _tokenize_for_evidence(text: str) -> set[str]:
-    """Thin wrapper over the corpus tokenizer, kept under this name so
-    `_pick_passage_span` and tests can pass a tokenizer without
-    re-importing the corpus internals. Avoid naming this the same as
-    the imported module-level alias (which would shadow it and recurse
-    — see PR-43 round-3 review)."""
+    """Expose the corpus tokenizer without shadowing its imported alias."""
     return _corpus_tokens(text)
 
 
@@ -325,8 +314,6 @@ def _extract_evidence(
     return out
 
 
-# PR-43 review: split the passage selector out so we can unit-test it
-# without going through the full pipeline.
 _EVIDENCE_MAX_CHARS = 480
 
 
@@ -355,9 +342,7 @@ def _pick_passage_span(
         toks = tokenize(s)
         hit = sum(1 for t in toks if t in target)
         scored.append((hit, -i, i, s))
-    # PR-43 round-3: sort once up front, then check the best scorer.
-    # The previous code branched on the unsorted first tuple, which
-    # could be 0 even when a later sentence scored > 0.
+    # Sort before testing the best score; a later sentence may be the only match.
     scored.sort(key=lambda t: (-t[0], t[1]))
     if not scored or scored[0][0] == 0:
         # Nothing matched; take the longest sentence we can still fit.
@@ -464,10 +449,8 @@ def _llm_configured() -> tuple[str, str, str] | None:
     None. The model must be on the allowlist so a stray
     OPENAI_API_KEY cannot route to an expensive model by accident.
 
-    PR-43 review: SAT_EXPLAIN_ENDPOINT is treated as a full endpoint
-    (i.e. /v1/chat/completions). The OPENAI_BASE_URL fallback is a
-    base URL ("https://host/v1") that needs the chat-completions route
-    appended."""
+    SAT_EXPLAIN_ENDPOINT is a full endpoint; OPENAI_BASE_URL is a base
+    URL that needs the chat-completions route appended."""
     endpoint = os.environ.get("SAT_EXPLAIN_ENDPOINT")
     if not endpoint:
         base = os.environ.get("OPENAI_BASE_URL")
@@ -513,11 +496,7 @@ def _call_llm(
 ) -> str:
     """POST to an OpenAI-compatible /v1/chat/completions endpoint.
 
-    PR-43 review: rather than assume the response has the canonical
-    `choices[0]["message"]["content"]` shape (which crashes with
-    KeyError / IndexError / TypeError on malformed-but-successful
-    responses), raise ValueError on any structural mismatch so the
-    caller's abstention handler can catch a uniform error class."""
+    Structural mismatches raise ValueError so the caller can abstain."""
     payload = {"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": 0.2}
     req = urllib.request.Request(
         endpoint,
@@ -591,11 +570,7 @@ REPO_ROOT_FOR_BODY = _repo_root()
 def _prompt_messages(
     rule_explanation: Explanation, kb_pages: list[dict], rationale: str = ""
 ) -> list[dict]:
-    """Build the chat messages. The user message carries the structured
-    inputs as JSON so the LLM doesn't have to parse them out of prose.
-    The KB body excerpts (PR-43 round-3) give the model the actual
-    tactics, not just the page title; the rationale (PR-43 round-3) is
-    the most authoritative grounding source for College Board items."""
+    """Build JSON-grounded messages with KB tactics and official rationale."""
     kb_brief = [
         {
             "path": p.get("path", ""),
@@ -664,10 +639,7 @@ def explain_error(
     task_tags = reasoning_tags(passage, stem, [c.get("text", "") for c in choices or []])
     cmap = {c.get("letter", ""): c.get("text", "") for c in choices or []}
     error_taxonomy = diagnose_error(cmap.get(correct_letter, ""), cmap.get(student_letter, ""))
-    # PR-43 round-3: prefer the persisted effective_tags (admin
-    # suppressions and manual corrections) over the raw rule inference
-    # when a connection is available. The raw inference still informs
-    # the explanation's tested_task label.
+    # Persisted tags include admin suppressions and manual corrections.
     if conn is not None:
         try:
             effective = list(effective_tags(conn, question_id))
@@ -700,9 +672,7 @@ def explain_error(
         kb_pages=kb_pages,
     )
 
-    # PR-43 review: the rule-based taxonomy is the contract the LLM is
-    # constrained to. If it is empty there is nothing to cite and the
-    # LLM path should not be allowed to invent a failure mode.
+    # Without rule evidence, the LLM cannot cite or invent a failure mode.
     if not error_taxonomy:
         return dataclasses.replace(base, mode="abstained", confidence="low", model="")
     # 4. Optional LLM upgrade.

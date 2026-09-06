@@ -216,12 +216,6 @@ def test_interrupted_drill_rolls_back_as_a_unit(db, tmp_path):
     after.close()
 
 
-# ------------------------------------------------------- excerpt helpers -- #
-# Issue #48: the compact "why the key works" preview must never cut the
-# official rationale mid-sentence, and the full rationale is rendered
-# verbatim on the review page (see test_drill_ui render tests).
-
-
 def test_excerpt_sentences_never_cuts_mid_sentence():
     s1 = "Choice B is best because it stays within the passage's scope."
     s2 = "The other choices introduce claims the passage never makes."
@@ -254,9 +248,7 @@ def test_excerpt_sentences_empty_input():
 
 
 def test_excerpt_sentences_does_not_split_on_abbreviations():
-    """PR-50 review finding: 'e.g.', 'Dr.', 'U.S.' are not sentence
-    boundaries. The preview must continue past the abbreviation rather
-    than end the excerpt there."""
+    """The preview continues past nonterminal abbreviations."""
     text = (
         "Some claim e.g. that the evidence overwhelmingly supports the "
         "treatment in every case observed so far and the results are "
@@ -269,9 +261,7 @@ def test_excerpt_sentences_does_not_split_on_abbreviations():
 
 
 def test_excerpt_sentences_etc_terminal_still_splits():
-    """PR-50 round-4 finding: a sentence ending in 'etc.' must still be a
-    boundary. 'etc.' is conditional (like Inc.), so '..., etc. Choice B...'
-    splits at the real sentence end."""
+    """Terminal conditional abbreviations remain sentence boundaries."""
     s1 = "The examples include apples, pears, etc."
     s2 = (
         "Choice B is the best answer because it stays within the scope "
@@ -288,14 +278,12 @@ def test_excerpt_sentences_etc_nonterminal_kept():
 
 
 def test_excerpt_sentences_sentence_exactly_filling_the_cap():
-    """PR-50 round-5 finding: 'One. Two.' at exactly max_chars must both
-    fit — the separator was double-counted, dropping the second sentence."""
+    """A sentence ending exactly at max_chars still fits."""
     assert excerpt_sentences("One. Two.", max_chars=9) == "One. Two."
 
 
 def test_excerpt_sentences_suffix_abbreviation_terminal_still_splits():
-    """PR-50 round-5 finding: 'Jr.' at a real sentence end is a boundary —
-    suffix abbreviations are terminal-aware like Inc./etc."""
+    """A terminal suffix abbreviation remains a sentence boundary."""
     s1 = "The speaker was Martin Luther King Jr."
     s2 = (
         "Choice B is the best answer because it stays within the scope "
@@ -306,8 +294,7 @@ def test_excerpt_sentences_suffix_abbreviation_terminal_still_splits():
 
 
 def test_excerpt_sentences_ellipsis_is_not_a_boundary():
-    """PR-50 round-7 finding: nonterminal ellipses ('...' and '. . .')
-    followed by a lowercase continuation must not split the sentence."""
+    """A nonterminal ellipsis followed by lowercase text does not split."""
     text = (
         "The evidence suggests ... a stronger conclusion than previously "
         "thought and the data support this in every case observed. " * 10
@@ -324,8 +311,7 @@ def test_excerpt_sentences_ellipsis_is_not_a_boundary():
 
 
 def test_excerpt_sentences_sentence_final_ellipsis_still_splits():
-    """PR-50 round-8 finding: an ellipsis ending a sentence before a
-    capitalized sentence ('inconclusive... Choice B') is a boundary."""
+    """An ellipsis before a capitalized sentence remains a boundary."""
     s1 = "The evidence remains inconclusive..."
     s2 = (
         "Choice B is correct because it stays within the scope of the "
@@ -336,9 +322,7 @@ def test_excerpt_sentences_sentence_final_ellipsis_still_splits():
 
 
 def test_excerpt_sentences_capitalized_abbreviation_variants():
-    """PR-50 round-9 finding: capitalized variants ('E.g.', 'I.e.') at
-    sentence start must be protected case-insensitively, preserving
-    their casing."""
+    """Abbreviation protection is case-insensitive and preserves case."""
     text = (
         "E.g. the evidence overwhelmingly supports the treatment in "
         "every case observed so far and the results are consistent "
@@ -350,9 +334,7 @@ def test_excerpt_sentences_capitalized_abbreviation_variants():
 
 
 def test_excerpt_sentences_abbreviation_does_not_match_word_suffixes():
-    """PR-50 round-10 finding: 'St.' must not match the suffix of 'best.'
-    (and 'Ms.' the suffix of 'claims.'). A real sentence-ending period
-    stays a boundary."""
+    """Abbreviations do not match suffixes of ordinary words."""
     s1 = "Choice B is best."
     s2 = (
         "Choice A is wrong because it overstates the evidence and does "
@@ -363,8 +345,7 @@ def test_excerpt_sentences_abbreviation_does_not_match_word_suffixes():
 
 
 def test_excerpt_sentences_quoted_question_stays_inside_sentence():
-    """PR-50 round-10 finding: an embedded quoted question ('asks "Why?"
-    before explaining') with a lowercase continuation is not a boundary."""
+    """An embedded quoted question with lowercase continuation does not split."""
     text = (
         "The author asks \u201cWhy?\u201d before explaining the result in "
         "detail and continuing with the full explanation. " * 10
@@ -375,9 +356,7 @@ def test_excerpt_sentences_quoted_question_stays_inside_sentence():
 
 
 def test_excerpt_sentences_abbreviation_before_whitespace_protected():
-    """PR-50 round-11 finding: the trailing \\b from the round-10 fix
-    broke 'Dr. Smith' / 'St. Louis' (a space follows the abbreviation).
-    The leading-boundary + whitespace-lookahead pattern protects them."""
+    """Standalone abbreviations remain protected before whitespace."""
     s1 = "Dr. Smith concluded the study."
     s2 = (
         "The data support the conclusion in every case observed and the "
@@ -392,8 +371,7 @@ def test_excerpt_sentences_abbreviation_before_whitespace_protected():
 
 
 def test_excerpt_sentences_sentence_starting_with_digit_still_splits():
-    """PR-50 round-11 finding: a sentence beginning with a number
-    ('1990. 200 participants') is a real boundary."""
+    """A sentence beginning with a digit creates a real boundary."""
     s1 = "The study began in 1990."
     s2 = "200 participants were enrolled and the results support the hypothesis strongly."
     out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
@@ -401,9 +379,7 @@ def test_excerpt_sentences_sentence_starting_with_digit_still_splits():
 
 
 def test_excerpt_sentences_non_ascii_uppercase_sentence_start():
-    """PR-50 round-12/13 findings: a sentence starting with an accented
-    uppercase letter ('Émile Zola', 'Čapek') is a real boundary. The
-    boundary check is Unicode-aware (isupper), not a Latin-1 whitelist."""
+    """Sentence-start detection recognizes Unicode uppercase letters."""
     s1 = "The claim is supported."
     s2 = (
         "\u00c9mile Zola provides the evidence and the conclusion follows "
@@ -425,8 +401,7 @@ def test_excerpt_sentences_still_splits_on_real_periods():
 
 
 def test_excerpt_sentences_curly_single_quote_sentence_start():
-    """PR-50 round-14 finding: a sentence beginning with a curly single
-    quote ('‘Choice B’ follows') is a real boundary."""
+    """A curly opening quote can start a new sentence."""
     s1 = "The claim is supported."
     s2 = "\u2018Choice B\u2019 follows because the evidence is clear and the conclusion is direct."
     out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
@@ -434,9 +409,7 @@ def test_excerpt_sentences_curly_single_quote_sentence_start():
 
 
 def test_excerpt_sentences_terminal_abbreviation_still_splits():
-    """PR-50 round-2 finding: 'Acme Inc.' at a real sentence end is a
-    boundary — protecting it unconditionally hid the boundary and the
-    fallback cut the next sentence midstream."""
+    """A terminal company abbreviation remains a sentence boundary."""
     s1 = "The company is Acme Inc."
     s2 = (
         "Choice B is the best answer because it stays within the scope "
@@ -449,9 +422,7 @@ def test_excerpt_sentences_terminal_abbreviation_still_splits():
 
 
 def test_excerpt_sentences_terminator_before_closing_punctuation():
-    """PR-50 round-2 finding: a sentence ending with quoted or
-    parenthesized text ('unexpected.") must still be recognized as a
-    boundary even though whitespace follows the quote, not the period."""
+    """Closing quotes and brackets may follow a sentence terminator."""
     s1 = "The result was \u201cunexpected.\u201d"
     s2 = (
         "Choice B is the best answer because it stays within the scope "
@@ -466,9 +437,7 @@ def test_excerpt_sentences_terminator_before_closing_punctuation():
 
 
 def test_excerpt_sentences_answer_label_is_not_an_initial():
-    """PR-50 round-3 finding: 'The correct answer is A. Choice B...' —
-    the lone capital-period answer label is a real boundary, not a name
-    initial, so the excerpt must stop at the complete first sentence."""
+    """A standalone answer label is a boundary, not a name initial."""
     s1 = "The correct answer is A."
     s2 = (
         "Choice B is the best answer because it stays within the scope "
@@ -479,9 +448,7 @@ def test_excerpt_sentences_answer_label_is_not_an_initial():
 
 
 def test_excerpt_sentences_abbreviation_before_uppercase_word():
-    """PR-50 round-3 finding: 'Brown vs. Board' — a nonterminal
-    abbreviation before an uppercase proper noun must stay protected, not
-    split the sentence at the abbreviation."""
+    """A nonterminal abbreviation may precede an uppercase proper noun."""
     s1 = "Brown vs. Board of Education established the principle."
     s2 = "The second sentence is long and continues well past the cap to test the boundary logic."
     out = excerpt_sentences(f"{s1} {s2} {s2}", max_chars=len(s1) + 20)
@@ -513,9 +480,7 @@ def test_paragraphs_preserve_boundaries_and_drop_blanks():
 
 
 def test_paragraphs_null_rationale_does_not_crash():
-    """PR-50 round-6 finding: the rationale column is nullable (TEXT
-    DEFAULT ''), so a NULL must not raise AttributeError in the review
-    payload."""
+    """The nullable rationale column yields no review paragraphs."""
     from satprep.training.sessions import _paragraphs
 
     assert _paragraphs(None) == []

@@ -291,8 +291,7 @@ def _infer_trap(tags):
     return tags[:2]
 
 
-# Periods that are not sentence boundaries. Protected before splitting so
-# they do not end the excerpt mid-sentence (PR-50 review findings):
+# Periods that are not sentence boundaries are protected before splitting:
 #   - title abbreviations (Dr., Mr., ...) and always-nonterminal ones
 #     (vs., e.g., i.e.) are protected unconditionally — in the corpus
 #     (1,965 rationales) these never occur sentence-final;
@@ -323,19 +322,16 @@ _OTHER_ABBREVIATIONS = (
 # only when a lowercase continuation follows — in the corpus (1,965
 # rationales, 257 ellipsis occurrences) every ellipsis is mid-sentence
 # inside a quote ("In...walls"). A sentence-final ellipsis before a
-# capitalized sentence ("inconclusive... Choice B") stays a boundary
-# (PR-50 round-8 finding), mirroring the etc./Inc. conditional rule.
+# capitalized sentence ("inconclusive... Choice B") stays a boundary.
 _ELLIPSIS = re.compile(r"\.(?:\s*\.)+(?=\s+[a-z])")
 # Sentence terminator, optional closing quotes/brackets, then whitespace.
 # Whether it is a real boundary is decided per-split by
 # _is_sentence_start(): a new sentence starts with an uppercase letter
 # (Unicode-aware, so "Émile", "Čapek"), a digit, or a quote/bracket.
-# A lowercase continuation is an embedded quote/abbreviation already
-# protected (PR-50 rounds 10-13).
+# A lowercase continuation is an embedded quote or protected abbreviation.
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])([\"'\u201d\u2019)\]]*)\s+")
 
 # Characters that start a sentence even without an uppercase letter.
-# Both curly double and single opening quotes are included (PR-50 round-14).
 _NON_LETTER_STARTS = frozenset("\u201c\u2018\"'([")
 
 
@@ -352,20 +348,15 @@ def _protect_abbreviations(text: str) -> str:
     """Replace non-boundary periods with a placeholder so the sentence
     splitter skips them; restored before returning the excerpt.
 
-    Title and always-nonterminal abbreviations are matched
-    case-insensitively so capitalized variants ("E.g. the evidence...",
-    "I.E. this means") are protected too (PR-50 round-9 finding); the
-    conditional list keeps exact-case matching because its entries are
-    already case-distinctive (Inc. vs inc. is not a boundary question).
+    Title and always-nonterminal abbreviations are matched case-insensitively;
+    conditional abbreviations keep exact-case matching.
     """
     text = _ELLIPSIS.sub(lambda m: m.group(0).replace(".", "\x00"), text)
     for abbr in _TITLE_ABBREVIATIONS + _ALWAYS_ABBREVIATIONS:
         # protect only the dots in the matched abbreviation, preserving
         # the original casing ("E.g." stays "E.g." after restore).
         # A leading \b (word-start) with a whitespace/end lookahead makes
-        # "St." match only as a standalone token followed by a space —
-        # never the suffix of "best." nor broken by a trailing \b before
-        # whitespace ("Dr. Smith" stays protected; PR-50 round-10/11).
+        # Match "St." as a token, never the suffix of "best.".
         pattern = re.compile(r"\b" + re.escape(abbr) + r"(?=[\s\x00])", re.IGNORECASE)
         text = pattern.sub(lambda m: m.group(0).replace(".", "\x00"), text)
     for abbr in _OTHER_ABBREVIATIONS:
@@ -415,9 +406,7 @@ def excerpt_sentences(text: str, max_chars: int) -> str:
     excerpt: list[str] = []
     total = 0
     for s in sentences:
-        # total already includes the separator after the previous sentence,
-        # so a sentence that would land the joined excerpt exactly on
-        # max_chars still fits (PR-50 round-5 finding).
+        # total already includes the separator after the previous sentence.
         if excerpt and total + len(s) > max_chars:
             break
         excerpt.append(s)
@@ -440,10 +429,8 @@ def _paragraphs(text: str | None) -> list[str]:
 
     Rationales are stored newline-separated. Rendering each paragraph as
     its own block keeps the official text intact — no character-level
-    truncation anywhere on the review page. A NULL/empty rationale
-    (the column is nullable) yields no paragraphs (PR-50 round-6
-    finding): the template's ``{% if r.rationale_official %}`` guard
-    handles the absence.
+    truncation anywhere on the review page. A NULL or empty rationale
+    yields no paragraphs for the template's absence guard.
     """
     if not text:
         return []

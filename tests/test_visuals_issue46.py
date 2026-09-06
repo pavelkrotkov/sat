@@ -1,19 +1,4 @@
-"""Issue #46: first-class preservation of HTML tables (and all visual
-assets) in fetched College Board questions.
-
-The EQB returns some questions with `<figure class="table"><table>…</table>
-</figure>` markup. Before this work the extractor only knew SVG / data-URI
-images, so a table question stored nothing visual at all: the table's
-markup was stripped and its cells flattened into prose, and the drill
-rendered an unanswerable question with no graph/table in sight.
-
-These tests pin the acceptance criteria: tables survive as sanitized,
-accessible visual records (caption, thead, headers, cells); every
-supported visual kind is preserved in document order; unsupported or
-malformed markup degrades to the text fallback; the stored text keeps its
-legacy shape (fingerprint stability); and the archive round-trips the new
-records.
-"""
+"""Sanitized accessible visuals preserve order and legacy fingerprint text."""
 
 import base64
 import json
@@ -130,8 +115,7 @@ def test_sanitize_table_keeps_only_table_structure():
 
 
 def test_sanitize_table_scope_is_an_enum():
-    """Round-1 finding: arbitrary scope values passed the alphanumeric
-    check. scope must be one of the four spec values or it is dropped."""
+    """Table scope accepts only the four enumerated HTML values."""
     out = sanitize_table(
         "<table><thead><tr><th scope='col'>H</th><th scope='xss' onmouseover='a'>J</th></tr></thead>"
         "<tbody><tr><td>v</td><td>w</td></tr></tbody></table>"
@@ -191,10 +175,7 @@ def test_normalize_mixed_visuals_in_document_order(fig_dirs):
 
 
 def test_multiple_tables_preserve_document_order(fig_dirs):
-    """Two figure-wrapped tables in one field must each be extracted, in
-    source order. Regression for the round-1 finding where the table search
-    used the whole document instead of the current match, duplicating the
-    FIRST table for every figure."""
+    """Each figure-wrapped table is extracted once in source order."""
     t2 = (
         "<figure class='table'><table><caption>Table B. Rainfall</caption>"
         "<thead><tr><th id='b1' scope='col'>Month</th></tr></thead>"
@@ -362,8 +343,7 @@ def test_backfill_audit_reports_without_writing(db, fig_dirs, monkeypatch):
     # filter would exclude the only candidate; the audit sweeps everything.
     stats = qbank_fetch.backfill_visuals(conn, hint=False, sleep_s=0, audit_only=True)
 
-    # Round-3: the audit counts visuals it WOULD preserve (now_* != 0) but
-    # never writes them — the DB stays untouched.
+    # The audit reports preservable visuals without writing them.
     assert stats["now_visuals"] == 1
     assert stats["candidate"] >= 1
     after = conn.execute(
@@ -479,13 +459,8 @@ def test_extract_visuals_table_text_fallback_preserves_fingerprint(db, fig_dirs)
     assert fingerprint(cleaned, "", []) == fingerprint(legacy, "", [])
 
 
-# ------------------------------------------------- round-3 findings (#52) --
-
-
 def test_restore_sanitizes_table_visuals():
-    """Round-3 P1: a crafted archive must not be able to persist arbitrary
-    visuals[].html (rendered with |safe). Restore runs table records through
-    sanitize_table and drops anything that does not survive."""
+    """Archive restore sanitizes table HTML before it reaches a safe-rendered field."""
     from satprep.corpus.archive import _restore_visuals
 
     cleaned = _restore_visuals(
@@ -508,9 +483,7 @@ def test_restore_sanitizes_table_visuals():
 
 
 def test_backfill_skips_complete_table_only_rows(db, fig_dirs):
-    """Round-3 P2: a successfully ingested table-only question has populated
-    visuals_json and legitimately EMPTY images_json. The backfill predicate
-    keyed on missing visuals_json must not re-select (and rewrite) it."""
+    """A complete table-only row legitimately has no image files."""
     conn, _path = db
     detail = {
         **DETAIL,
@@ -532,8 +505,7 @@ def test_backfill_skips_complete_table_only_rows(db, fig_dirs):
 
 
 def test_audit_counts_preserved_visuals(db, fig_dirs, monkeypatch):
-    """Round-3 P2: --audit-visuals reports what WOULD be preserved; now_*
-    must be non-zero even though nothing is written."""
+    """A read-only visual audit reports what would be preserved."""
     from satprep.corpus import qbank_fetch
 
     conn, _path = db
@@ -556,9 +528,7 @@ def test_audit_counts_preserved_visuals(db, fig_dirs, monkeypatch):
 
 
 def test_table_wins_over_nested_svg(fig_dirs):
-    """Round-3 P2: a <figure class="table"> whose cell contains an inline SVG
-    must be preserved as a table (caption/headers/rows), not flattened into a
-    single image by the svg-first branch."""
+    """A table wrapper owns nested SVG and remains a table visual."""
     svg_cell = (
         "<figure class='table'><table><caption>Table S. Data</caption>"
         "<thead><tr><th scope='col'>A</th><th scope='col'>B</th></tr></thead>"
@@ -578,8 +548,7 @@ def test_table_wins_over_nested_svg(fig_dirs):
 
 
 def test_figure_with_multiple_data_uri_images_saves_all(fig_dirs):
-    """Round-4 P1: a single <figure> holding several data-URI <img> tags must
-    save every image, not just the first (search() used to drop the rest)."""
+    """Every data-URI image in a figure is persisted."""
     png = base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()
     png2 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00\x01\x02").decode()
     detail = {
@@ -600,8 +569,7 @@ def test_figure_with_multiple_data_uri_images_saves_all(fig_dirs):
 
 
 def test_sanitize_table_turns_break_into_separator():
-    """Round-4 P1: <td>1<br>2</td> must stay two values, not collapse to
-    '12' (unwrap() used to remove <br> with no separator)."""
+    """A table line break preserves separation between cell values."""
     from bs4 import BeautifulSoup
 
     out = sanitize_table("<table><tr><td>1<br>2</td></tr></table>")

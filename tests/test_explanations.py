@@ -76,7 +76,6 @@ def test_explain_error_explicit_no_choice_data_abstains():
         correct_letter="B",
     )
     assert ex.confidence == "low"
-    # PR-43 review: empty rule-based taxonomy now abstains by design.
     assert ex.mode in {"rule", "abstained"}
     assert ex.error_taxonomy == []
 
@@ -191,10 +190,7 @@ def test_explain_error_unconfigured_endpoint_abstains(monkeypatch):
     assert ex.mode in {"rule", "abstained"}
     if ex.mode == "abstained":
         assert ex.confidence == "low"
-        # PR-43 review: model is the LLM name only when an actual LLM
-        # call is attempted. When the rule-based taxonomy is empty (as
-        # it is here), we abstain before ever reaching _call_llm, so
-        # `model` stays the empty string.
+        # Record a model only when an LLM call was attempted.
         if ex.model:
             assert ex.model == "auto:generic-free"
     assert isinstance(ex.error_taxonomy, list)
@@ -214,8 +210,6 @@ def test_explain_error_disallowed_model_falls_back(monkeypatch):
         student_letter="A",
         correct_letter="B",
     )
-    # PR-43 review: empty rule taxonomy now abstains by design, so the
-    # disallowed-model path returns abstained rather than rule.
     assert ex.mode in {"rule", "abstained"}
     assert ex.model == ""
 
@@ -278,17 +272,8 @@ def test_real_vault_explain_end_to_end():
     assert ex.confidence in {"low", "medium", "high"}
 
 
-# ---------------------------------------------------------------------------
-# Round-3 regressions: confirm the P1 / P2 fixes from the second
-# bot-review pass on PR #43 are actually in effect.
-# ---------------------------------------------------------------------------
-
-
 def test_pick_passage_span_finds_later_supporting_sentence(monkeypatch):
-    """Round-3 P2: when the first sentence has zero token overlap with
-    the target but a later sentence does, _pick_passage_span must pick
-    the later sentence (the previous version branched on the unsorted
-    first tuple and returned the no-match fallback)."""
+    """Evidence selection uses the best-matching sentence, not the first."""
     # 5 sentences; only the last has a token in common with the stem.
     passage = (
         "The first sentence contains nothing relevant. "
@@ -303,20 +288,14 @@ def test_pick_passage_span_finds_later_supporting_sentence(monkeypatch):
 
 
 def test_tokenize_for_evidence_does_not_recurse(monkeypatch):
-    """Round-3 P1: the module-level wrapper that took the same name as
-    the imported tokenizer recursed into itself and crashed on any
-    passage longer than ~480 chars. Sanity-check that the public name
-    resolves to the corpus tokenizer, not to itself."""
+    """The evidence tokenizer delegates to the corpus tokenizer."""
     assert _tokenize_for_evidence("the scatterplot is clear") == _corpus_tokens(
         "the scatterplot is clear"
     )
 
 
 def test_retrieve_pages_filters_non_matching_question_review():
-    """Round-3 P2: a question-review page authored for question A
-    must not appear in the retrieved set when explaining question B,
-    even if its tags overlap. Without the fingerprint check, the
-    wrong review would crowd out relevant tactic pages."""
+    """Question-specific reviews cannot leak into another question's evidence."""
     index = {
         "pages": [
             {
@@ -342,9 +321,7 @@ def test_retrieve_pages_filters_non_matching_question_review():
 
 
 def test_kb_body_excerpt_strips_frontmatter_and_caps():
-    """Round-3 P2: the LLM prompt body excerpt is the actual KB page
-    body, not its frontmatter, and is bounded by the documented
-    max_chars cap."""
+    """LLM evidence excerpts exclude frontmatter and obey the size cap."""
     from satprep.explanations import _kb_body_excerpt
 
     body = _kb_body_excerpt("kb/wiki/summaries/settele-strong-words.md")
@@ -356,9 +333,7 @@ def test_kb_body_excerpt_strips_frontmatter_and_caps():
 
 
 def test_load_index_rejects_non_dict_root():
-    """Round-3 P2: a top-level malformed index (`[]` or `null`) used
-    to crash the pipeline with AttributeError; the loader now returns
-    {} for graceful degradation."""
+    """A malformed index root degrades to an empty index."""
     from satprep.explanations import _load_index
 
     p = REPO / "kb" / ".kb-index.json"
@@ -372,9 +347,7 @@ def test_load_index_rejects_non_dict_root():
 
 
 def test_explain_error_uses_effective_tags_when_conn_supplied():
-    """Round-3 P2: when a connection is provided, retrieval must use
-    the persisted effective_tags (with admin suppressions honoured)
-    rather than the raw rule-inferred task_tags."""
+    """Persisted effective tags include admin corrections and suppressions."""
     # Build a small synthetic index where only effective-tagged pages
     # would match. We bypass the file path by injecting an index file
     # via SAT_KB_ROOT.
@@ -424,23 +397,12 @@ def test_explain_error_uses_effective_tags_when_conn_supplied():
             student_letter="A",
             correct_letter="B",
         )
-        # The pipeline ran without crashing; the rule-based error
-        # taxonomy is empty (just "a" vs "b"), so the explanation
-        # abstains, and no KB page is recommended. The point of the
-        # test is that we got here without the pipeline crashing on
-        # the synthetic index. The exact KB recommendation is exercised
-        # by the larger end-to-end test above.
         assert ex.mode in {"rule", "abstained"}
         monkeypatch.undo()
 
 
-# ----- PR-43 review regression tests -----
-
-
 def test_evidence_excerpt_includes_keyword_beyond_240_chars():
-    """PR-43 review: when the supporting sentence sits after the first
-    240 chars of the passage, the excerpt must still contain it rather
-    than silently cutting it off."""
+    """Evidence selection searches beyond the first 240 passage characters."""
     from satprep.corpus.tagger import _tokens as _tokenize
 
     long_passage = (
@@ -462,9 +424,7 @@ def test_evidence_excerpt_includes_keyword_beyond_240_chars():
 
 
 def test_llm_call_malformed_response_raises_value_error(monkeypatch):
-    """PR-43 review: a successful HTTP 200 with empty `choices` (or a
-    null content) must raise ValueError instead of IndexError/TypeError,
-    so the caller's abstention handler can catch it."""
+    """Malformed successful responses raise the error handled by abstention."""
     import satprep.explanations as ex_mod
 
     class _Resp:
@@ -502,8 +462,7 @@ def test_llm_call_malformed_response_raises_value_error(monkeypatch):
 
 
 def test_llm_configured_appends_chat_completions_route(monkeypatch):
-    """PR-43 review: OPENAI_BASE_URL is a base URL; the chat-completions
-    route must be appended to derive the POST endpoint."""
+    """OPENAI_BASE_URL is a base URL, not a complete request endpoint."""
     import satprep.explanations as ex_mod
 
     monkeypatch.setenv("SAT_EXPLAIN_API_KEY", "k")
@@ -515,8 +474,7 @@ def test_llm_configured_appends_chat_completions_route(monkeypatch):
 
 
 def test_explain_error_abstains_when_taxonomy_empty(monkeypatch):
-    """PR-43 review: an empty rule-based taxonomy must abstain even when
-    an LLM is configured and would otherwise return a confident answer."""
+    """An LLM cannot invent a failure mode when rule evidence is empty."""
     import satprep.explanations as ex_mod
 
     monkeypatch.setenv("SAT_EXPLAIN_API_KEY", "k")
@@ -548,9 +506,7 @@ def test_explain_error_abstains_when_taxonomy_empty(monkeypatch):
 
 
 def test_retrieve_pages_taxonomy_normalization():
-    """PR-43 review: granular reasoning tags (e.g. unsupported_inference)
-    must still match KB pages tagged with the broader family name
-    (inference)."""
+    """Granular reasoning tags match broader KB taxonomy families."""
     out = _retrieve_pages(
         {
             "pages": [
@@ -565,8 +521,7 @@ def test_retrieve_pages_taxonomy_normalization():
 
 
 def test_tag_family_groups_granular_labels():
-    """PR-43 review: confirm the family buckets used by retrieval match
-    the KB index vocabulary."""
+    """Retrieval's family buckets match the KB index vocabulary."""
     assert _tag_family("unsupported_inference") == "inference"
     assert _tag_family("UNSUPPORTED_INFERENCE") == "inference"
     assert _tag_family("word_sense_in_context") == "word-in-context"
@@ -578,14 +533,11 @@ def test_tag_family_groups_granular_labels():
 
 
 def test_retrieve_pages_error_mapping_outranks_tag_overlap():
-    """PR-43 review: an error-taxonomy-driven KB hit must rank above a
-    plain tag-overlap page so the model sees the strongest evidence."""
+    """Error-taxonomy evidence outranks plain tag overlap."""
     out = _retrieve_pages(
         {
             "pages": [
-                # tag-only page: tag_overlap=2, no mapping hit
                 {"path": "x/tagonly.md", "tags": ["inference", "evidence", "passage-strategy"]},
-                # mapping-driven page: tag_overlap=1, mapping hit (qualifier_strength)
                 {"path": "kb/wiki/summaries/settele-strong-words.md", "tags": ["inference"]},
             ]
         },
