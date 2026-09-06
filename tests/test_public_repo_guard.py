@@ -15,6 +15,7 @@ def test_private_paths_and_exports_are_rejected():
     assert private_reason(Path("data/satprep.db"))
     assert private_reason(Path("cram_gemini/practice_questions.pdf"))
     assert private_reason(Path("notes/wrong_questions.json"))
+    assert private_reason(Path("notes/satprep.db.gz"))
 
 
 def test_full_question_dump_is_rejected_but_normal_docs_are_not(tmp_path, monkeypatch):
@@ -29,15 +30,22 @@ def test_full_question_dump_is_rejected_but_normal_docs_are_not(tmp_path, monkey
     assert not looks_like_question_dump(safe)
 
 
-def test_native_json_question_record_is_rejected(tmp_path):
-    dump = tmp_path / "corpus.jsonl"
-    dump.write_text(
+def test_native_json_question_records_are_rejected(tmp_path):
+    archive = tmp_path / "corpus.jsonl"
+    archive.write_text(
         '{"stem":"Fabricated?","passage":"Synthetic","choices":['
         '{"letter":"A","text":"one"},{"letter":"B","text":"two"},'
         '{"letter":"C","text":"three"},{"letter":"D","text":"four"}],'
         '"correct_letter":"A","rationale":"Synthetic"}\n'
     )
-    assert looks_like_question_dump(dump)
+    scrape = tmp_path / "renamed.json"
+    scrape.write_text(
+        '{"question_text":"Fabricated?","answer_choices":['
+        '"A. one","B. two","C. three","D. four"],'
+        '"correct_answer":"A","explanation":"Synthetic"}\n'
+    )
+    assert looks_like_question_dump(archive)
+    assert looks_like_question_dump(scrape)
 
 
 def test_scan_errors_fail_closed(tmp_path, monkeypatch):
