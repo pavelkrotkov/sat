@@ -47,5 +47,16 @@
   {% if fb.official_skill %}<p class="muted">{{ fb.official_skill }}</p>{% endif %}
 </div>
 
-<a class="btn wide" href="{{ next_url }}" id="advance">{{ 'See results' if is_last else 'Next question →' }}</a>
+{% if not fb.correct %}
+<form method="post" action="/feedback/{{ sid }}/{{ idx }}" class="stack">
+  <label>What happened?
+    <select name="reason" required>
+      <option value="" selected disabled>Optional self-report</option>
+      {% for reason in self_report_reasons %}<option value="{{ reason }}">{{ reason }}</option>{% endfor %}
+    </select>
+  </label>
+  <button class="btn wide" type="submit">Save & continue</button>
+</form>
+{% endif %}
+<a class="btn wide" href="{{ next_url }}" id="advance">{{ 'See results' if is_last else ('Skip →' if not fb.correct else 'Next question →') }}</a>
 {% endblock %}
