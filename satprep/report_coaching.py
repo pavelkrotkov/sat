@@ -5,7 +5,7 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from .config import REPO_ROOT
-from .report_coaching_stats import build_context
+from .report_coaching_context import build_context
 
 
 def render_report(
