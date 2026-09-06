@@ -218,7 +218,11 @@ def _timing(rows: list[dict]) -> list[dict]:
             "attempts": attempts,
             "wrong": wrong,
             "error_rate": round(100 * wrong / attempts, 1) if attempts else 0.0,
-            "coach": _FAST_RULE if label == _TIME_BUCKETS[0] else _SLOW_RULE if label == _TIME_BUCKETS[3] else "",
+            "coach": _FAST_RULE
+            if label == _TIME_BUCKETS[0]
+            else _SLOW_RULE
+            if label == _TIME_BUCKETS[3]
+            else "",
         }
         for label, (attempts, wrong) in stats.items()
     ]
@@ -251,7 +255,9 @@ def _behaviors(wrong: list[dict], counter: collections.Counter) -> list[dict]:
                 "count": count,
                 "pct": round(100 * count / len(wrong)) if wrong else 0,
                 "rule": _COACHING_RULES[label],
-                "examples": [_example_label(row) for row in wrong if row.get("canonical_error") == label][:3],
+                "examples": [
+                    _example_label(row) for row in wrong if row.get("canonical_error") == label
+                ][:3],
             }
         )
     return result
@@ -303,10 +309,14 @@ def _field_counts(rows: list[dict], key: str, default: str) -> list[tuple[str, i
     return collections.Counter(_value(row, key, default) for row in rows).most_common()
 
 
-def build_context(conn, rows: list[dict], *, after_attempt_id: int, through_attempt_id: int, generated_at: str) -> dict:
+def build_context(
+    conn, rows: list[dict], *, after_attempt_id: int, through_attempt_id: int, generated_at: str
+) -> dict:
     analyzed = _analyze_rows(conn, rows)
     wrong = [row for row in analyzed if not row.get("correct")]
-    canonical = collections.Counter(row.get("canonical_error") for row in wrong if row.get("canonical_error"))
+    canonical = collections.Counter(
+        row.get("canonical_error") for row in wrong if row.get("canonical_error")
+    )
     preventable = sum(row.get("prediction_preventable") == "yes" for row in wrong)
     return {
         "after_attempt_id": after_attempt_id,
@@ -314,7 +324,9 @@ def build_context(conn, rows: list[dict], *, after_attempt_id: int, through_atte
         "generated_display": _display_time(generated_at),
         "attempt_count": len(analyzed),
         "wrong_count": len(wrong),
-        "accuracy": round(100 * (len(analyzed) - len(wrong)) / len(analyzed), 1) if analyzed else 0.0,
+        "accuracy": round(100 * (len(analyzed) - len(wrong)) / len(analyzed), 1)
+        if analyzed
+        else 0.0,
         "preventable": preventable,
         "coaching_rules": _coaching_rules(canonical),
         "behaviors": _behaviors(wrong, canonical),
@@ -322,14 +334,17 @@ def build_context(conn, rows: list[dict], *, after_attempt_id: int, through_atte
         "skills": _field_counts(analyzed, "official_skill", "Unspecified"),
         "modules": _field_counts(analyzed, "module", "Unspecified"),
         "confidence": collections.Counter(
-            str(row.get("confidence")) if row.get("confidence") else "not recorded" for row in analyzed
+            str(row.get("confidence")) if row.get("confidence") else "not recorded"
+            for row in analyzed
         ).most_common(),
         "timing": _timing(analyzed),
         "wrong": [_prepare_wrong(row) for row in wrong],
     }
 
 
-def render_report(conn, rows: list[dict], *, after_attempt_id: int, through_attempt_id: int, generated_at: str) -> str:
+def render_report(
+    conn, rows: list[dict], *, after_attempt_id: int, through_attempt_id: int, generated_at: str
+) -> str:
     env = Environment(
         loader=FileSystemLoader(Path(REPO_ROOT) / "satprep" / "templates"),
         autoescape=select_autoescape(["html"]),

@@ -1,6 +1,6 @@
 """Durable, incremental wrong-answer report generation.
 
-The database owns the scan boundary and completed-run registry. HTML is a
+The database owns the scan boundary and completed-run registry.  HTML is a
 disposable rendering: it is written to a temporary file and renamed before a
 completed run records its name in SQLite.
 """
@@ -27,8 +27,7 @@ from pathlib import Path
 from .clock import utc_now
 from .config import REPO_ROOT
 from .db import connect, db_context
-from .explanations import explain_error
-from .training.sessions import _logical_skeleton
+from .report_coaching import render_report
 
 REPORTS_DIR = REPO_ROOT / "data" / "reports"
 REPORT_LEASE_SECONDS = 15 * 60
@@ -40,85 +39,6 @@ NO_OP = "no_op"
 IN_PROGRESS = "in_progress"
 
 _REPORT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.html$")
-_KILL_WORD = re.compile(
-    r"\b(always|never|only|most|primarily|primary|solely|all|none|must|proves?|causes?|rather than)\b",
-    re.IGNORECASE,
-)
-_TIME_BUCKETS = ("<60 sec", "1:00–1:45", "1:45–2:30", ">2:30")
-_CANONICAL_GROUPS = {
-    "Unsupported addition / over-inference": {
-        "qualifier_strength",
-        "over_inference",
-        "absolute_vs_tentative_language",
-        "unsupported_inference",
-        "quantifier_mismatch",
-        "scope_shift",
-    },
-    "Wrong relationship / direction": {
-        "direction_reversal",
-        "cause_vs_correlation",
-        "wrong_reference_group",
-        "comparison_relationship",
-        "hypothesis_vs_result",
-        "chronology",
-    },
-    "Failed to combine all evidence": {
-        "failed_synthesis",
-        "ignored_finding",
-        "ignored_contrast",
-        "incomplete_indirect_chain",
-        "abstract_relationship_extraction",
-    },
-    "Missed governing constraint / keyword": {
-        "contrast_concession",
-        "logical_connector",
-        "governing_constraint",
-        "keyword",
-    },
-    "Right topic, wrong job / neighboring answer": {
-        "true_but_not_supported",
-        "same_topic_wrong_relationship",
-        "irrelevant_detail",
-        "main_claim_vs_detail",
-        "evidence_relevance",
-        "claim_vs_evidence",
-    },
-    "Literal factual misread": {
-        "literal_misread",
-        "misread_method",
-        "misread_premise",
-        "explicit_contradiction",
-    },
-    "Vocabulary / semantic precision": {
-        "word_sense_in_context",
-        "near_synonym_distinction",
-        "paraphrase_precision",
-        "collocation",
-        "degree_or_intensity",
-    },
-}
-_COACHING_RULES = {
-    "Unsupported addition / over-inference": "Inference = minimum warranted conclusion. Audit every added actor, cause, comparison, and degree.",
-    "Wrong relationship / direction": "Reduce the relationship to arrows before reading choices; preserve which variable does what.",
-    "Failed to combine all evidence": "If the passage gives two findings, the answer must account for both.",
-    "Missed governing constraint / keyword": "Circle the governing word—however, although, despite, together, indirect, rather than—and obey it.",
-    "Right topic, wrong job / neighboring answer": "Ask what job the choice performs, not whether its topic appears in the passage.",
-    "Literal factual misread": "Verify the exact premise or method against the text before inferring anything.",
-    "Vocabulary / semantic precision": "Predict the sentence meaning first, then choose the word with the exact nuance and usage.",
-}
-_DEFAULT_RULES = (
-    "Predict before looking at the choices; do not shop among four answers.",
-    "Audit the strongest word in the final two choices.",
-    "Use the minimum conclusion the text actually warrants.",
-)
-_PREDICTION_YES = {
-    "Unsupported addition / over-inference",
-    "Wrong relationship / direction",
-    "Failed to combine all evidence",
-    "Missed governing constraint / keyword",
-    "Right topic, wrong job / neighboring answer",
-}
-_PREDICTION_NO = {"Literal factual misread", "Vocabulary / semantic precision"}
 
 
 @dataclass(frozen=True)
@@ -156,11 +76,6 @@ def _esc(value) -> str:
     return html.escape("" if value is None else str(value), quote=True)
 
 
-def _value(row: dict, key: str, default=""):
-    value = row.get(key)
-    return default if value in (None, "") else value
-
-
 def _timestamp_after(seconds: int) -> str:
     return (
         (datetime.datetime.now(datetime.UTC) + datetime.timedelta(seconds=seconds))
@@ -186,7 +101,13 @@ def _is_lock_contention(exc: sqlite3.OperationalError) -> bool:
 
 
 def _renew_lease(conn, run_id: int, lease_token: str, lease_seconds: int) -> bool:
-    """Conditionally extend a run's lease; false when the token no longer owns it."""
+    """Conditionally extend a run's lease; false when the token no longer owns it.
+
+    Transient SQLite write-lock contention is retried only while the lease
+    window still has runway. Beyond that the renewal can no longer protect the
+    owner, so the error is raised and the caller marks the lease lost rather
+    than silently dropping it.
+    """
     before = time.monotonic()
     while True:
         conn.rollback()
@@ -215,9 +136,21 @@ def _heartbeat_worker(
     stop: threading.Event,
     lost: threading.Event,
 ) -> None:
-    """Renew a run's lease on a separate connection until told to stop."""
+    """Renew a run's lease on a separate connection until told to stop.
+
+    Runs on its own connection because SQLite connections are not safe to
+    share across threads concurrently. If the lease was lost — another worker
+    reacquired the interval, or renewal failed — signal ``lost`` so the owner
+    refuses to finalize or to clean up artifacts a replacement may now own.
+    Failure is fail-closed: an uncaught connection/renewal error must never
+    kill this thread without setting ``lost``.
+    """
     try:
         hconn = connect(db_path)
+        # A contending writer must not be allowed to eclipse the very lease
+        # this thread is meant to extend: bound sqlite's internal wait, let
+        # the retry loop in _renew_lease absorb short-lived contention, and
+        # surface anything longer as a lost-lease signal.
         hconn.execute(f"PRAGMA busy_timeout={_renewal_busy_ms()}")
     except Exception:
         lost.set()
@@ -289,14 +222,14 @@ def _time_bucket(time_ms) -> str:
     except (TypeError, ValueError):
         seconds = 0
     if seconds <= 0:
-        return ""
+        return "not recorded"
+    if seconds < 30:
+        return "under 30s"
     if seconds < 60:
-        return _TIME_BUCKETS[0]
-    if seconds < 105:
-        return _TIME_BUCKETS[1]
-    if seconds < 150:
-        return _TIME_BUCKETS[2]
-    return _TIME_BUCKETS[3]
+        return "30–59s"
+    if seconds < 120:
+        return "1–2m"
+    return "over 2m"
 
 
 def _paragraphs(value) -> str:
@@ -312,88 +245,6 @@ def _choices(raw) -> list[dict]:
     return choices if isinstance(choices, list) else []
 
 
-def _json_list(raw) -> list[str]:
-    try:
-        values = json.loads(raw or "[]")
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return []
-    return [str(value) for value in values] if isinstance(values, list) else []
-
-
-def _choice_text(choices: list[dict], letter: str) -> str:
-    for choice in choices:
-        if choice.get("letter") == letter:
-            return str(choice.get("text") or "")
-    return ""
-
-
-def _canonical_error(tags: list[str]) -> tuple[str, str]:
-    for label, members in _CANONICAL_GROUPS.items():
-        for tag in tags:
-            if tag in members:
-                return label, tag
-    return "", tags[0] if tags else ""
-
-
-def _prediction_preventable(canonical: str) -> str:
-    if canonical in _PREDICTION_YES:
-        return "yes"
-    if canonical in _PREDICTION_NO:
-        return "no"
-    return "uncertain"
-
-
-def _distractor_bait(explanation) -> str:
-    if explanation.mode == "llm":
-        return explanation.tempting_answer
-    return "The choice reuses passage concepts and looks text-grounded before its relationship is audited."
-
-
-def _kill_phrase(choices: list[dict], chosen_letter: str) -> str:
-    match = _KILL_WORD.search(_choice_text(choices, chosen_letter))
-    return match.group(0) if match else ""
-
-
-def _analyze_rows(conn, rows: list[dict]) -> list[dict]:
-    analyzed = []
-    for row in rows:
-        item = dict(row)
-        if item.get("correct"):
-            analyzed.append(item)
-            continue
-        choices = _choices(item.get("choices_json"))
-        explanation = explain_error(
-            question_id=item["question_id"],
-            passage=_value(item, "passage"),
-            stem=_value(item, "stem"),
-            choices=choices,
-            student_letter=_value(item, "chosen_letter"),
-            correct_letter=_value(item, "correct_letter"),
-            rationale=_value(item, "rationale"),
-            question_fingerprint=_value(item, "fingerprint"),
-            conn=conn,
-        )
-        tags = _json_list(item.get("error_tags"))
-        if not tags:
-            tags = list(explanation.error_taxonomy)
-        canonical, subtype = _canonical_error(tags)
-        item.update(
-            canonical_error=canonical,
-            error_subtype=subtype,
-            dumb_summary=_logical_skeleton(_value(item, "passage"))[:2],
-            prediction=explanation.correct_reasoning,
-            distractor_bait=_distractor_bait(explanation),
-            fatal_defect=explanation.exact_failure,
-            kill_phrase=_kill_phrase(choices, _value(item, "chosen_letter")),
-            reusable_rule=_COACHING_RULES.get(
-                canonical, "Explain the exact defect in the chosen answer before moving on."
-            ),
-            prediction_preventable=_prediction_preventable(canonical),
-        )
-        analyzed.append(item)
-    return analyzed
-
-
 def _counter_rows(counter: collections.Counter) -> str:
     if not counter:
         return '<tr><td colspan="2">—</td></tr>'
@@ -403,95 +254,16 @@ def _counter_rows(counter: collections.Counter) -> str:
     )
 
 
-def _field_counter(rows: list[dict], key: str, default: str) -> collections.Counter:
-    return collections.Counter(_value(row, key, default) for row in rows)
-
-
-def _canonical_counts(wrong: list[dict]) -> collections.Counter:
-    counter = collections.Counter()
-    for row in wrong:
-        label = row.get("canonical_error")
-        if label:
-            counter[label] += 1
-    return counter
-
-
-def _coaching_rules(counter: collections.Counter) -> list[str]:
-    rules = [_COACHING_RULES[label] for label, _ in counter.most_common(5)]
-    for rule in _DEFAULT_RULES:
-        if rule not in rules:
-            rules.append(rule)
-        if len(rules) >= 3:
-            break
-    return rules[:5]
-
-
-def _example_label(row: dict) -> str:
-    source = str(_value(row, "source_test"))
-    number = str(_value(row, "source_question_number"))
-    label = " ".join(part for part in (source, number) if part)
-    return label or str(_value(row, "official_skill", "question"))
-
-
-def _behavior_html(wrong: list[dict], counter: collections.Counter) -> str:
-    blocks = []
-    for label, count in counter.most_common(3):
-        examples = [_example_label(row) for row in wrong if row.get("canonical_error") == label][:3]
-        pct = round(100 * count / len(wrong)) if wrong else 0
-        blocks.append(
-            f'<div class="callout"><h3>{_esc(label)} — {count} miss{"es" if count != 1 else ""} ({pct}%)</h3>'
-            f'<p>{_esc(_COACHING_RULES[label])}</p><p class="muted">Examples: {_esc(", ".join(examples))}</p></div>'
-        )
-    return (
-        "".join(blocks)
-        or '<div class="callout">No recurring mechanism had enough evidence to classify safely.</div>'
-    )
-
-
-def _timing_rows(rows: list[dict]) -> str:
-    stats = {label: [0, 0] for label in _TIME_BUCKETS}
-    for row in rows:
-        label = _time_bucket(row.get("time_ms"))
-        if label:
-            stats[label][0] += 1
-            stats[label][1] += int(not row.get("correct"))
-    return "".join(_timing_row(label, *stats[label]) for label in _TIME_BUCKETS)
-
-
-def _timing_row(label: str, attempts: int, wrong: int) -> str:
-    rate = round(100 * wrong / attempts, 1) if attempts else 0.0
-    return f'<tr><td>{_esc(label)}</td><td class="num">{attempts}</td><td class="num">{wrong}</td><td class="num">{rate}%</td></tr>'
-
-
-def _summary_html(row: dict) -> str:
-    items = row.get("dumb_summary") or []
-    return "".join(f"<li>{_esc(item)}</li>" for item in items) or "<li>—</li>"
-
-
-def _miss_meta(row: dict) -> str:
-    parts = [
-        _esc(_value(row, "official_domain", "Unspecified domain")),
-        f"time <b>{_time_label(row.get('time_ms'))}</b>",
-        f"confidence {int(row.get('confidence') or 0)}",
-    ]
-    reason = row.get("self_report_reason")
-    if reason:
-        parts.append(f"self-report <b>{_esc(reason)}</b>")
-    if int(row.get("confidence") or 0) >= 3:
-        parts.append("<b>high-value confident miss</b>")
-    return " · ".join(parts)
-
-
 def _render_wrong(row: dict) -> str:
     choices = []
     for choice in _choices(row.get("choices_json")):
         letter = str(choice.get("letter", ""))
         classes = ""
         label = ""
-        if letter == _value(row, "chosen_letter"):
+        if letter == (row.get("chosen_letter") or ""):
             classes = " wrong"
             label = '<span class="pill wrong">your answer</span>'
-        if letter == _value(row, "correct_letter"):
+        if letter == (row.get("correct_letter") or ""):
             classes += " right"
             label += '<span class="pill right">correct</span>'
         choices.append(
@@ -499,78 +271,49 @@ def _render_wrong(row: dict) -> str:
             f"{_esc(choice.get('text', ''))} {label}</div>"
         )
     choices_html = "".join(choices) or "<p>Choices unavailable.</p>"
-    canonical = _value(row, "canonical_error", "Unclassified — insufficient evidence")
-    subtype = _value(row, "error_subtype", "—")
-    kill = row.get("kill_phrase")
-    kill_html = f"<p><b>Kill word / phrase:</b> <mark>{_esc(kill)}</mark></p>" if kill else ""
     return f"""
 <article class="question">
-  <header><b>{_esc(_value(row, "official_skill", "Unspecified skill"))}</b>
-    <span>{_esc(_example_label(row))} · {_display_time(row.get("attempted_at"))}</span></header>
-  <div class="metrics">{_miss_meta(row)}</div>
+  <header><b>{_esc(row.get("official_skill") or "Unspecified skill")}</b>
+    <span>{_esc(row.get("source_test"))} {_esc(row.get("source_question_number"))} ·
+      {_display_time(row.get("attempted_at"))}</span></header>
+  <div class="metrics">{_esc(row.get("official_domain") or "Unspecified domain")} ·
+    time <b>{_time_label(row.get("time_ms"))}</b> · confidence {int(row.get("confidence") or 0)}</div>
   <div class="cols">
     <section><h4>Passage</h4>{_paragraphs(row.get("passage"))}</section>
     <section><h4>Question</h4><p class="stem">{_esc(row.get("stem"))}</p>
       <h4>Choices</h4>{choices_html}</section>
   </div>
-  <div class="diagnosis">
-    <div class="coach-grid">
-      <section><h4>Dumb summary</h4><ul>{_summary_html(row)}</ul></section>
-      <section><h4>Prediction before choices</h4><p>{_esc(row.get("prediction"))}</p></section>
-      <section><h4>Canonical error</h4><p><b>{_esc(canonical)}</b><br><span class="muted">subtype: {_esc(subtype)}</span></p></section>
-      <section><h4>Distractor bait</h4><p>{_esc(row.get("distractor_bait"))}</p></section>
-      <section><h4>Fatal defect</h4><p>{_esc(row.get("fatal_defect"))}</p>{kill_html}</section>
-      <section><h4>Next-time rule</h4><p><b>{_esc(row.get("reusable_rule"))}</b></p>
-        <p class="muted">Prediction-preventable: {_esc(row.get("prediction_preventable"))}</p></section>
-    </div>
-    <details><summary>Show official College Board rationale</summary>{_paragraphs(row.get("rationale"))}</details>
+  <div class="diagnosis"><h4>Review prompt</h4>
+    <p>Compare the evidence, scope, and direction of your choice with the correct
+    answer before reading the official rationale.</p>
+    <h4>Official rationale</h4>{_paragraphs(row.get("rationale"))}
   </div>
 </article>"""
-
-
-def _report_parts(rows: list[dict]) -> tuple[list[dict], collections.Counter]:
-    wrong = []
-    confidence = collections.Counter()
-    for row in rows:
-        confidence[str(row.get("confidence") or "not recorded")] += 1
-        if not row.get("correct"):
-            wrong.append(row)
-    return wrong, confidence
-
-
-def _cards_html(wrong: list[dict]) -> str:
-    cards = "".join(map(_render_wrong, wrong))
-    return (
-        cards
-        or '<div class="callout">No mistakes in this interval. The eligible attempts still count in the trend tables above.</div>'
-    )
-
-
-def _rules_html(counter: collections.Counter) -> str:
-    return "".join(f"<li><b>{_esc(rule)}</b></li>" for rule in _coaching_rules(counter))
 
 
 def _render_report(
     rows: list[dict], *, after_attempt_id: int, through_attempt_id: int, generated_at: str
 ) -> str:
-    wrong, confidence = _report_parts(rows)
-    canonical = _canonical_counts(wrong)
-    domains = _field_counter(rows, "official_domain", "Unspecified")
-    skills = _field_counter(rows, "official_skill", "Unspecified")
-    modules = _field_counter(rows, "module", "Unspecified")
+    wrong = [row for row in rows if not row.get("correct")]
+    domains = collections.Counter(row.get("official_domain") or "Unspecified" for row in rows)
+    skills = collections.Counter(row.get("official_skill") or "Unspecified" for row in rows)
+    modules = collections.Counter(row.get("module") or "Unspecified" for row in rows)
+    timing = collections.Counter(_time_bucket(row.get("time_ms")) for row in rows)
+    confidence = collections.Counter(
+        str(row.get("confidence") or 0) if row.get("confidence") else "not recorded" for row in rows
+    )
     accuracy = round(100 * (len(rows) - len(wrong)) / len(rows), 1) if rows else 0.0
-    preventable = sum(row.get("prediction_preventable") == "yes" for row in wrong)
-    cards = _cards_html(wrong)
-    rules = _rules_html(canonical)
-    behaviors = _behavior_html(wrong, canonical)
+    cards = "".join(_render_wrong(row) for row in wrong)
+    if not cards:
+        cards = '<div class="callout">No mistakes in this interval. The eligible attempts still count in the trend tables above.</div>'
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SAT Wrong-Answer Review</title><style>
 :root{{--ink:#182231;--mut:#5b6676;--line:#e3e7ed;--paper:#fafbfc;--card:#fff;--brand:#2f5b8f;--wrong:#a93226;--right:#197347;--code:#f2f5f8}}
 *{{box-sizing:border-box}} body{{margin:0;background:var(--paper);color:var(--ink);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}
 .wrap{{max-width:1080px;margin:auto;padding:0 20px 64px}} .hero{{background:linear-gradient(135deg,#1f3a5c,#2f5b8f);color:white;padding:32px 0;margin-bottom:22px}}
-h1{{margin:0 0 5px;font-size:28px}} h2{{margin:34px 0 10px;border-bottom:2px solid var(--brand);padding-bottom:5px;font-size:21px}} h3{{margin:0 0 5px;font-size:17px}}
-h4{{margin:0 0 6px;color:var(--mut);font-size:12px;letter-spacing:.05em;text-transform:uppercase}} .muted{{color:var(--mut)}}
+h1{{margin:0 0 5px;font-size:28px}} h2{{margin:34px 0 10px;border-bottom:2px solid var(--brand);padding-bottom:5px;font-size:21px}}
+h4{{margin:0 0 6px;color:var(--mut);font-size:12px;letter-spacing:.05em;text-transform:uppercase}}
 .sub{{opacity:.94}} .grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}} @media(max-width:760px){{.grid{{grid-template-columns:1fr}}}}
 .stat,table,.question,.callout{{background:var(--card);border:1px solid var(--line);border-radius:10px}}
 .stat{{padding:12px 14px}} .stat .label{{color:var(--mut);font-size:12px;text-transform:uppercase}} .stat .value{{font-size:25px;font-weight:700}}
@@ -580,21 +323,17 @@ table{{width:100%;border-collapse:collapse;overflow:hidden}} th,td{{padding:8px 
 .cols section{{padding:14px 15px}} .cols section+section{{border-left:1px solid var(--line)}} @media(max-width:800px){{.cols section+section{{border-left:0;border-top:1px solid var(--line)}}}}
 .stem{{font-weight:600}} .choice{{padding:7px 9px;border:1px solid var(--line);border-radius:7px;margin:6px 0}} .choice.wrong{{background:#fdecea;border-color:#efb5ac}} .choice.right{{background:#e6f5ed;border-color:#a9dcc2}}
 .pill{{display:inline-block;border-radius:20px;padding:1px 7px;margin-left:5px;font-size:11px;font-weight:600}} .pill.wrong{{color:var(--wrong);background:#fdecea}} .pill.right{{color:var(--right);background:#e6f5ed}}
-.diagnosis{{background:var(--code);border-top:1px solid var(--line);padding:14px 15px}} .coach-grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}} @media(max-width:760px){{.coach-grid{{grid-template-columns:1fr}}}}
-.coach-grid section{{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:11px}} .coach-grid p,.coach-grid ul{{margin:0}} details{{margin-top:12px}} summary{{cursor:pointer;font-weight:600}} mark{{padding:1px 4px}} .callout{{padding:13px 15px;margin:12px 0}} footer{{color:var(--mut);font-size:12px;border-top:1px solid var(--line);padding-top:12px}}
+.diagnosis{{background:var(--code);border-top:1px solid var(--line);padding:14px 15px}} .diagnosis p{{margin:0 0 10px}} .callout{{padding:13px 15px;margin:12px 0}} footer{{color:var(--mut);font-size:12px;border-top:1px solid var(--line);padding-top:12px}}
 </style></head><body><div class="hero"><div class="wrap"><div>satprep · periodic review</div>
 <h1>Wrong-Answer Review</h1><div class="sub">Eligible attempts {after_attempt_id + 1}–{through_attempt_id}; generated {_esc(_display_time(generated_at))}.</div></div></div>
 <main class="wrap"><h2>At a glance</h2><div class="grid">
 <div class="stat"><div class="label">Eligible attempts</div><div class="value">{len(rows)}</div></div>
 <div class="stat"><div class="label">Wrong answers</div><div class="value">{len(wrong)}</div></div>
 <div class="stat"><div class="label">Accuracy</div><div class="value">{accuracy}%</div></div></div>
-<div class="callout"><b>Prediction-preventable:</b> {preventable}/{len(wrong)} misses. If this is large, stop shopping among choices and build the answer first.</div>
-<h2>Current coaching rules</h2><ol>{rules}</ol>
-<h2>What is actually costing points</h2>{behaviors}
 <h2>All eligible attempts</h2><div class="grid"><div><h4>By domain</h4><table><tr><th>Domain</th><th>#</th></tr>{_counter_rows(domains)}</table></div>
 <div><h4>By skill</h4><table><tr><th>Skill</th><th>#</th></tr>{_counter_rows(skills)}</table></div>
 <div><h4>By module</h4><table><tr><th>Module</th><th>#</th></tr>{_counter_rows(modules)}</table></div></div>
-<div class="grid" style="margin-top:12px"><div><h4>Timing</h4><table><tr><th>Timing</th><th>Attempts</th><th>Wrong</th><th>Error rate</th></tr>{_timing_rows(rows)}</table></div>
+<div class="grid" style="margin-top:12px"><div><h4>Timing</h4><table><tr><th>Bucket</th><th>#</th></tr>{_counter_rows(timing)}</table></div>
 <div><h4>Confidence</h4><table><tr><th>Level</th><th>#</th></tr>{_counter_rows(confidence)}</table></div><div></div></div>
 <h2>Question-by-question review</h2>{cards}</main><footer class="wrap">The database is authoritative; this HTML is a disposable rendering. The strategy framework is instructor guidance, not College Board policy.</footer></body></html>"""
 
@@ -615,7 +354,13 @@ def _report_path(name: str, reports_dir: Path) -> Path:
 
 
 def _abort_if_lost(abort_event: threading.Event | None) -> None:
-    """Raise if the owning lease was lost, so generation stops promptly."""
+    """Raise if the owning lease was lost, so generation stops promptly.
+
+    The heartbeat signals ``abort_event`` the moment renewal fails or the
+    token no longer owns the run. A generator must not keep doing or
+    publishing work it no longer owns: a reaper may have already handed the
+    same interval to a replacement, and continuing would overlap it.
+    """
     if abort_event is not None and abort_event.is_set():
         raise RuntimeError("report generation aborted: lease lost")
 
@@ -638,11 +383,11 @@ def _atomic_write(path: Path, content: str) -> None:
 def _eligible_rows(conn, after_attempt_id: int, through_attempt_id: int) -> list[dict]:
     rows = conn.execute(
         """SELECT a.id AS attempt_id, a.question_id, a.chosen_letter, a.correct,
-                  a.confidence, a.time_ms, a.mode, a.attempted_at, a.error_tags,
-                  a.self_report_reason, q.fingerprint, q.source_test,
-                  q.source_question_number, q.module, q.passage, q.stem,
-                  q.choices_json, q.correct_letter, q.rationale,
-                  q.official_domain, q.official_skill, q.difficulty
+        a.confidence, a.time_ms, a.mode, a.attempted_at, a.error_tags,
+        a.self_report_reason, q.fingerprint, q.source_test,
+        q.source_question_number, q.module, q.passage, q.stem,
+        q.choices_json, q.correct_letter, q.rationale,
+        q.official_domain, q.official_skill, q.difficulty
            FROM attempts a JOIN questions q ON q.id=a.question_id
            WHERE a.id > ? AND a.id <= ?
              AND COALESCE(a.mode, '') != 'historical'
@@ -661,7 +406,15 @@ def generate_error_report(
     reports_dir: Path | None = None,
     abort_event: threading.Event | None = None,
 ) -> ReportGenerationResult:
-    """Generate one fixed attempt interval without changing database state."""
+    """Generate one fixed attempt interval without changing database state.
+
+    The caller owns the report-run lease and commits the returned outcome.  No
+    query here can see attempts beyond ``through_attempt_id``.
+
+    ``abort_event`` is the owning lease's lost-signal: if it is set the caller
+    no longer holds the lease and this generator must raise before doing or
+    publishing work a replacement may now own.
+    """
     after_attempt_id = int(after_attempt_id)
     through_attempt_id = int(through_attempt_id)
     if after_attempt_id < 0 or through_attempt_id < after_attempt_id:
@@ -694,7 +447,6 @@ def generate_error_report(
             generated_at=utc_now(),
             message=message,
         )
-    rows = _analyze_rows(conn, rows)
     generated_at = utc_now()
     name = out_name or _default_report_name(uuid.uuid4().hex[:8])
     reports_dir = Path(reports_dir or REPORTS_DIR)
@@ -703,10 +455,13 @@ def generate_error_report(
     ).fetchone():
         raise ValueError("report name is already registered")
     path = _report_path(name, reports_dir)
+    # Do not publish an artifact once the lease is lost: a replacement may now
+    # own this interval and (in the reaped case) has already been re-acquired.
     _abort_if_lost(abort_event)
     _atomic_write(
         path,
-        _render_report(
+        render_report(
+            conn,
             rows,
             after_attempt_id=after_attempt_id,
             through_attempt_id=through_attempt_id,
@@ -742,6 +497,9 @@ def _error_text(exc: Exception) -> str:
 
 
 def _acquire_generation(conn, lease_seconds: int) -> dict | ReportGenerationResult:
+    # The renewal cadence is max(1.0, lease_seconds/3.0), so a lease must be
+    # large enough that the cadence lands strictly below it; otherwise a live
+    # generator could be reaped as stale before its first renewal lands.
     if lease_seconds < 2:
         raise ValueError(
             "lease_seconds must be at least 2s so the renewal cadence stays strictly below it"
@@ -889,10 +647,15 @@ def run_report_generation(
         return acquired
     heartbeat = None
     if acquired["eligible_attempt_count"]:
+        # Renew the lease in the background while the expensive analysis and
+        # report rendering run, so a live generator that outlives the nominal
+        # TTL is never mistaken for a crashed one and re-acquired.
         heartbeat = _start_heartbeat(conn, acquired, lease_seconds)
     result: ReportGenerationResult | None = None
     try:
         if acquired["eligible_attempt_count"]:
+            # Include the run id in the default filename so same-second
+            # requests cannot overwrite a previous rendering.
             name = out_name or _default_report_name(acquired["run_id"])
             result = generate_error_report(
                 conn,
@@ -916,7 +679,7 @@ def run_report_generation(
             )
         result = replace(result, run_id=acquired["run_id"])
         if heartbeat is not None:
-            heartbeat[1].set()
+            heartbeat[1].set()  # stop renewal
             heartbeat[0].join(max(1.0, int(lease_seconds / 3.0)))
             if heartbeat[2].is_set():
                 raise RuntimeError("report generation lease was lost before commit")
@@ -924,6 +687,9 @@ def run_report_generation(
             raise RuntimeError("report generation lease was lost before commit")
         return result
     except Exception as exc:
+        # If the lease was lost, a replacement may now own this interval and
+        # reuse this exact out_name: refuse both finalization and the stale
+        # artifact cleanup so we never race a live replacement.
         lost_lease = heartbeat is not None and heartbeat[2].is_set()
         if result and result.report_path and not lost_lease:
             with contextlib.suppress(OSError):
@@ -1041,6 +807,9 @@ def build_report(
 def cli_main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Generate an incremental SAT wrong-answer report")
     parser.add_argument("--out", help="output filename under data/reports/")
+    # Retain the old switches so existing scripts fail neither at parse time
+    # nor by creating a filesystem checkpoint. The database watermark is now
+    # authoritative, so these options intentionally do not alter the scan.
     parser.add_argument("--days", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--since", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
