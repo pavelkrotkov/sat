@@ -1,4 +1,5 @@
 import json
+import threading
 from types import SimpleNamespace
 
 from conftest import add_question
@@ -109,3 +110,61 @@ def test_wrong_answer_reason_is_saved_after_feedback(db):
 
     assert response.status_code == 303
     assert saved == "misread text"
+
+
+def test_benchmark_self_report_post_never_reveals_verdict(db):
+    conn, _ = db
+    wrong_qid = add_question(conn, source="custom_generated", pool="fresh_training", correct="B")
+    correct_qid = add_question(conn, source="custom_generated", pool="fresh_training", correct="B")
+    conn.execute(
+        """INSERT INTO sessions (id, mode, created_at, seed, algo_version, plan_json, status)
+           VALUES ('benchmark57', 'fresh_benchmark', '2026-09-06', 's', 'v', ?, 'open')""",
+        (json.dumps([{"question_id": wrong_qid}, {"question_id": correct_qid}]),),
+    )
+    _attempt(conn, wrong_qid, correct=False, time_ms=50_000)
+    _attempt(conn, correct_qid, correct=True, time_ms=60_000)
+    conn.execute(
+        "UPDATE attempts SET session_id='benchmark57' WHERE question_id IN (?, ?)",
+        (wrong_qid, correct_qid),
+    )
+    conn.commit()
+
+    wrong = server_mod.feedback_reason("benchmark57", 0, "misread text", conn=conn)
+    correct = server_mod.feedback_reason("benchmark57", 1, "misread text", conn=conn)
+    saved = conn.execute(
+        "SELECT self_report_reason FROM attempts WHERE session_id='benchmark57' ORDER BY id"
+    ).fetchall()
+
+    assert wrong.status_code == correct.status_code == 303
+    assert wrong.headers["location"] == "/question/benchmark57/1"
+    assert correct.headers["location"] == "/question/benchmark57/2"
+    assert [row[0] for row in saved] == ["", ""]
+
+
+def test_report_rechecks_lease_after_render_before_publish(db, monkeypatch, tmp_path):
+    conn, _ = db
+    qid = add_question(conn, source="custom_generated", pool="fresh_training", correct="B")
+    through = _attempt(conn, qid, correct=False, time_ms=50_000, tags=("over_inference",))
+    conn.commit()
+    lost = threading.Event()
+
+    def render_and_lose_lease(*args, **kwargs):
+        lost.set()
+        return "stale report"
+
+    monkeypatch.setattr(reports_mod, "render_report", render_and_lose_lease)
+    try:
+        reports_mod.generate_error_report(
+            conn,
+            after_attempt_id=0,
+            through_attempt_id=through,
+            out_name="lease-loss.html",
+            reports_dir=tmp_path,
+            abort_event=lost,
+        )
+    except RuntimeError as exc:
+        assert "lease lost" in str(exc)
+    else:
+        raise AssertionError("lost lease should abort report publication")
+
+    assert not (tmp_path / "lease-loss.html").exists()
