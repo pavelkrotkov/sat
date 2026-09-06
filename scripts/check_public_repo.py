@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Fail when tracked files cross the repository's public/private data boundary."""
 from __future__ import annotations
-import pathlib, re, subprocess, sys
+
+import pathlib
+import re
+import subprocess
+import sys
 
 PRIVATE_PREFIXES = ("data/", "imports/", "outputs/", "artifacts/", "exports/", "backups/", "cram_claude/", "cram_gemini/", "kb/", "playwright_profile/")
 PRIVATE_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".pdf", ".xlsx", ".csv"}
@@ -12,7 +16,10 @@ JSON_CHOICE = re.compile(r'"letter"\s*:\s*"([A-D])"')
 ANSWER_MARKERS = ("correct answer", "answer key", '"correct_answer"', '"correct_letter"')
 QUESTION_MARKERS = ("passage", "stimulus", "rationale", "explanation")
 
-class ScanError(RuntimeError): pass
+
+class ScanError(RuntimeError):
+    pass
+
 
 def tracked_files() -> list[pathlib.Path]:
     try:
@@ -21,6 +28,7 @@ def tracked_files() -> list[pathlib.Path]:
     except (OSError, subprocess.SubprocessError, UnicodeError) as error:
         raise ScanError(f"cannot enumerate tracked files: {error}") from error
     return [pathlib.Path(name) for name in names if name]
+
 
 def private_reason(path: pathlib.Path) -> str | None:
     name, suffix = path.as_posix(), path.suffix.lower()
@@ -32,15 +40,19 @@ def private_reason(path: pathlib.Path) -> str | None:
     )
     return next((reason for blocked, reason in rules if blocked), None)
 
+
 def _has(lower: str, markers: tuple[str, ...]) -> bool:
     return any(marker in lower for marker in markers)
+
 
 def _rendered_shape(lower: str) -> bool:
     return "question" in lower and _has(lower, QUESTION_MARKERS)
 
+
 def _structured_shape(lower: str) -> bool:
     quoted = tuple(f'"{marker}"' for marker in QUESTION_MARKERS)
     return '"choices"' in lower and '"stem"' in lower and _has(lower, quoted)
+
 
 def looks_like_question_dump(path: pathlib.Path) -> bool:
     if path.suffix.lower() not in TEXT_SUFFIXES or not path.is_file():
@@ -54,6 +66,7 @@ def looks_like_question_dump(path: pathlib.Path) -> bool:
     shape = _rendered_shape(lower) or _structured_shape(lower)
     return choices == set("ABCD") and _has(lower, ANSWER_MARKERS) and shape
 
+
 def violations(paths: list[pathlib.Path]) -> list[str]:
     found = []
     for path in paths:
@@ -63,6 +76,7 @@ def violations(paths: list[pathlib.Path]) -> list[str]:
         elif looks_like_question_dump(path):
             found.append(f"{path}: looks like a full question record/dump")
     return found
+
 
 def main() -> int:
     try:
@@ -77,4 +91,6 @@ def main() -> int:
     print("Public repository leak guard passed.")
     return 0
 
-if __name__ == "__main__": raise SystemExit(main())
+
+if __name__ == "__main__":
+    raise SystemExit(main())
