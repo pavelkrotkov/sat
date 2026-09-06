@@ -22,7 +22,7 @@ SUBSTITUTED = {"__USER__", "__DIR__", "__UV__", "__HOST__", "__PORT__"}
 
 
 def test_the_expected_assets_are_present():
-    assert {p.name for p in SCRIPTS} == {"backup.sh", "install.sh", "sync-to-hermes.sh"}
+    assert {p.name for p in SCRIPTS} == {"backup.sh", "install.sh", "sync-to-server.sh"}
     assert {p.name for p in UNITS} == {
         "satprep.service",
         "satprep-backup.service",
@@ -38,9 +38,6 @@ def test_scripts_parse(script):
 @pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
 def test_scripts_are_executable_and_fail_loudly(script):
     assert script.stat().st_mode & 0o111, f"{script.name} is not executable"
-    # Without -e a failed rsync or sqlite3 call is followed by the next step
-    # anyway, which is how a backup script reports success having written
-    # nothing.
     assert "set -euo pipefail" in script.read_text()
 
 
@@ -81,7 +78,6 @@ def test_backup_refuses_to_rotate_an_empty_database():
     body = (DEPLOY / "backup.sh").read_text()
     assert "COUNT(*) FROM attempts" in body
     assert "refusing to rotate backups" in body
-    # cp of a live WAL database can capture a torn page.
     assert ".backup" in body and "integrity_check" in body
 
 
@@ -93,28 +89,30 @@ def _code(path):
 
 
 def test_sync_never_sends_the_database():
-    """hermes owns data/satprep.db. Restore does not carry attempt state, so a
-    copy landing on the far side would be an unmergeable second history."""
-    body = _code(DEPLOY / "sync-to-hermes.sh")
+    """The serving box owns data/satprep.db; copying another writable history
+    to it would create state that the application cannot merge."""
+    body = _code(DEPLOY / "sync-to-server.sh")
     assert "satprep.db" not in body
     assert "satprep ingest" in body, "ingest must run on the far side"
 
 
-# ------------------------------------------- invariants review turned up --
+def test_sync_requires_the_actual_server_host():
+    body = _code(DEPLOY / "sync-to-server.sh")
+    assert "${SATPREP_HOST:?" in body
+    assert "satprep.local" not in body
 
 
 def test_sync_does_not_restart_the_service():
     """server.py takes one connection per request, so a new corpus is visible
-    on the next page load. A restart would need passwordless sudo over a
-    TTY-less ssh, which the runbook never provisions."""
-    body = _code(DEPLOY / "sync-to-hermes.sh")
+    on the next page load without a privileged remote restart."""
+    body = _code(DEPLOY / "sync-to-server.sh")
     assert "systemctl restart" not in body
 
 
 def test_remote_commands_run_through_a_login_shell():
     """uv installs to ~/.local/bin, and a non-interactive ssh command gets the
     system PATH only - Debian's .bashrc returns before the line adding it."""
-    body = _code(DEPLOY / "sync-to-hermes.sh")
+    body = _code(DEPLOY / "sync-to-server.sh")
     assert "bash -lc" in body
 
 
@@ -141,22 +139,21 @@ def test_service_gives_uv_a_writable_cache():
     unit = (DEPLOY / "satprep.service").read_text()
     assert "--no-sync" in unit
     assert "CacheDirectory=" in unit and "UV_CACHE_DIR=" in unit
-    # ...so install.sh has to build the environment while it still can.
     assert "uv sync --frozen" in _code(DEPLOY / "install.sh")
 
 
 def test_retention_survives_a_missing_corpus_snapshot():
     """The corpus export is explicitly optional. A glob matching nothing makes
-    `ls` exit non-zero, and under pipefail that would fail the run after a good
-    database snapshot had already been written."""
+    `ls` exit non-zero, and under pipefail that would fail after a good database
+    snapshot had already been written."""
     body = _code(DEPLOY / "backup.sh")
     assert "find " in body
     assert 'ls -1t "$DEST"' not in body
 
 
 def test_restore_clears_the_wal_sidecars():
-    """A -wal newer than the snapshot replays onto it, resurrecting the very
-    attempts the restore was meant to discard."""
+    """A -wal newer than the snapshot replays onto it, resurrecting attempts
+    the restore was meant to discard."""
     runbook = (DEPLOY / "README.md").read_text()
     assert "satprep.db-wal" in runbook and "satprep.db-shm" in runbook
 
@@ -165,17 +162,13 @@ def test_seed_transfer_keeps_each_path_in_its_own_directory():
     """Several rsync sources with one destination flatten into it, leaving the
     database where nothing looks for it."""
     runbook = (DEPLOY / "README.md").read_text()
-    assert "hermes.local:dev/sat/data/" in runbook
-    assert "hermes.local:dev/sat/outputs/" in runbook
-
-
-# ------------------------------------------- invariants review turned up --
+    assert '"$SATPREP_HOST:dev/sat/data/"' in runbook
+    assert '"$SATPREP_HOST:dev/sat/outputs/"' in runbook
 
 
 def test_backup_unit_carries_an_absolute_uv_path():
     """systemd gives no login shell, so ~/.local/bin is off PATH and a bare
-    `command -v uv` is false on every scheduled run - skipping the corpus
-    snapshot silently, which is the worst way for a backup to fail."""
+    `command -v uv` can silently skip the corpus snapshot."""
     assert "Environment=SATPREP_UV=__UV__" in (DEPLOY / "satprep-backup.service").read_text()
     body = _code(DEPLOY / "backup.sh")
     assert "SATPREP_UV" in body
@@ -183,9 +176,8 @@ def test_backup_unit_carries_an_absolute_uv_path():
 
 
 def test_avahi_is_enabled_unconditionally():
-    """Enablement and activity are independent: guarding on is-enabled skips a
-    stopped daemon, guarding on is-active skips a running-but-disabled one that
-    disappears at the next reboot. `enable --now` is idempotent."""
+    """Enablement and activity are independent; `enable --now` is idempotent
+    and covers both states."""
     body = _code(DEPLOY / "install.sh")
     assert "systemctl enable --now avahi-daemon" in body
     assert "is-active --quiet avahi" not in body
@@ -193,25 +185,23 @@ def test_avahi_is_enabled_unconditionally():
 
 
 def test_installer_chowns_seeded_state():
-    """install -d touches directories only. A database seeded by the login
-    user stays theirs, and the service account opens it read-only - which
-    surfaces mid-drill as a SQLite write error, not at startup."""
+    """install -d touches directories only; seeded files must be writable by
+    the service account too."""
     body = _code(DEPLOY / "install.sh")
     assert 'chown -R "$RUN_AS:$GROUP"' in body
 
 
 def test_offbox_recovery_set_includes_the_figures():
-    """The archive stores images as path references, so a restore from
-    backups/ alone leaves every figure question pointing at nothing."""
+    """The archive stores images as path references, so backups need the
+    figures as well as the database."""
     runbook = (DEPLOY / "README.md").read_text()
     assert "artifacts/images/" in runbook.split("## Backups", 1)[1]
 
 
 def test_remote_paths_are_not_expanded_by_the_local_shell():
-    """$HOME in an rsync or ssh target expands here and points at this
-    machine's filesystem - /Users/pavel sent to a Linux box. rsync and ssh
-    both resolve a relative remote path against the remote home."""
-    for path in [DEPLOY / "sync-to-hermes.sh", DEPLOY / "README.md"]:
+    """$HOME in an rsync or ssh target expands locally (for example to
+    /Users/example) instead of on the remote host."""
+    for path in [DEPLOY / "sync-to-server.sh", DEPLOY / "README.md"]:
         for line in _code(path).splitlines():
-            if "hermes.local:" in line or "$TARGET" in line:
+            if "$SATPREP_HOST:" in line or "$TARGET" in line:
                 assert "$HOME" not in line, f"{path.name}: {line.strip()}"
