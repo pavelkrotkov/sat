@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Fail when tracked files cross the repository's public/private data boundary."""
+
 from __future__ import annotations
 
 import pathlib
@@ -21,12 +22,10 @@ TEXT = {".md", ".txt", ".json", ".jsonl", ".html"}
 # Both rendered A-D choices and the application's native JSON choice shape are recognized.
 # Ordinary SAT/College Board documentation therefore remains a safe false-positive boundary.
 # The same record-shape rule is shared by local pre-commit and CI.
-CHOICE = re.compile(
-    r'(?m)(?:^\s*(?:[-*]\s*)?|"letter"\s*:\s*")([A-D])(?:[.)\]:]\s+\S|")'
-)
+CHOICE = re.compile(r'(?m)(?:^\s*(?:[-*]\s*)?|"letter"\s*:\s*")([A-D])(?:[.)\]:]\s+\S|")')
 ANSWER = re.compile(r'correct answer|answer key|"correct_(?:answer|letter)"', re.IGNORECASE)
 SHAPE = re.compile(
-    r'(?is)(?:(?=.*\bquestion\b)(?=.*(?:passage|stimulus|rationale|explanation))|'
+    r"(?is)(?:(?=.*\bquestion\b)(?=.*(?:passage|stimulus|rationale|explanation))|"
     r'(?=.*"choices")(?=.*"stem")(?=.*"(?:passage|stimulus|rationale|explanation)"))'
 )
 SCRAPER = re.compile(
