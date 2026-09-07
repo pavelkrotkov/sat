@@ -1,9 +1,44 @@
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 
 from satprep.db import connect
+
+
+@pytest.fixture(scope="session", autouse=True)
+def synthetic_kb():
+    """Provide tiny fabricated KB pages for tests when the private vault is absent."""
+    root = Path(__file__).resolve().parent.parent
+    kb = root / "kb"
+    if kb.exists():
+        yield
+        return
+
+    summaries = kb / "wiki" / "summaries"
+    summaries.mkdir(parents=True)
+    (kb / "wiki" / "index.md").write_text("# Synthetic test KB\n")
+    pages = []
+    for name, tags in {
+        "settele-strong-words": ["inference", "evidence"],
+        "settele-trap-answers": ["inference", "evidence"],
+        "settele-dumb-summaries": ["evidence"],
+        "settele-confusing-passages": ["passage-strategy"],
+        "penguin-reading-hacks": ["inference"],
+    }.items():
+        path = summaries / f"{name}.md"
+        path.write_text(
+            f"---\ntitle: Synthetic {name}\ntype: summary\ntags: {json.dumps(tags)}\n---\n"
+            f"# Synthetic {name}\n\nFabricated strategy text used only by tests.\n"
+        )
+        pages.append({"path": path.relative_to(root).as_posix(), "type": "summary", "tags": tags})
+    (kb / ".kb-index.json").write_text(json.dumps({"pages": pages}, sort_keys=True))
+    try:
+        yield
+    finally:
+        if kb.exists():
+            shutil.rmtree(kb)
 
 
 @pytest.fixture()

@@ -1,3 +1,4 @@
+# See https://pre-commit.com for more information
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
@@ -18,10 +19,14 @@ repos:
         args: [ --fix ]
       - id: ruff-format
 
-  # Run through uv so this uses the ty pinned in uv.lock, and keep the
-  # arguments identical to the Python Quality workflow.
   - repo: local
     hooks:
+      - id: public-repo-guard
+        name: public repository leak guard
+        entry: python scripts/check_public_repo.py
+        language: system
+        pass_filenames: false
+        always_run: true
       - id: ty
         name: ty type check
         entry: uv run ty check --extra-search-path . .

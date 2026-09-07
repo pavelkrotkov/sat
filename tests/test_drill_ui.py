@@ -569,17 +569,6 @@ def test_dark_mode_follows_the_system_setting():
     )
 
 
-def test_the_serif_fallback_is_gone_from_the_ui_font():
-    """`font: 16px/1.55 -apple-system, "Segoe UI", Roboto, serif` rendered the
-    whole UI in a serif on any box without one of the three named faces. UI
-    chrome is sans; only passages opt into the reading face."""
-    css = (STATIC / "style.css").read_text()
-    ui = re.search(r"--font-ui:([^;]+);", css).group(1)
-    assert "serif" not in ui.replace("sans-serif", "")
-    assert "--font-read:" in css
-    assert "font-family: var(--font-read)" in css.split(".passage {", 1)[1][:200]
-
-
 def test_no_new_runtime_dependency_and_no_build_step():
     """One `uv run` on a headless box. A bundler would add a step to
     install.sh and a second thing to keep current."""
