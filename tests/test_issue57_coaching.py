@@ -133,14 +133,14 @@ def test_benchmark_self_report_post_never_reveals_verdict(db):
     conn, _ = db
     wrong_qid = add_question(
         conn,
-        passage="Synthetic wrong-answer benchmark question.",
+        passage="Synthetic benchmark question one.",
         source="custom_generated",
         pool="fresh_training",
         correct="B",
     )
     correct_qid = add_question(
         conn,
-        passage="Synthetic correct-answer benchmark question.",
+        passage="Synthetic benchmark question two.",
         source="custom_generated",
         pool="fresh_training",
         correct="B",
