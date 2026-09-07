@@ -306,11 +306,7 @@ def test_export_stale_review_blocked(db, tmp_path):
 
 
 def test_review_does_not_copy_canonical_data(db):
-    """The review row stores only diagnosis + join keys. The passage,
-    stem, choices, correct letter and rationale stay in questions.
-    PR-44 round-1 P1: canonical evidence is no longer copied into the
-    review row at all — citations collapse to {role, letter?, ref?}
-    refs that point at the authoritative questions row."""
+    """Reviews store references while canonical question data stays authoritative."""
     rev = _draft(db)
     row = db.execute("SELECT * FROM question_reviews WHERE id=?", (rev.id,)).fetchone()
     for col in ("passage", "stem", "choices_json", "correct_letter", "rationale"):
@@ -333,16 +329,8 @@ def test_module_boundary_no_training_import():
     assert "import .training" not in src
 
 
-# ---------------------------------------------------------------------------
-# PR-44 round-1 review findings: regression tests for the bot review
-# threads Codex raised on commit 19f1aec.
-# ---------------------------------------------------------------------------
-
-
 def test_export_emits_required_frontmatter(db, tmp_path):
-    """P1 finding 3899816853: the exported Markdown must carry
-    `student_answer`, `correct_answer`, and `confidence` so it passes
-    `scripts/check_kb.py` line 71-73 + 206-210."""
+    """Exported answer and confidence fields satisfy the KB schema."""
     rev = upsert_draft(
         db,
         question_id=1,
@@ -373,8 +361,7 @@ def test_export_emits_required_frontmatter(db, tmp_path):
 
 
 def test_stale_when_question_missing(db):
-    """P2 finding 3899816860: a review whose question row is deleted
-    (or marked inactive) must read as stale."""
+    """A review whose question was deleted is stale."""
     rev = _draft(db)
     # Question row disappears (corpus reimport).
     db.execute("DELETE FROM questions WHERE id=1")
@@ -384,8 +371,7 @@ def test_stale_when_question_missing(db):
 
 
 def test_stale_when_question_inactive(db):
-    """P2 finding 3899816860: an inactive question (active=0) must
-    also flag the review stale."""
+    """A review whose question is inactive is stale."""
     rev = _draft(db)
     db.execute("UPDATE questions SET active=0 WHERE id=1")
     db.commit()
@@ -394,8 +380,7 @@ def test_stale_when_question_inactive(db):
 
 
 def test_stale_when_stored_fingerprint_empty(db):
-    """P2 finding 3899816860: a review with no stored fingerprint
-    cannot verify against the corpus; treat as stale so it surfaces."""
+    """A review without a verifiable corpus fingerprint is stale."""
     rev = upsert_draft(
         db, question_id=1, question_fingerprint="", tested_task="t", exact_failure="ef"
     )
@@ -404,9 +389,7 @@ def test_stale_when_stored_fingerprint_empty(db):
 
 
 def test_upsert_draft_refuses_overwrite_rejected(db):
-    """P2 finding 3899816863: a rejected review is terminal. Running
-    `generate` again must NOT overwrite the rejected row's diagnosis
-    or provenance; the operator must delete the tombstone first."""
+    """Regeneration cannot overwrite a rejected review or its provenance."""
     rev = _draft(db)
     transition(db, rev.id, REJECTED, reason="not useful", actor="t")
     with pytest.raises(ReviewStateError):
@@ -418,8 +401,7 @@ def test_upsert_draft_refuses_overwrite_rejected(db):
 
 
 def test_edit_rejected_review_is_blocked(db):
-    """P2 finding 3899816871: editing a terminal (rejected) review is
-    not allowed; the audit trail says the row is final."""
+    """A rejected review is terminal and cannot be edited."""
     rev = _draft(db)
     transition(db, rev.id, REJECTED, reason="not useful", actor="t")
     with pytest.raises(ReviewStateError):
@@ -427,8 +409,7 @@ def test_edit_rejected_review_is_blocked(db):
 
 
 def test_edit_stale_review_is_blocked(db):
-    """P2 finding 3899816871: editing a stale (orphaned) review is not
-    allowed; the operator must reject it instead."""
+    """An orphaned review must be rejected rather than edited."""
     rev = _draft(db)
     db.execute("UPDATE questions SET fingerprint='fp-2' WHERE id=1")
     db.commit()
@@ -437,9 +418,7 @@ def test_edit_stale_review_is_blocked(db):
 
 
 def test_edit_approved_review_transitions_to_edited(db):
-    """P2 finding 3899816871: editing an APPROVED review moves it to
-    EDITED so the exported provenance reflects the post-edit
-    lifecycle (was approved then edited)."""
+    """Editing an approved review records its post-approval lifecycle."""
     rev = _draft(db)
     transition(db, rev.id, APPROVED, reason="initial", actor="alice")
     edited = edit_review(
@@ -449,8 +428,7 @@ def test_edit_approved_review_transitions_to_edited(db):
 
 
 def test_delete_review_writes_tombstone(db):
-    """P2 finding 3899816877: deletion must leave an audit record so
-    'what was deleted, when, by whom, why' survives."""
+    """Deletion preserves review state, actor, reason, and snapshot."""
     from satprep.reviews import list_deletions
 
     rev = _draft(db)
@@ -473,9 +451,7 @@ def test_delete_review_writes_tombstone(db):
 
 
 def test_upsert_draft_merges_prior_edits_and_keeps_first_generated_at(db):
-    """P2 finding 3899816881: regenerating an existing draft must
-    preserve the original `first_generated_at` and merge (not
-    overwrite) the prior `edits` audit log."""
+    """Regeneration preserves creation time and prior audit entries."""
     first = _draft(db)
     original_notes = json.loads(first.provenance_json)
     original_first = original_notes["first_generated_at"]
@@ -489,9 +465,7 @@ def test_upsert_draft_merges_prior_edits_and_keeps_first_generated_at(db):
 
 
 def test_list_reviews_default_includes_stale(db):
-    """P2 finding 3899816886: the default `satprep review list` must
-    surface stale rows; the queue is the operator's signal that the
-    corpus has drifted under the reviews."""
+    """The operator queue surfaces reviews orphaned by corpus drift."""
     _draft(db)
     db.execute("UPDATE questions SET fingerprint='fp-2' WHERE id=1")
     db.commit()
@@ -501,9 +475,7 @@ def test_list_reviews_default_includes_stale(db):
 
 
 def test_transition_stale_to_rejected_is_allowed(db):
-    """P2 finding 3899816891: a stale review must still be terminally
-    rejectable so the operator can clean up an orphan without
-    resorting to deletion."""
+    """A stale review can be rejected without deleting its audit trail."""
     rev = _draft(db)
     db.execute("UPDATE questions SET fingerprint='fp-2' WHERE id=1")
     db.commit()
@@ -512,8 +484,7 @@ def test_transition_stale_to_rejected_is_allowed(db):
 
 
 def test_transition_stale_to_approved_is_blocked(db):
-    """P2 finding 3899816891 (companion): the stale guard still blocks
-    approval — only reject is permitted on stale rows."""
+    """A stale review can be rejected but not approved."""
     rev = _draft(db)
     db.execute("UPDATE questions SET fingerprint='fp-2' WHERE id=1")
     db.commit()
@@ -522,9 +493,7 @@ def test_transition_stale_to_approved_is_blocked(db):
 
 
 def test_review_show_cli_subcommand_exposes_full_body(db, tmp_path):
-    """P1 finding 3899816897: `satprep review show` exposes the
-    draft/approved/edited body so the operator can inspect it before
-    approving."""
+    """The operator can inspect a review's full body before approval."""
     import sqlite3 as _sq
 
     from satprep import cli as cli_mod
@@ -597,10 +566,7 @@ def test_review_show_cli_subcommand_exposes_full_body(db, tmp_path):
 
 
 def test_evidence_strips_canonical_text(db):
-    """P1 finding 3899816904: the persisted evidence_json must NOT
-    carry the canonical question text (stem / student_choice /
-    correct_choice / passage_excerpt). Those roles collapse to
-    non-canonical {role, letter?, ref?} refs."""
+    """Persisted evidence keeps references but never canonical question text."""
     rev = upsert_draft(
         db,
         question_id=1,
@@ -626,9 +592,7 @@ def test_evidence_strips_canonical_text(db):
 
 
 def test_review_records_student_answer_correct_answer_confidence(db):
-    """P1 finding 3899816853: the review row records the join keys the
-    KB export needs; without them the export frontmatter is incomplete
-    and the file fails the KB lint."""
+    """Review rows retain the answer and confidence fields required by KB export."""
     rev = upsert_draft(
         db,
         question_id=1,

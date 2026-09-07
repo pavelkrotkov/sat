@@ -60,12 +60,7 @@ from .training.weakness import compute_weakness
 
 
 def _cell_text(table_html: str) -> list[str]:
-    """Visible cell texts of a sanitized table, for the terminal drill.
-
-    Round-2 finding: the [:8] truncation silently hid cells past the eighth,
-    so a big table could ask about a value never shown. Render every cell
-    row-by-row so a wide table stays complete (the row→cell shape is what
-    makes column relationships recoverable)."""
+    """Render every sanitized table cell row-by-row for the terminal drill."""
     soup = BeautifulSoup(table_html, "html.parser")
     out = []
     for tag in soup.find_all("tr"):
@@ -147,10 +142,7 @@ def cmd_restore(args) -> None:
         archive = explicit
     else:
         archive = config.REPO_ROOT / "exports" / f"corpus-v{ARCHIVE_VERSION}.jsonl"
-        # Round-3 (finding 2) + round-4: the bumped default is v2, but an
-        # upgraded host has only the pre-visuals v1 file. Fall back to it for
-        # the DEFAULT path only — an explicit --file is never silently
-        # redirected to a different snapshot.
+        # Upgraded hosts may only have v1; explicit paths never fall back.
         if not archive.exists():
             legacy = config.REPO_ROOT / "exports" / f"corpus-v{min(LEGACY_ARCHIVE_VERSIONS)}.jsonl"
             if legacy.exists():
@@ -204,8 +196,7 @@ def _run_drill(conn, mode: str, args) -> None:
             print()
         visuals = q.get("visuals") or []
         if visuals:
-            # Round-3 (finding 6): iterate the ordered records once so a
-            # mixed table→image question prints in source order.
+            # Mixed table and image records render in source order.
             for v in visuals:
                 if v.get("kind") == "image":
                     print(f"  [figure: {v.get('file')}]")
@@ -249,12 +240,7 @@ def cmd_benchmark(args) -> None:
 def cmd_fetch_qbank(args) -> None:
     domains = [d.strip().upper() for d in args.domains.split(",") if d.strip()] or None
     with db_context() as conn:
-        # Round-2 (finding 3): --audit-visuals must be PURELY read-only. The
-        # normal path also runs a fresh fetch (which can INSERT new bank
-        # questions), tagging, and an archive rewrite; an audit that promised
-        # "no rows are written" but still mutated the DB and archive would be
-        # a lie. In audit mode we skip every mutating stage and only run the
-        # read-only sweep that reports what WOULD change (issue #46 audit).
+        # Audits skip fetch, tagging, and archive writes so they remain read-only.
         if args.audit_visuals:
             bstats = backfill_visuals(
                 conn,
@@ -305,10 +291,7 @@ def cmd_explain(args) -> None:
     # create or migrate the file. The pipeline inspects only `questions`
     # and (when resolving the most-recent wrong attempt) `attempts`,
     # neither of which is mutated here.
-    # PR-43 round-3: encode the database path so any URI-significant
-    # character (?, #, %, etc.) in the install directory is escaped
-    # before the SQLite URI parser sees it. Without this, a checkout
-    # under e.g. ~/notes?draft/ would open the wrong file.
+    # Encode URI-significant path characters before SQLite parses the path.
     db_uri = f"file:{quote(str(_DB_PATH))}?mode=ro"
     conn = sqlite3.connect(db_uri, uri=True, check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -328,7 +311,7 @@ def cmd_explain(args) -> None:
         if student_letter is None:
             attempt = conn.execute(
                 "SELECT chosen_letter FROM attempts "
-                "WHERE question_id=? AND correct=0 "  # PR-43 review
+                "WHERE question_id=? AND correct=0 "
                 "ORDER BY id DESC LIMIT 1",
                 (qid,),
             ).fetchone()
@@ -437,10 +420,7 @@ def cmd_review_generate(args) -> None:
             kb_tactic_refs=ex.kb_tactic_refs,
             error_taxonomy=ex.error_taxonomy,
             evidence=ex.evidence_citations,
-            # PR-44 round-1 P1: persist the join keys the KB export
-            # frontmatter needs (the canonical question/choice text is
-            # not stored — `evidence_refs` collapses to non-canonical
-            # {role, letter?, ref?} refs).
+            # Persist export join keys, but never canonical question text.
             student_answer=attempt["chosen_letter"] or "",
             correct_answer=row["correct_letter"] or "",
             confidence=ex.confidence,
@@ -463,10 +443,7 @@ def cmd_review_generate(args) -> None:
 
 
 def cmd_review_show(args) -> None:
-    """Show a single review by id — the same shape `generate` produced,
-    plus the diagnosis fields. PR-44 round-1 P1: the only path that
-    exposes the full draft/approved/edited body to the operator before
-    they decide whether to advance the state machine."""
+    """Show the full review body an operator needs before changing its state."""
     with db_context() as conn:
         ensure_review_schema(conn)
         try:
@@ -503,9 +480,7 @@ def cmd_review_show(args) -> None:
 def cmd_review_list(args) -> None:
     with db_context() as conn:
         ensure_review_schema(conn)
-        # PR-44 round-1 P2: surface stale rows by default; the queue
-        # is the operator's primary signal that a corpus change has
-        # orphaned reviews.
+        # The queue surfaces reviews orphaned by corpus changes.
         include_stale = True if args.include_stale else not args.exclude_stale
         rows = list_reviews(conn, state=args.state, include_stale=include_stale)
     print(
@@ -576,8 +551,7 @@ def cmd_review_export(args) -> None:
 def cmd_review_delete(args) -> None:
     with db_context() as conn:
         ensure_review_schema(conn)
-        # PR-44 round-1 P2: capture the actor/reason on the tombstone
-        # so the audit log records who deleted what and why.
+        # Tombstones retain who deleted a review and why.
         try:
             delete_review(conn, args.id, actor="cli", reason=args.reason or "")
         except ReviewStateError as e:
@@ -586,7 +560,7 @@ def cmd_review_delete(args) -> None:
 
 
 def cmd_review_deletions(args) -> None:
-    """Print the audit tombstones for review deletions (PR-44 P2)."""
+    """Print audit tombstones for review deletions."""
     with db_context() as conn:
         ensure_review_schema(conn)
         rows = list_deletions(conn, question_id=args.question_id)
@@ -778,7 +752,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.set_defaults(func=cmd_explain)
 
-    # --- `satprep review` subcommands (issue #37) ---------------------
     rv = sub.add_parser("review", help="manage student question reviews")
     rv_sub = rv.add_subparsers(dest="review_cmd", required=True)
 
@@ -796,9 +769,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     rsp = rv_sub.add_parser("list", help="list reviews (draft/approved/... )")
     rsp.add_argument("--state", default=None, choices=["draft", "approved", "rejected", "edited"])
-    # PR-44 round-1 P2: stale rows are shown by default; use
-    # --exclude-stale to opt out, --include-stale to make the
-    # default explicit.
+    # Stale rows are visible unless explicitly excluded.
     rsp.add_argument(
         "--include-stale",
         action="store_true",

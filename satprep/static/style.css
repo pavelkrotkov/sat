@@ -320,9 +320,7 @@ button[disabled], .btn[disabled] { opacity: .5; cursor: not-allowed; }
   color: var(--bad);
 }
 .choice-list .state.key { color: var(--accent); }
-/* A correct answer makes the chosen row the key too: the "your answer"
-   label must read as success, not as the wrong-answer red. (PR #51
-   round-1 Codex P2 — verified on the correct immediate-feedback page.) */
+/* A correct chosen answer uses the success color, not wrong-answer red. */
 .choice-list .choice.chosen.key .state:not(.key) { color: var(--accent); }
 .source-line { margin-top: var(--s-2); }
 
@@ -529,8 +527,7 @@ tr.ok td:nth-child(6) { color: var(--accent); }
   margin: var(--s-2) 0;
   font-size: 0.95rem;
 }
-/* round-4 finding: horizontal overflow lives on the scroll wrapper, where a
-   wide table can actually scroll instead of overflowing the viewport. */
+/* Put overflow on the wrapper so wide tables scroll inside the viewport. */
 .visuals .table-wrap {
   overflow-x: auto;
   max-width: 100%;

@@ -595,15 +595,8 @@ def test_keyboard_shortcuts_are_wired_without_stealing_typed_input():
     assert "metaKey" in js and "ctrlKey" in js  # nor from a browser shortcut
 
 
-# ------------------------------------------------ round-1 review findings --
-
-
 def test_the_last_answer_completes_the_session(live):
-    """Review finding: routing /answer to a feedback screen left completion
-    hanging off the optional "See results" tap. A student who closes the tab
-    after the final verdict had a fully answered session stuck at 'open',
-    permanently missing from analytics with a stale weakness cache - where the
-    old redirect chain reached /results on its own."""
+    """The final answer completes the session without an optional results tap."""
     with db_context(live) as conn:
         sess = create_session(conn, "error_clinic", count=2, seed="last")
         sid = sess["plan"]["session_id"]
@@ -646,10 +639,7 @@ def test_completing_from_feedback_twice_is_harmless(live):
 
 
 def test_the_comparison_baseline_does_not_change_retroactively(live):
-    """Review finding: an old results URL fetched the globally newest sessions
-    and excluded only its own id, so a first session stopped reading as the
-    baseline once a later drill existed. The reference set is now the sessions
-    that actually preceded the one being viewed."""
+    """A session comparison only uses sessions completed before it."""
     with db_context(live) as conn:
         first = create_session(conn, "error_clinic", count=2, seed="retro1")
         sid1 = first["plan"]["session_id"]
@@ -715,15 +705,7 @@ def test_sessions_in_the_same_second_still_order_deterministically(live):
 
 
 def test_answering_out_of_order_does_not_lock_the_student_out(live):
-    """Second-order bug in my own round-1 fix for the completion finding.
-
-    /question and /feedback are guessable GETs, so a drill can be answered out
-    of order. Completing on `is_last` alone closed the session the moment the
-    LAST question was answered - even with earlier ones outstanding - and
-    `submit_answer` refuses a session that is not open, so the student was
-    locked out of the rest of her own drill. Completion has to mean "every
-    question answered", which is a count, not an index.
-    """
+    """Completion depends on answered count, not the last question's index."""
     with db_context(live) as conn:
         sess = create_session(conn, "hard_mixed", count=4, seed="ooo")
         sid = sess["plan"]["session_id"]
@@ -764,16 +746,8 @@ def test_answering_out_of_order_does_not_lock_the_student_out(live):
         assert status["status"] == "completed", "session never completed"
 
 
-# ------------------------------------------------ round-2 review findings --
-
-
 def test_a_benchmark_never_shows_feedback_between_questions(live):
-    """Review finding (P1): the fresh benchmark is the one honest measurement
-    in the system - its questions are protected, and answering one marks it
-    seen irreversibly. Revealing the key and rationale after each answer
-    teaches during the measurement, so a later item can benefit from
-    instruction delivered mid-benchmark and the baseline can never be retaken.
-    """
+    """Protected benchmarks never teach by revealing feedback mid-measurement."""
     with db_context(live) as conn:
         for i in range(10):
             add_question(
@@ -856,11 +830,7 @@ def test_a_benchmark_still_reaches_its_results(live):
 
 
 def test_progress_reflects_drills_not_only_the_imported_history(live):
-    """Review finding: /progress was built from skill_accuracy/tag_accuracy,
-    which filter to `a.mode='historical'` - they describe the scraped Bluebook
-    backlog. Her own drills moved the weakness score while the wrong/seen
-    counts beside it never changed, and a profile built purely from in-app
-    answers rendered as "not enough data yet"."""
+    """Student progress reflects practice rather than imported history."""
     with db_context(live) as conn:
         # tag every question in the corpus, so whatever the sampler picks
         # carries the tag - otherwise this asserts on the sampler's choices
@@ -902,10 +872,7 @@ def test_progress_reflects_drills_not_only_the_imported_history(live):
 
 
 def test_a_comparison_is_frozen_by_completion_not_creation(live):
-    """Review finding: `status` was evaluated now while the ordering key was
-    creation time, so an older session left open and finished later slid into
-    a newer session's baseline after that newer results page had already been
-    shown. Ordering on when the work actually finished closes that."""
+    """Comparison history is ordered by completion, not creation."""
     with db_context(live) as conn:
         stale = create_session(conn, "error_clinic", count=2, seed="stale")
         stale_sid = stale["plan"]["session_id"]  # created first, left open
@@ -933,10 +900,7 @@ def test_a_comparison_is_frozen_by_completion_not_creation(live):
 
 
 def test_choice_radios_keep_their_intrinsic_size(live):
-    """Review finding: the generic `form input` rule is display:block,
-    width:100%, min-height:44px. A choice radio inheriting it swallows the
-    whole flex row and pushes the letter and answer text out of view - worst
-    on the phone layout this PR exists for."""
+    """Choice radios do not inherit full-width text-input sizing."""
     css = (STATIC / "style.css").read_text()
 
     # the generic rule no longer matches a radio or a checkbox at all
@@ -949,12 +913,6 @@ def test_choice_radios_keep_their_intrinsic_size(live):
     choice_rule = css.split(".choice input {", 1)[1].split("}", 1)[0]
     assert "width: auto" in choice_rule
     assert "min-height: 0" in choice_rule
-
-
-# -------------------------------------------------- full rationale renders -- #
-# Issue #48: the official rationale is complete in the database but was
-# clipped to 1200 chars mid-sentence in the review template. The full text
-# must render, paragraph boundaries preserved.
 
 
 def _review_html_with_rationale(live, rationale: str) -> str:
@@ -1016,8 +974,7 @@ def test_review_compact_summary_is_a_labeled_excerpt(live):
 
 
 def test_review_renders_null_rationale_without_crashing(live):
-    """PR-50 round-6 finding: a NULL rationale (column is nullable) must
-    not 500 the review page."""
+    """A NULL rationale renders as missing rather than failing the page."""
     with db_context(live) as conn:
         sess = create_session(conn, "error_clinic", count=1, seed="rat-null")
         sid = sess["plan"]["session_id"]
