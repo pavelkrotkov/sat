@@ -22,18 +22,6 @@ jobs:
         uses: gitleaks/gitleaks-action@1f2d10fb689bc07a5f56f48d6db61f5bbbe772fa # v2.3.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # gitleaks-action hardcodes its upload container name as the dotted
-          # "gitleaks-results.sarif", which GitHub's artifact service rejects with
-          # HTTP 400 ("artifact name ... is not valid"). Disable the action's
-          # built-in upload and emit the SARIF below under a valid, dot-free name.
-          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
-      - name: Upload gitleaks SARIF
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gitleaks-results
-          path: results.sarif
-          if-no-files-found: warn
 
   tests:
     name: pytest

@@ -29,7 +29,7 @@ def synthetic_kb():
     }.items():
         path = summaries / f"{name}.md"
         path.write_text(
-            f"---\ntitle: Synthetic {name}\ntype: summary\ntags: {json.dumps(tags)}\n---\n\n"
+            f"---\ntitle: Synthetic {name}\ntype: summary\ntags: {json.dumps(tags)}\n---\n"
             f"# Synthetic {name}\n\nFabricated strategy text used only by tests.\n"
         )
         pages.append({"path": path.relative_to(root).as_posix(), "type": "summary", "tags": tags})

@@ -131,8 +131,20 @@ def test_wrong_answer_reason_is_saved_and_replayed_after_checkpoint(db, monkeypa
 
 def test_benchmark_self_report_post_never_reveals_verdict(db):
     conn, _ = db
-    wrong_qid = add_question(conn, source="custom_generated", pool="fresh_training", correct="B")
-    correct_qid = add_question(conn, source="custom_generated", pool="fresh_training", correct="B")
+    wrong_qid = add_question(
+        conn,
+        passage="Synthetic benchmark question one.",
+        source="custom_generated",
+        pool="fresh_training",
+        correct="B",
+    )
+    correct_qid = add_question(
+        conn,
+        passage="Synthetic benchmark question two.",
+        source="custom_generated",
+        pool="fresh_training",
+        correct="B",
+    )
     conn.execute(
         """INSERT INTO sessions (id, mode, created_at, seed, algo_version, plan_json, status)
            VALUES ('benchmark57', 'fresh_benchmark', '2026-09-06', 's', 'v', ?, 'open')""",
