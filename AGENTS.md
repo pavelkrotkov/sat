@@ -35,7 +35,7 @@ uv run ruff check .
 uv run ruff format --check .
 uv run ty check --extra-search-path . .
 uv run pytest -q
-npx --yes aislop@0.16.0 ci --changes --base origin/main .
+uv run python scripts/aislop_changed_gate.py "$(git merge-base origin/main HEAD)"
 ```
 
 ## Final review checklist

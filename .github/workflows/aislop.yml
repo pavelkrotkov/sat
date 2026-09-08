@@ -28,12 +28,11 @@ jobs:
         with:
           node-version: "22"
 
-      # Deterministic gate: `--changes` scores only files changed vs the PR
-      # merge-base, so the huge legacy baseline never fails the gate while
-      # new/changed code is held to the strict config (.aislop/config.yml
-      # elevates narrative comments, swallowed exceptions, hidden fallbacks,
-      # and TODO stubs to blocking `error`). The base is resolved to the
-      # merge-base of origin/main and HEAD (checked out at the PR head), not
+      # Deterministic gate: compare findings in changed files at HEAD and the PR
+      # merge-base, then fail only new or worsened findings in changed code.
+      # This keeps the legacy baseline non-blocking while enforcing configured
+      # quality thresholds and rules elevated to `error`. The base is resolved
+      # to the merge-base of origin/main and HEAD (checked out at the PR head), not
       # live origin/main, so concurrent merges into main after this branch
       # forked cannot sweep unrelated files into the changed set. The aislop
       # version is pinned to the reviewed baseline; never bump to `@latest`
@@ -44,5 +43,5 @@ jobs:
           MERGE_BASE="$(git merge-base origin/main HEAD)"
           echo "PR's changed files are diffed against merge-base $MERGE_BASE"
           echo "sha=$MERGE_BASE" >> "$GITHUB_OUTPUT"
-      - name: Run aislop (added lines only)
+      - name: Run aislop (changed code only)
         run: python scripts/aislop_changed_gate.py "${{ steps.mergebase.outputs.sha }}"
