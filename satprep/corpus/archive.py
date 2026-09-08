@@ -160,7 +160,7 @@ def restore_corpus(conn, archive_path: Path | None = None) -> dict:
     return stats
 
 
-def _restore_lines(conn, archive_path: Path, stats: dict) -> None:
+def _restore_lines(conn, archive_path: Path, stats: dict) -> None:  # noqa: C901 (legacy: archive state machine)
     head = next(
         (line for line in archive_path.read_text(encoding="utf-8").splitlines() if line.strip()),
         "",

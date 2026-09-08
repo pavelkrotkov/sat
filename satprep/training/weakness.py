@@ -58,7 +58,7 @@ def _recency(attempted_at: str | None, now: datetime) -> float:
     return math.pow(0.5, age_days / config.WEAKNESS_RECENCY_HALF_LIFE_DAYS)
 
 
-def compute_weakness(conn, now: datetime | None = None) -> dict:
+def compute_weakness(conn, now: datetime | None = None) -> dict:  # noqa: C901 (legacy: per-entity recency/multiplication math)
     """Compute weakness scores for skills, reasoning tags, error tags.
 
     Returns {entity_type: {entity: {'score': float, 'stats': {...}}}}

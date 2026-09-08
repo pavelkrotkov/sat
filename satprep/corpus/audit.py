@@ -44,7 +44,7 @@ def _source_records() -> list[dict]:
     return [r for r in records if r.get("subject_bucket") == config.SUBJECT]
 
 
-def audit_bluebook(conn) -> dict:
+def audit_bluebook(conn) -> dict:  # noqa: C901 (legacy: audit state machine)
     """Audit the repaired historical corpus against the source scrape.
 
     Never writes. Every key is JSON-serialisable for the CLI report.

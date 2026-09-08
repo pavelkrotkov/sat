@@ -155,7 +155,7 @@ def _json_choices(rec: dict, correct_letter: str = "") -> list[dict]:
 # ---------------------------------------------------------------- repair -----
 
 
-def repair_bluebook(conn) -> dict:
+def repair_bluebook(conn) -> dict:  # noqa: C901 (legacy: repair state machine)
     """Reconcile the historical corpus from outputs/ + artifacts/ (idempotent).
 
     Returns a stats dict with counts for every repair action so the CLI can
@@ -338,7 +338,7 @@ def _insert_question(conn, rec: dict, merged: dict, fp: str, uid: str, snap_path
     return cur.lastrowid
 
 
-def _reconcile_question(conn, qid: int, rec: dict, merged: dict, fp: str) -> bool:
+def _reconcile_question(conn, qid: int, rec: dict, merged: dict, fp: str) -> bool:  # noqa: C901 (legacy: merge decision logic)
     """Fill gaps on an existing historical row in place.
 
     Keeps the same question_id so attempts/tags/reviews stay attached; never

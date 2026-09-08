@@ -219,7 +219,7 @@ def _long_word_ratio(text: str) -> float:
     return (sum(1 for w in words if len(w) >= 12) / len(words)) if words else 0.0
 
 
-def reasoning_tags(passage: str, stem: str, choices: list[str]) -> list[str]:
+def reasoning_tags(passage: str, stem: str, choices: list[str]) -> list[str]:  # noqa: C901 (legacy: rule-matching tagger)
     """Rule-based demand/trap tagging. Deterministic; never uses outcomes."""
     tags: list[str] = []
     add = lambda t: tags.append(t) if t not in tags else None  # noqa: E731
@@ -330,7 +330,7 @@ def reasoning_tags(passage: str, stem: str, choices: list[str]) -> list[str]:
 # ---------------------------------------------------------- diagnostics ---
 
 
-def diagnose_error(correct_text: str, student_text: str) -> list[str]:
+def diagnose_error(correct_text: str, student_text: str) -> list[str]:  # noqa: C901 (legacy: rule-matching tagger)
     """Compare the chosen WRONG choice against the key. Returns error tags.
 
     Deliberately conservative: only fires on clear textual contrasts so we

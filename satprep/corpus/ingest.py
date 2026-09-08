@@ -56,7 +56,7 @@ def _historical_correctness(rec: dict) -> int | None:
     return None  # unknown - do not fabricate
 
 
-def ingest_bluebook(conn) -> dict:
+def ingest_bluebook(conn) -> dict:  # noqa: C901 (legacy: ingest state machine)
     """Ingest the scraped 8-test history. Idempotent."""
     stats = {
         "records_seen": 0,

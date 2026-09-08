@@ -251,7 +251,7 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
     _migrate(conn)
 
 
-def _migrate(conn: sqlite3.Connection) -> None:
+def _migrate(conn: sqlite3.Connection) -> None:  # noqa: C901 (legacy: versioned schema migration)
     """Lightweight column/table migrations for pre-existing databases."""
     cols = {r[1] for r in conn.execute("PRAGMA table_info(attempts)")}
     if "error_tags" not in cols:

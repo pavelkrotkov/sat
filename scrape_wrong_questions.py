@@ -579,7 +579,7 @@ class ReviewParser:
             return True
         return False
 
-    def extract_review_structured_data(self, container: Locator) -> dict[str, Any]:
+    def extract_review_structured_data(self, container: Locator) -> dict[str, Any]:  # noqa: C901 (legacy: review-row state machine)
         try:
             data = container.evaluate(
                 """
@@ -1841,7 +1841,7 @@ class SatBluebookScraper:
         except PlaywrightTimeoutError:
             page.wait_for_timeout(1_000)
 
-    def set_view_all(self, page: Page) -> None:
+    def set_view_all(self, page: Page) -> None:  # noqa: C901 (legacy: pagination stepping)
         self.dismiss_session_modal(page)
         try:
             total_questions = self.total_questions_count(page)
@@ -1960,7 +1960,7 @@ class SatBluebookScraper:
                 return candidate
         return None
 
-    def read_row_metadata(self, row: Locator, row_text: str = "") -> dict[str, str]:
+    def read_row_metadata(self, row: Locator, row_text: str = "") -> dict[str, str]:  # noqa: C901 (legacy: row parsing state machine)
         row_text = row_text or self.safe_inner_text(row)
         header_cells = row.locator("th")
         cells = row.locator("td, [role='cell']")
@@ -2193,7 +2193,7 @@ class SatBluebookScraper:
         ]
         return self._first_visible(candidates) or page.locator("body")
 
-    def save_artifacts(self, container: Locator, uid: str) -> dict[str, Any]:
+    def save_artifacts(self, container: Locator, uid: str) -> dict[str, Any]:  # noqa: C901 (legacy: artifact write state machine)
         screenshot_path = self.screenshot_dir / f"{uid}.png"
         html_path = self.html_dir / f"{uid}.html"
         screenshot_value = str(screenshot_path)

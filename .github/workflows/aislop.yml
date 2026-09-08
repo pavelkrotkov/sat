@@ -28,12 +28,21 @@ jobs:
         with:
           node-version: "22"
 
-      # Deterministic gate: `--changes` scores only files changed vs the base
-      # branch, so the huge legacy baseline never fails the gate while new/
-      # changed code is held to the strict config (.aislop/config.yml elevates
-      # narrative comments, swallowed exceptions, hidden fallbacks, and TODO
-      # stubs to blocking `error`). The aislop version is pinned to the
-      # reviewed baseline; never bump to `@latest` without checking release
-      # notes.
-      - name: Run aislop (changed files vs base)
-        run: npx --yes aislop@0.16.0 ci --changes --base origin/main .
+      # Deterministic gate: `--changes` scores only files changed vs the PR
+      # merge-base, so the huge legacy baseline never fails the gate while
+      # new/changed code is held to the strict config (.aislop/config.yml
+      # elevates narrative comments, swallowed exceptions, hidden fallbacks,
+      # and TODO stubs to blocking `error`). The base is resolved to the
+      # merge-base of origin/main and HEAD (checked out at the PR head), not
+      # live origin/main, so concurrent merges into main after this branch
+      # forked cannot sweep unrelated files into the changed set. The aislop
+      # version is pinned to the reviewed baseline; never bump to `@latest`
+      # without checking release notes.
+      - name: Compute PR merge-base
+        id: mergebase
+        run: |
+          MERGE_BASE="$(git merge-base origin/main HEAD)"
+          echo "PR's changed files are diffed against merge-base $MERGE_BASE"
+          echo "sha=$MERGE_BASE" >> "$GITHUB_OUTPUT"
+      - name: Run aislop (changed files vs PR merge-base)
+        run: npx --yes aislop@0.16.0 ci --changes --base "${{ steps.mergebase.outputs.sha }}" .

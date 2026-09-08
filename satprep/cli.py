@@ -181,7 +181,7 @@ def cmd_drill(args) -> None:
         _run_drill(conn, mode, args)
 
 
-def _run_drill(conn, mode: str, args) -> None:
+def _run_drill(conn, mode: str, args) -> None:  # noqa: C901 (legacy: interactive print orchestration)
     sess = create_session(conn, mode=mode, count=args.count, seed=args.seed, focus_tag=args.focus)
     plan, questions = sess["plan"], sess["questions"]
     if not questions:

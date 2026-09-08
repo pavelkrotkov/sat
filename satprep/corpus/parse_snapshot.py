@@ -79,7 +79,7 @@ def _find_choice_list(soup) -> Tag | None:
     return None
 
 
-def parse_snapshot(html: str) -> ParsedQuestion:
+def parse_snapshot(html: str) -> ParsedQuestion:  # noqa: C901 (legacy: Bluebook HTML parse/repair)
     soup = BeautifulSoup(html, "html.parser")
     out = ParsedQuestion()
 

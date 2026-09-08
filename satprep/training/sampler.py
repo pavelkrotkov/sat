@@ -42,7 +42,7 @@ def _load_candidates(conn, include_pools: tuple[str, ...]) -> list[Candidate]:
     return out
 
 
-def score_candidate(
+def score_candidate(  # noqa: C901 (legacy: linear explainable scoring, extraction hides the signal list)
     cand: Candidate,
     weakness: dict,
     focus_tags: list[str] | None = None,

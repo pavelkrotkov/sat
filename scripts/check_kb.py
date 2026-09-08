@@ -172,7 +172,7 @@ def parse_frontmatter(text: str) -> tuple[dict, str | None]:
         return {}, f"invalid YAML: {e}"
 
 
-def check_frontmatter(rel: pathlib.Path, text: str) -> tuple[dict, list[Finding]]:
+def check_frontmatter(rel: pathlib.Path, text: str) -> tuple[dict, list[Finding]]:  # noqa: C901 (legacy: frontmatter validator)
     """Return (parsed-frontmatter, findings). An empty dict with a finding
     means the frontmatter could not be parsed; callers should treat the
     empty dict as 'no FM' and continue with shape checks suppressed."""
@@ -254,7 +254,7 @@ def check_frontmatter(rel: pathlib.Path, text: str) -> tuple[dict, list[Finding]
 # ---------------------------------------------------------------------------
 
 
-def check_manifest(findings: list[Finding]) -> list[dict]:
+def check_manifest(findings: list[Finding]) -> list[dict]:  # noqa: C901 (legacy: manifest cross-check state machine)
     rows: list[dict] = []
     seen_ids: set[str] = set()
     if not MANIFEST.exists():
@@ -446,7 +446,7 @@ def _all_markdown_for_link_resolution(root: pathlib.Path) -> list[pathlib.Path]:
     return sorted(root.rglob("*.md"))
 
 
-def check_links_and_refs(
+def check_links_and_refs(  # noqa: C901 (legacy: cross-ref validator state machine)
     pages: list[pathlib.Path],
     all_pages: list[pathlib.Path],
     manifest_rows: list[dict],
@@ -765,7 +765,7 @@ def build_retrieval_index(
 # ---------------------------------------------------------------------------
 
 
-def main() -> int:
+def main() -> int:  # noqa: C901 (legacy: CLI arg orchestration)
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument(
         "--check", action="store_true", help="validate only; do not write the retrieval index"

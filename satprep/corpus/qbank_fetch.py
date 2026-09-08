@@ -148,7 +148,7 @@ def _save_figure(ext_id: str, index: int, content: bytes, suffix: str, image_dir
     return name
 
 
-def sanitize_table(html: str, id_prefix: str = "eqb") -> str | None:
+def sanitize_table(html: str, id_prefix: str = "eqb") -> str | None:  # noqa: C901 (legacy: HTML normalization state machine)
     """Reduce arbitrary `<table>` markup to a safe, accessible subset.
 
     Issue #46: the EQB embeds data tables as real `<figure class="table">`
@@ -251,7 +251,7 @@ def sanitize_table(html: str, id_prefix: str = "eqb") -> str | None:
     return str(table)
 
 
-def _extract_visuals(
+def _extract_visuals(  # noqa: C901 (legacy: figure/table discovery state machine)
     ext_id: str, html: str, image_dir: Path, start_index: int = 1, table_seq: int = 1
 ) -> tuple[str, list[dict], int, int]:
     """Pull inline visuals (figures AND data tables) out of EQB HTML.
@@ -437,7 +437,7 @@ def _normalize(detail: dict, meta: dict, image_dir: Path | None = None) -> dict 
     }
 
 
-def insert_qbank_row(conn, row: dict, batch: str) -> str:
+def insert_qbank_row(conn, row: dict, batch: str) -> str:  # noqa: C901 (legacy: row normalization state machine)
     """Shared insertion path for file imports and live fetches.
 
     Returns one of: 'added', 'duplicate', 'invalid'.
@@ -721,7 +721,7 @@ def fetch_qbank(
     return stats
 
 
-def backfill_visuals(
+def backfill_visuals(  # noqa: C901 (legacy: asset backfill state machine)
     conn, hint: bool = True, limit: int = 0, sleep_s: float = 0.25, audit_only: bool = False
 ) -> dict:
     """Re-fetch bank questions whose visuals (figures/tables) were dropped at

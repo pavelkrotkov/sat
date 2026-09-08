@@ -317,7 +317,7 @@ def _extract_evidence(
 _EVIDENCE_MAX_CHARS = 480
 
 
-def _pick_passage_span(
+def _pick_passage_span(  # noqa: C901 (legacy: evidence excerpt heuristic)
     passage: str, stem: str, correct_text: str, student_text: str, tokenize
 ) -> str:
     """Pick a bounded passage excerpt that still contains the cited
