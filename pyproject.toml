@@ -21,6 +21,7 @@ dev = [
     "pyyaml>=6.0",     # KB lint script (scripts/check_kb.py) and rebuild.sh nav edit
     "ruff>=0.16.3",
     "ty>=0.0.73",
+    "mutmut>=3.2",
 ]
 
 [build-system]
@@ -39,14 +40,43 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "C901"]
 ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+# C901 is enabled repo-wide with max-complexity 10. New/changed code must
+# stay within it. The files below carry a LEGACY complexity baseline that is
+# documented rather than silently ignored: their branching is intrinsically
+# clearer kept whole than after extraction (data migration, Bluebook HTML
+# parsing, rule-matching taggers, linear additive scoring, and one-off
+# tooling already excluded from `ty`). Treat these as debt to improve
+# deliberately, not a pattern to extend.
 [tool.ruff.lint.per-file-ignores]
-"scrape_wrong_questions.py" = ["E741", "B023"]
+"scrape_wrong_questions.py" = ["E741", "B023", "C901"]
+"scripts/check_kb.py" = ["C901"]
+"satprep/cli.py" = ["C901"]                    # _run_drill: interactive print orchestration
+"satprep/corpus/*.py" = ["C901"]               # Bluebook parse/repair/audit/qbank backfill state machines
+"satprep/db.py" = ["C901"]                     # _migrate: versioned schema migration
+"satprep/explanations.py" = ["C901"]           # _pick_passage_span: evidence excerpt heuristic
+"satprep/training/sampler.py" = ["C901"]       # score_candidate: linear explainable scoring, extraction hides signal list
+"satprep/training/weakness.py" = ["C901"]      # compute_weakness: per-entity recency/multiplication math
 
 [tool.ty.src]
 exclude = [
     "tests",
     "scrape_wrong_questions.py",
 ]
+
+[tool.mutmut]
+source_paths = ["satprep/"]
+pytest_add_cli_args_test_selection = ["tests/"]
+# tests/test_public_repo_guard.py imports scripts.check_public_repo; mutmut
+# copies only source_paths + tests into mutants/, so the scripts package must
+# be copied explicitly or collection fails with ModuleNotFoundError.
+also_copy = ["scripts/", "deploy/"]
+# Run high-signal module baselines (fast, advisory):
+#   uv run mutmut run satprep/training/...
+# then inspect survivors and run:
+#   uv run mutmut results && uv run mutmut apply && uv run pytest -q

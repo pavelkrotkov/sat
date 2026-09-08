@@ -1,0 +1,22 @@
+{
+  "hooks": {
+    "AfterTool": [
+      {
+        "matcher": "write_file|replace",
+        "hooks": [
+          {
+            "name": "aislop",
+            "type": "command",
+            "command": "aislop hook gemini",
+            "timeout": 5000,
+            "__aislop": {
+              "v": 1,
+              "managed": true,
+              "hash": "sha256:8c624407298ba3688220368f6a72c92b"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

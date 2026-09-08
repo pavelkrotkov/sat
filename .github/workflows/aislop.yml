@@ -1,0 +1,39 @@
+name: aislop
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  ai-slop-gate:
+    name: AI-slop gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node (pinned major)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Deterministic gate: `--changes` scores only files changed vs the base
+      # branch, so the huge legacy baseline never fails the gate while new/
+      # changed code is held to the strict config (.aislop/config.yml elevates
+      # narrative comments, swallowed exceptions, hidden fallbacks, and TODO
+      # stubs to blocking `error`). The aislop version is pinned to the
+      # reviewed baseline; never bump to `@latest` without checking release
+      # notes.
+      - name: Run aislop (changed files vs base)
+        run: npx --yes aislop@0.16.0 ci --changes --base origin/main .

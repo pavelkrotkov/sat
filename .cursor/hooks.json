@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "hooks": {
+    "afterFileEdit": [
+      {
+        "command": "aislop hook cursor",
+        "type": "command",
+        "timeout": 5000,
+        "__aislop": {
+          "v": 1,
+          "managed": true,
+          "hash": "sha256:909500b88282a9d06547652124bcc76c"
+        }
+      }
+    ]
+  }
+}
