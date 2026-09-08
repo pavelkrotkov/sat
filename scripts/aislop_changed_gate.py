@@ -57,7 +57,18 @@ def main() -> int:
     base = sys.argv[1]
     paths, new_files = added_lines(base)
     scan = subprocess.run(
-        ["npx", "--yes", "aislop@0.16.0", "scan", "--changes", "--base", base, "--format", "json", "."],
+        [
+            "npx",
+            "--yes",
+            "aislop@0.16.0",
+            "scan",
+            "--changes",
+            "--base",
+            base,
+            "--format",
+            "json",
+            ".",
+        ],
         capture_output=True,
         text=True,
     )
