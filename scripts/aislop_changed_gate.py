@@ -11,7 +11,9 @@ import sys
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 
-def added_lines(base: str) -> tuple[dict[str, set[int]], set[str]]:
+def added_lines(  # noqa: C901 (diff parser state machine)
+    base: str,
+) -> tuple[dict[str, set[int]], set[str]]:
     result = subprocess.run(
         ["git", "diff", "--unified=0", f"{base}...HEAD", "--"],
         check=True,
@@ -23,14 +25,23 @@ def added_lines(base: str) -> tuple[dict[str, set[int]], set[str]]:
     path: str | None = None
     current: set[int] | None = None
     line = 0
+    is_new = False
     for raw in result.stdout.splitlines():
+        if raw.startswith("diff --git "):
+            path = None
+            current = None
+            line = 0
+            is_new = False
+            continue
         if raw.startswith("+++ b/"):
             path = raw[6:]
             current = ranges.setdefault(path, set())
+            if is_new:
+                new_files.add(path)
             line = 0
             continue
-        if raw.startswith("new file mode ") and path:
-            new_files.add(path)
+        if raw.startswith("new file mode "):
+            is_new = True
             continue
         match = HUNK.match(raw)
         if match:
