@@ -44,5 +44,5 @@ jobs:
           MERGE_BASE="$(git merge-base origin/main HEAD)"
           echo "PR's changed files are diffed against merge-base $MERGE_BASE"
           echo "sha=$MERGE_BASE" >> "$GITHUB_OUTPUT"
-      - name: Run aislop (changed files vs PR merge-base)
-        run: npx --yes aislop@0.16.0 ci --changes --base "${{ steps.mergebase.outputs.sha }}" .
+      - name: Run aislop (added lines only)
+        run: uv run python scripts/aislop_changed_gate.py "${{ steps.mergebase.outputs.sha }}"
