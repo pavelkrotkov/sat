@@ -7,7 +7,7 @@
           {
             "name": "aislop",
             "type": "command",
-            "command": "aislop hook gemini",
+            "command": "npx --yes aislop@0.16.0 hook gemini",
             "timeout": 5000,
             "__aislop": {
               "v": 1,

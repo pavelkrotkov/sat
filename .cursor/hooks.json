@@ -3,7 +3,7 @@
   "hooks": {
     "afterFileEdit": [
       {
-        "command": "aislop hook cursor",
+        "command": "npx --yes aislop@0.16.0 hook cursor",
         "type": "command",
         "timeout": 5000,
         "__aislop": {

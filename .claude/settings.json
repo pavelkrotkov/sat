@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "aislop hook claude",
+            "command": "npx --yes aislop@0.16.0 hook claude",
             "__aislop": {
               "v": 1,
               "managed": true,
@@ -22,7 +22,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "aislop hook claude --on-file-changed",
+            "command": "npx --yes aislop@0.16.0 hook claude --on-file-changed",
             "__aislop": {
               "v": 1,
               "managed": true,

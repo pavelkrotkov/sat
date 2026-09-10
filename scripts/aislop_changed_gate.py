@@ -6,8 +6,9 @@ the PR merge-base, so pre-existing ("legacy") findings never fail the gate
 while new or worsened violations do. Function-level signatures include the
 reported metric and use aislop's changed-span context, so changed bodies are
 checked even when the diagnostic remains anchored at an unchanged `def` line.
-Line-level findings are keyed by affected source text, so line-number shifts do
-not turn unchanged legacy findings into false positives.
+Line-level findings are keyed by source text when available; otherwise by the
+`detail` field so metric-based warnings (like file-size growth) can still
+change between base and head.
 
 Blocking = a new finding that is error-severity (the .aislop/config.yml rules
 elevated to `error`) or a quality/score-threshold violation that the diff
@@ -28,9 +29,12 @@ import sys
 import tempfile
 from pathlib import Path
 
+import yaml
+
 _ROOT = Path(__file__).resolve().parent.parent
 AISLOP = ["npx", "--yes", "aislop@0.16.0", "scan", "--format", "json", "."]
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+DEFAULT_CONFIG_WARNING = "using default configuration"
 
 # Quality/score-threshold rules whose NEW appearance must block even though they
 # are warning severity in aislop output. These are the config `quality.*`
@@ -53,10 +57,86 @@ def run_aislop(directory: str, base: str | None = None) -> dict:
         command = [*AISLOP[:-1], "--changes", "--base", base, AISLOP[-1]]
     result = subprocess.run(command, cwd=directory, capture_output=True, text=True)
     try:
-        return json.loads(result.stdout)
+        report = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         print(result.stdout, file=sys.stderr)
         raise SystemExit(f"aislop returned invalid JSON: {exc}") from exc
+
+    if result.returncode != 0 and not report:
+        print(result.stderr, file=sys.stderr)
+        raise SystemExit(f"aislop command failed (code {result.returncode})")
+
+    if DEFAULT_CONFIG_WARNING in f"{result.stdout}{result.stderr}".lower():
+        raise SystemExit("aislop fell back to default configuration")
+
+    return report
+
+
+def aislop_fail_below(config_path: Path) -> float | None:
+    try:
+        payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except OSError as exc:
+        raise SystemExit(f"unable to read {config_path}: {exc}") from exc
+    except yaml.YAMLError as exc:
+        raise SystemExit(f"invalid yaml in {config_path}: {exc}") from exc
+
+    ci = payload.get("ci") if isinstance(payload, dict) else None
+    if not isinstance(ci, dict):
+        return None
+    fail_below = ci.get("failBelow")
+    if fail_below is None:
+        return None
+
+    try:
+        return float(fail_below)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"invalid ci.failBelow in {config_path}: {fail_below!r}") from exc
+
+
+def score_blocking(report: dict, config_path: Path) -> bool:
+    fail_below = aislop_fail_below(config_path)
+    if fail_below is None:
+        return False
+
+    score = report.get("score")
+    if score is None:
+        return False
+
+    try:
+        return float(score) < fail_below
+    except (TypeError, ValueError):
+        return False
+
+
+def score_worsened_since_base(base_report: dict, head_report: dict, config_path: Path) -> bool:
+    fail_below = aislop_fail_below(config_path)
+    if fail_below is None:
+        return False
+
+    head_score = head_report.get("score")
+    if head_score is None:
+        return False
+
+    try:
+        head_score = float(head_score)
+    except (TypeError, ValueError):
+        return False
+
+    if head_score >= fail_below:
+        return False
+
+    base_score = base_report.get("score")
+    if base_score is None:
+        raise SystemExit("base report missing score")
+
+    try:
+        base_score = float(base_score)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"invalid score in base report: {base_score!r}") from exc
+
+    if base_score >= fail_below and head_score < fail_below:
+        return True
+    return head_score < base_score
 
 
 def changed_files(base: str) -> list[str]:
@@ -155,11 +235,13 @@ def finding_signature(finding: dict, root: str) -> tuple:
     """
     relpath = finding.get("filePath", "")
     rule = finding.get("rule", "")
+    line = int(finding.get("line") or 0)
     func_match = _FUNC_NAME.match(finding.get("detail", ""))
-    if func_match:
+    if func_match and line > 0:
         return ("func", relpath, rule, func_match.group(1), finding.get("detail", ""))
-    text = file_line_text(root, relpath, int(finding.get("line") or 0))
-    return ("line", relpath, rule, text)
+    detail = finding.get("detail", "")
+    text = detail if line <= 0 else file_line_text(root, relpath, line)
+    return ("line", relpath, rule, line, text)
 
 
 def is_blocking(finding: dict) -> bool:
@@ -175,11 +257,11 @@ def is_changed_finding(
     is_new: bool,
 ) -> bool:
     file_path = finding.get("filePath", "")
-    line = int(finding.get("line") or 0)
     if file_path in new_files:
         return True
+    line = int(finding.get("line") or 0)
     line_changed = line in paths.get(file_path, set())
-    if _FUNC_NAME.match(finding.get("detail", "")):
+    if _FUNC_NAME.match(finding.get("detail", "")) and line > 0:
         return is_new and (finding.get("changeContext") == "changed-line" or line_changed)
     return is_new or line_changed
 
@@ -193,6 +275,7 @@ def main() -> int:
     paths, new_files = added_lines(base)
     config_files = [".aislop/config.yml", ".aislop/rules.yml"]
 
+    config_path = _ROOT / ".aislop/config.yml"
     head = run_aislop(str(_ROOT), base)
     head_diags = [d for d in head.get("diagnostics", []) if d.get("filePath") in files]
     head_sigs = {finding_signature(d, str(_ROOT)) for d in head_diags}
@@ -213,17 +296,37 @@ def main() -> int:
         )
     ]
     blocking = [d for d in new if is_blocking(d)]
+    if score_worsened_since_base(base_report, head, config_path):
+        blocking.append(
+            {
+                "rule": "ci.failBelow",
+                "severity": "error",
+                "file": "<repo>",
+                "line": None,
+                "detail": f"score={head.get('score')}",
+                "message": "aislop score is below ci.failBelow",
+            }
+        )
 
+    base_threshold_broken = score_blocking(base_report, config_path)
+    head_threshold_broken = score_blocking(head, config_path)
+
+    threshold = aislop_fail_below(config_path)
     summary = {
         "base": base,
         "changed_files": len(files),
         "head_diagnostics": len(head_diags),
         "base_diagnostics": len(base_diags),
         "new_diagnostics": len(new),
+        "head_score": head.get("score"),
+        "base_score": base_report.get("score"),
+        "head_score_below_threshold": head_threshold_broken,
+        "base_score_below_threshold": base_threshold_broken,
+        "head_fail_below": threshold,
         "blocking_diagnostics": len(blocking),
         "blocking": [
             {
-                "file": d.get("filePath"),
+                "file": d.get("filePath") or d.get("file"),
                 "rule": d.get("rule"),
                 "severity": d.get("severity"),
                 "line": d.get("line"),

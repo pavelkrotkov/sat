@@ -1,7 +1,69 @@
+from pathlib import Path
+
+import pytest
+
 from scripts import aislop_changed_gate as gate
 
 
-def test_function_finding_uses_aislop_changed_span():
+def test_default_config_fallback_is_detected_in_command_output():
+    output = "Using default configuration, ignoring custom rules."
+    assert "using default configuration" in output.lower()
+
+
+def test_finding_signature_uses_detail_for_metric_lines():
+    base = {
+        "filePath": "satprep/corpus/audit.py",
+        "line": 0,
+        "rule": "complexity/file-too-large",
+        "detail": "satprep/corpus/audit.py · 858 lines",
+    }
+    head = {
+        **base,
+        "detail": "satprep/corpus/audit.py · 859 lines",
+    }
+
+    assert gate.finding_signature(base, ".") != gate.finding_signature(head, ".")
+    assert gate.is_changed_finding(
+        head,
+        {},
+        set(),
+        is_new=gate.finding_signature(head, ".") != gate.finding_signature(base, "."),
+    )
+
+
+def test_score_worsened_since_base_only_blocks_regressions(tmp_path: Path):
+    config = tmp_path / "config.yml"
+    config.write_text("\n".join(["ci:", "  failBelow: 85"]), encoding="utf-8")
+
+    assert gate.score_worsened_since_base({"score": 90}, {"score": 84}, config)
+    assert not gate.score_worsened_since_base({"score": 90}, {"score": 86}, config)
+    assert not gate.score_worsened_since_base({"score": 63}, {"score": 64}, config)
+    assert not gate.score_worsened_since_base({"score": 63}, {"score": 63}, config)
+
+
+def test_score_worsened_missing_base_score_fails_closed(tmp_path: Path):
+    config = tmp_path / "config.yml"
+    config.write_text("\n".join(["ci:", "  failBelow: 85"]), encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        gate.score_worsened_since_base({}, {"score": 84}, config)
+
+
+def test_score_blocking_reads_ci_failbelow(tmp_path: Path):
+    config = tmp_path / "config.yml"
+    config.write_text(
+        "\n".join(
+            [
+                "ci:",
+                "  failBelow: 85",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert gate.score_blocking({"score": 84}, config)
+    assert not gate.score_blocking({"score": 85}, config)
+    assert not gate.score_blocking({"score": 86}, config)
     finding = {
         "filePath": "satprep/corpus/audit.py",
         "line": 47,
