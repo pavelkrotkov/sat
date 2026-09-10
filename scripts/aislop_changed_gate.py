@@ -22,10 +22,12 @@ Exit 1 when any such finding is new relative to the base.
 
 from __future__ import annotations
 
+import io
 import json
 import re
 import subprocess
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -35,6 +37,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 AISLOP = ["npx", "--yes", "aislop@0.16.0", "scan", "--format", "json", "."]
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 DEFAULT_CONFIG_WARNING = "using default configuration"
+CONFIG_PARSE_WARNING = ("failed to parse", "default configuration")
 
 # Quality/score-threshold rules whose NEW appearance must block even though they
 # are warning severity in aislop output. These are the config `quality.*`
@@ -62,12 +65,14 @@ def run_aislop(directory: str, base: str | None = None) -> dict:
         print(result.stdout, file=sys.stderr)
         raise SystemExit(f"aislop returned invalid JSON: {exc}") from exc
 
+    output = f"{result.stdout}{result.stderr}".lower()
+    if DEFAULT_CONFIG_WARNING in output or any(item in output for item in CONFIG_PARSE_WARNING):
+        print(result.stderr, file=sys.stderr)
+        raise SystemExit("aislop configuration is invalid or fell back to default")
+
     if result.returncode != 0 and not report:
         print(result.stderr, file=sys.stderr)
         raise SystemExit(f"aislop command failed (code {result.returncode})")
-
-    if DEFAULT_CONFIG_WARNING in f"{result.stdout}{result.stderr}".lower():
-        raise SystemExit("aislop fell back to default configuration")
 
     return report
 
@@ -183,10 +188,6 @@ def added_lines(  # noqa: C901 (diff parser state machine)
         match = HUNK.match(raw)
         if match:
             line = int(match.group(1))
-            count = int(match.group(2) or "1")
-            current = ranges.setdefault(path or "", set())
-            current.update(range(line, line + count))
-            line += count
             continue
         if raw.startswith("+") and not raw.startswith("+++"):
             if current is not None:
@@ -199,20 +200,24 @@ def added_lines(  # noqa: C901 (diff parser state machine)
     return ranges, new_files
 
 
-def materialize_base(base: str, files: list[str], config_files: list[str], directory: str) -> None:
-    """Write base versions of `files` and `.aislop` config to a temp dir."""
-    for rel in files + config_files:
-        blob = subprocess.run(
-            ["git", "show", f"{base}:{rel}"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if blob.returncode != 0:  # file absent at base (newly added) -> no baseline
+def materialize_base(base: str, directory: str, config_files: list[str]) -> None:
+    """Write the full base tree and policy files into ``directory``."""
+    tree = subprocess.run(
+        ["git", "archive", base],
+        cwd=_ROOT,
+        capture_output=True,
+        check=True,
+    ).stdout
+    with tarfile.open(fileobj=io.BytesIO(tree), mode="r:*") as archive:
+        archive.extractall(directory)
+
+    for rel in config_files:
+        source = _ROOT / rel
+        if not source.exists():
             continue
         target = Path(directory) / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(blob.stdout, encoding="utf-8")
+        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def file_line_text(root: str, relpath: str, line: int) -> str:
@@ -231,7 +236,7 @@ def finding_signature(finding: dict, root: str) -> tuple:
 
     Function-level findings include the measured value from `detail`, so a
     threshold violation that worsens has a new signature. Line-level findings
-    use source text, which stays stable when code merely shifts lines.
+    use source text when available, which stays stable when code merely shifts lines.
     """
     relpath = finding.get("filePath", "")
     rule = finding.get("rule", "")
@@ -241,7 +246,7 @@ def finding_signature(finding: dict, root: str) -> tuple:
         return ("func", relpath, rule, func_match.group(1), finding.get("detail", ""))
     detail = finding.get("detail", "")
     text = detail if line <= 0 else file_line_text(root, relpath, line)
-    return ("line", relpath, rule, line, text)
+    return ("line", relpath, rule, text or detail)
 
 
 def is_blocking(finding: dict) -> bool:
@@ -262,7 +267,7 @@ def is_changed_finding(
     line = int(finding.get("line") or 0)
     line_changed = line in paths.get(file_path, set())
     if _FUNC_NAME.match(finding.get("detail", "")) and line > 0:
-        return is_new and (finding.get("changeContext") == "changed-line" or line_changed)
+        return is_new
     return is_new or line_changed
 
 
@@ -276,11 +281,11 @@ def main() -> int:
     config_files = [".aislop/config.yml", ".aislop/rules.yml"]
 
     config_path = _ROOT / ".aislop/config.yml"
-    head = run_aislop(str(_ROOT), base)
+    head = run_aislop(str(_ROOT))
     head_diags = [d for d in head.get("diagnostics", []) if d.get("filePath") in files]
     head_sigs = {finding_signature(d, str(_ROOT)) for d in head_diags}
     with tempfile.TemporaryDirectory(prefix="aislop_base_") as base_dir:
-        materialize_base(base, files, config_files, base_dir)
+        materialize_base(base, base_dir, config_files)
         base_report = run_aislop(base_dir)
         base_diags = [d for d in base_report.get("diagnostics", []) if d.get("filePath") in files]
         base_sigs = {finding_signature(d, base_dir) for d in base_diags}

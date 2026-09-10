@@ -31,17 +31,23 @@ jobs:
       # Deterministic gate: compare findings in changed files at HEAD and the PR
       # merge-base, then fail only new or worsened findings in changed code.
       # This keeps the legacy baseline non-blocking while enforcing configured
-      # quality thresholds and rules elevated to `error`. The base is resolved
-      # to the merge-base of origin/main and HEAD (checked out at the PR head), not
-      # live origin/main, so concurrent merges into main after this branch
-      # forked cannot sweep unrelated files into the changed set. The aislop
-      # version is pinned to the reviewed baseline; never bump to `@latest`
-      # without checking release notes.
-      - name: Compute PR merge-base
+      # quality thresholds and rules elevated to `error`. The base is resolved to
+      # the PR base SHA in pull_request events, or the before-ref on pushes to
+      # main, and used to scope the gate to truly changed code. This avoids pulling
+      # in concurrent or stale history. The aislop version is pinned to the reviewed
+      # baseline; never bump to `@latest` without checking release notes.
+      - name: Resolve merge-base for this run
         id: mergebase
         run: |
-          MERGE_BASE="$(git merge-base origin/main HEAD)"
-          echo "PR's changed files are diffed against merge-base $MERGE_BASE"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            MERGE_BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            MERGE_BASE="${{ github.event.before }}"
+          fi
+          if [ -z "$MERGE_BASE" ]; then
+            MERGE_BASE="$(git rev-parse HEAD~1)"
+          fi
+          echo "Comparing against merge-base $MERGE_BASE"
           echo "sha=$MERGE_BASE" >> "$GITHUB_OUTPUT"
       - name: Run aislop (changed code only)
         run: python scripts/aislop_changed_gate.py "${{ steps.mergebase.outputs.sha }}"

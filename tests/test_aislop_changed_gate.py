@@ -10,6 +10,36 @@ def test_default_config_fallback_is_detected_in_command_output():
     assert "using default configuration" in output.lower()
 
 
+class _Completed:
+    def __init__(self, stdout: str, returncode: int = 0, stderr: str = ""):
+        self.stdout = stdout
+        self.returncode = returncode
+        self.stderr = stderr
+
+
+def _fake_diff_output(output: str):
+    def _fake_run(cmd, check, capture_output, text, **kwargs):
+        return _Completed(output)
+
+    return _fake_run
+
+
+def test_added_lines_tracks_only_added_hunk_lines(monkeypatch):
+    diff = """diff --git a/demo.py b/demo.py
+index 111111..222222 100644
+--- a/demo.py
++++ b/demo.py
+@@ -184,1 +184,1 @@
++added line
+"""
+
+    monkeypatch.setattr(gate.subprocess, "run", _fake_diff_output(diff))
+    ranges, new_files = gate.added_lines("base")
+
+    assert new_files == set()
+    assert ranges["demo.py"] == {184}
+
+
 def test_finding_signature_uses_detail_for_metric_lines():
     base = {
         "filePath": "satprep/corpus/audit.py",
