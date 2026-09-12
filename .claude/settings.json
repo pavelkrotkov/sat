@@ -31,6 +31,22 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx --yes aislop@0.16.0 hook claude --stop",
+            "__aislop": {
+              "v": 1,
+              "managed": true,
+              "hash": "sha256:b8be6db412bcec6c1df3fd94b7835e1a"
+            }
+          }
+        ]
+      }
     ]
   }
 }
