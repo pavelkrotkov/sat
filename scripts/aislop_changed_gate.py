@@ -48,7 +48,7 @@ from scripts.aislop_policy import (
 )
 from scripts.ruff_changed_gate import added_lines, c901_blocking_diagnostics
 
-_ROOT = Path(__file__).resolve().parent.parent
+_ROOT = Path(os.environ.get("AISLOP_ROOT", Path(__file__).resolve().parent.parent)).resolve()
 AISLOP = ["npx", "--yes", "aislop@0.16.0", "scan", "--format", "json", "."]
 DEFAULT_CONFIG_WARNING = "using default configuration"
 CONFIG_PARSE_WARNING = ("failed to parse", "default configuration")

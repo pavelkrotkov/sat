@@ -64,12 +64,53 @@ jobs:
           echo "sha=$MERGE_BASE" >> "$GITHUB_OUTPUT"
       - name: Verify trusted gate sources
         run: |
+          set -euo pipefail
           manifest="$RUNNER_TEMP/aislop-gate.sha256"
-          if git cat-file -e "${{ steps.mergebase.outputs.sha }}:.github/aislop-gate.sha256" 2>/dev/null; then
-            git show "${{ steps.mergebase.outputs.sha }}:.github/aislop-gate.sha256" > "$manifest"
+          trusted_revision="${{ steps.mergebase.outputs.sha }}"
+          if git cat-file -e "$trusted_revision:.github/aislop-gate.sha256" 2>/dev/null; then
+            git show "$trusted_revision:.github/aislop-gate.sha256" > "$manifest"
           else
-            cp .github/aislop-gate.sha256 "$manifest"
+            # This is a one-time bootstrap for the prepared pre-policy base.
+            # Any other base without a trusted manifest fails closed.
+            test "$trusted_revision" = "c83cf4e9fec118fa2785a0cb0fbab82469fbb7e2"
+            printf '%s\n' \
+              '89d336cee911cd8e5c50dfd600450d0f1a3f7756a0287320da4101033da7c01c  scripts/aislop_changed_gate.py' \
+              'ee73915d80ef5dbb319a0512a314741aa090455e8618cf3e6f8e18367328e2ed  scripts/aislop_policy_compare.py' \
+              '93970efe0c1e49bc1eb9b7470cb6e122580fc14aa537ed830aff0790fae5e9ea  scripts/aislop_policy.py' \
+              '29f0aed130eda6b6b7f07009f1990b7f1386825ce04d1f0df7defa170744152a  scripts/check_kb.py' \
+              '18fd8464d6e3f83a392cf93e6f253f86b944c3ecf5d430ea9592bfd39d3468e2  scripts/check_public_repo.py' \
+              '9b09bcdca9eacdd86ddf7f9eb07acf561908c731736d4cf0eeb9097b32919107  scripts/gen_error_report.py' \
+              'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  scripts/__init__.py' \
+              'adb44152ea065d91993ffd4f3a36cb96618b9fe2aa6d85c708f3bed47530ba0b  scripts/ruff_changed_gate.py' \
+              > "$manifest"
+            trusted_revision=HEAD
           fi
-          sha256sum --strict --check "$manifest"
+          expected="$RUNNER_TEMP/aislop-gate.expected"
+          actual="$RUNNER_TEMP/aislop-gate.actual"
+          awk 'NF == 2 { print $2 }' "$manifest" | sort > "$expected"
+          git ls-tree -r --name-only "$trusted_revision" -- scripts \
+            | while IFS= read -r path; do
+                case "$path" in
+                  scripts/*.py) printf '%s\n' "$path" ;;
+                esac
+              done \
+            | sort > "$actual"
+          if ! cmp -s "$expected" "$actual"; then
+            diff -u "$expected" "$actual"
+            exit 1
+          fi
+          trusted_dir="$RUNNER_TEMP/aislop-gate"
+          mkdir -p "$trusted_dir"
+          git archive "$trusted_revision" -- scripts | tar -x -C "$trusted_dir"
+          (
+            cd "$trusted_dir"
+            sha256sum --strict --check "$manifest"
+          )
+          echo "Using trusted gate sources from $trusted_revision"
       - name: Run aislop (changed code only)
-        run: uv run --no-sync python scripts/aislop_changed_gate.py "${{ steps.mergebase.outputs.sha }}"
+        env:
+          AISLOP_ROOT: ${{ github.workspace }}
+          PYTHONPATH: ${{ runner.temp }}/aislop-gate
+        run: >
+          ${{ github.workspace }}/.venv/bin/python -P -m scripts.aislop_changed_gate
+          "${{ steps.mergebase.outputs.sha }}"

@@ -444,3 +444,20 @@ def test_changed_c901_matches_body_edits(monkeypatch, tmp_path: Path):
 
     assert ruff_gate.changed_c901(str(tmp_path), {"demo.py": {2}}, set()) == [diagnostic]
     assert ruff_gate.changed_c901(str(tmp_path), {"demo.py": {3}}, set()) == []
+
+
+def test_trusted_gate_manifest_covers_script_modules_and_uses_safe_runner():
+    root = Path(__file__).parents[1]
+    manifest = root / ".github" / "aislop-gate.sha256"
+    listed = {
+        line.split(maxsplit=1)[1]
+        for line in manifest.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    }
+    script_modules = {path.relative_to(root).as_posix() for path in (root / "scripts").glob("*.py")}
+    assert listed == script_modules
+
+    workflow = (root / ".github" / "workflows" / "aislop.yml").read_text(encoding="utf-8")
+    assert "cp .github/aislop-gate.sha256" not in workflow
+    assert 'git archive "$trusted_revision" -- scripts' in workflow
+    assert "python -P -m scripts.aislop_changed_gate" in workflow
