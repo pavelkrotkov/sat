@@ -68,8 +68,11 @@ pytest_add_cli_args_test_selection = ["tests/"]
 # copies only source_paths + tests into mutants/, so the scripts package must
 # be copied explicitly or collection fails with ModuleNotFoundError.
 also_copy = ["scripts/", "deploy/"]
-# Run high-signal module baselines (fast, advisory). Mutant ids use dotted
-# module paths, so target one module with a glob (no leading path prefix):
-#   uv run mutmut run "satprep.training.composition*"
+# Mutmut collects every source path before applying command name filters, so
+# keep the initial baseline bounded to the highest-signal module. Widen this
+# list deliberately when another module is ready for mutation review.
+only_mutate = ["satprep/training/composition.py"]
+# Run the configured high-signal baseline (advisory, not a per-edit hook):
+#   uv run mutmut run
 # Inspect survivors and apply the strongest:
 #   uv run mutmut results && uv run mutmut apply && uv run pytest -q

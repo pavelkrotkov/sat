@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from scripts import aislop_changed_gate as gate
+from scripts import aislop_policy as policy
 
 
 def test_default_config_fallback_is_detected_in_command_output():
@@ -141,3 +142,11 @@ def test_deep_nesting_threshold_is_blocking():
     }
 
     assert gate.is_blocking(finding)
+
+
+def test_policy_rejects_schema_invalid_config(tmp_path: Path):
+    config = tmp_path / "config.yml"
+    config.write_text("version: 1\nengines:\n  unknown: true\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="unknown keys"):
+        policy.validate_config(config)
