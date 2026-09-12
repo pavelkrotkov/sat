@@ -1,0 +1,4 @@
+# The quality gate and its policy are executable trust-boundary code.
+.github/ @pavelkrotkov
+.aislop/ @pavelkrotkov
+scripts/ @pavelkrotkov

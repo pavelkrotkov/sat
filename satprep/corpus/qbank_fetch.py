@@ -148,6 +148,70 @@ def _save_figure(ext_id: str, index: int, content: bytes, suffix: str, image_dir
     return name
 
 
+def _table_id_map(table, id_prefix: str) -> dict[str, str]:
+    id_map: dict[str, str] = {}
+    for index, th in enumerate(table.find_all("th"), 1):
+        source = th.get("id")
+        if isinstance(source, str) and source:
+            id_map[source] = f"{id_prefix}-th-{index}"
+    return id_map
+
+
+def _attr_value(raw: object) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, (list, tuple)):
+        return " ".join(str(part) for part in raw if part is not None)
+    return str(raw)
+
+
+def _normalize_table_attr(tag, attr: str, id_map: dict[str, str]) -> None:
+    value = _attr_value(tag.get(attr))
+    if tag.name == "th" and attr == "id" and value in id_map:
+        tag["id"] = id_map[value]
+        return
+    if attr == "headers":
+        tokens = [id_map[token] for token in value.split() if token in id_map]
+        if tokens:
+            tag["headers"] = " ".join(tokens)
+        else:
+            del tag["headers"]
+        return
+    if tag.name == "th" and attr == "scope":
+        if value.lower() not in {"row", "col", "rowgroup", "colgroup"}:
+            del tag["scope"]
+        return
+    if attr not in _TABLE_ALLOWED_ATTRS.get(tag.name, set()) or not re.fullmatch(
+        r"[0-9a-zA-Z\s]+", value or ""
+    ):
+        del tag[attr]
+
+
+def _normalize_table_tag(tag, id_map: dict[str, str]) -> None:
+    if tag.name in _TABLE_DANGEROUS_TAGS:
+        tag.decompose()
+        return
+    if tag.name not in _TABLE_ALLOWED_TAGS:
+        if tag.name in _TABLE_UNWRAP_TAGS:
+            if tag.name == "br":
+                tag.replace_with(" ")
+            else:
+                tag.unwrap()
+        elif tag.name == "img":
+            alt = tag.get("alt")
+            if isinstance(alt, str) and alt:
+                tag.replace_with(alt)
+            else:
+                tag.decompose()
+        else:
+            tag.decompose()
+        return
+    for attr in list(tag.attrs):
+        _normalize_table_attr(tag, attr, id_map)
+
+
 def sanitize_table(html: str, id_prefix: str = "eqb") -> str | None:
     """Reduce arbitrary `<table>` markup to a safe, accessible subset.
 
@@ -173,82 +237,58 @@ def sanitize_table(html: str, id_prefix: str = "eqb") -> str | None:
     table = soup.find("table")
     if table is None:
         return None
-    # Rewrite header ids so any headers="..." reference stays within the
-    # table we persist (source ids could collide with page ids or be
-    # absent). The id counter makes the map deterministic per table, and the
-    # same map remaps every headers="..." token so references never dangle.
-    id_map: dict[str, str] = {}
-    for i, th in enumerate(table.find_all("th"), 1):
-        src = th.get("id")
-        if isinstance(src, str) and src:
-            id_map[src] = f"{id_prefix}-th-{i}"
+    id_map = _table_id_map(table, id_prefix)
     # Process the root <table> element together with its descendants: the
     # root carries its own attributes that the descendant pass would miss.
     for tag in [table, *table.find_all(True)]:
-        if tag.name in _TABLE_DANGEROUS_TAGS:
-            tag.decompose()
-            continue
-        if tag.name not in _TABLE_ALLOWED_TAGS:
-            # unwrap harmless formatting tags (keep their text); drop
-            # anything else not represented (img, unknown blocks)
-            if tag.name in _TABLE_UNWRAP_TAGS:
-                # round-4 finding: <br> must become a space, not nothing, so
-                # <td>1<br>2</td> stays "1 2" instead of collapsing to "12".
-                if tag.name == "br":
-                    tag.replace_with(" ")
-                else:
-                    tag.unwrap()
-            else:
-                # img with alt text: keep the alt, drop the tag. Everything
-                # else unknown (and any URL/script carrier) is removed.
-                if tag.name == "img":
-                    alt = tag.get("alt")
-                    if isinstance(alt, str) and alt:
-                        tag.replace_with(alt)
-                    else:
-                        tag.decompose()
-                else:
-                    tag.decompose()
-            continue
-        for attr in list(tag.attrs):
-            raw = tag.get(attr)
-            # BeautifulSoup returns multi-valued attrs (class, headers, …)
-            # as lists; coerce to the space-joined string we validate.
-            if raw is None:
-                value = ""
-            elif isinstance(raw, str):
-                value = raw
-            else:
-                value = " ".join(str(part) for part in raw if part is not None)
-            if tag.name == "th" and attr == "id" and value in id_map:
-                tag["id"] = id_map[value]
-                continue
-            if attr == "headers":
-                # tokens are space-separated header ids; remap the ones we
-                # know, drop the rest (they can only dangle after the purge)
-                tokens = [id_map[t] for t in value.split() if t in id_map]
-                if tokens:
-                    tag["headers"] = " ".join(tokens)
-                else:
-                    del tag["headers"]
-                continue
-            if tag.name == "th" and attr == "scope":
-                # enumerated attribute: anything outside the four spec
-                # values is junk (round-1 finding: arbitrary values were
-                # passing the alphanumeric check)
-                if value.lower() not in {"row", "col", "rowgroup", "colgroup"}:
-                    del tag["scope"]
-                continue
-            if attr not in _TABLE_ALLOWED_ATTRS.get(tag.name, set()):
-                del tag[attr]
-                continue
-            if not re.fullmatch(r"[0-9a-zA-Z\s]+", value or ""):
-                del tag[attr]
+        _normalize_table_tag(tag, id_map)
     # Tables whose cells carry no text (or whose structure collapsed to
     # nothing) are useless to a student; skip rather than persist a husk.
     if not any((tag.get_text(strip=True)) for tag in table.find_all(["th", "td"])):
         return None
     return str(table)
+
+
+def _payload_img_data(data: str) -> tuple[str, bytes, str] | None:
+    """Decode one data-URI <img> payload, or None to skip (keep text)."""
+    if "," not in data:
+        return None
+    b64 = re.sub(r"\s+", "", data.split(",", 1)[1])
+    if not b64:
+        return None
+    mime = data[len("data:image/") :].split(";", 1)[0].lower()
+    suffix = {"jpeg": "jpg", "svg+xml": "svg"}.get(mime) or mime
+    suffix = suffix.rsplit("/", 1)[-1].split("+", 1)[-1]
+    if not suffix.isalnum() or len(suffix) > 5:
+        return None
+    try:
+        return "image", base64.b64decode(b64, validate=True), suffix
+    except Exception:
+        return None
+
+
+def _visual_payload(
+    match: re.Match, ext_id: str, table_seq: int
+) -> tuple[list[tuple[str, bytes, str]], int]:
+    block = match.group(0)
+    data = match.group(1)
+    if data is not None:
+        image = _payload_img_data(data)
+        return ([image] if image is not None else []), table_seq
+    table = _TABLE_RE.search(block)
+    if table:
+        sanitized = sanitize_table(table.group(0), id_prefix=f"eqb-{ext_id}-t{table_seq}")
+        if sanitized is not None:
+            return [("table", sanitized.encode("utf-8"), "html")], table_seq + 1
+    svg = _SVG_RE.search(block)
+    if svg:
+        return [("image", svg.group(0).encode("utf-8"), "svg")], table_seq
+    records = []
+    for inner in _IMG_DATA_RE.finditer(block):
+        image = _payload_img_data(inner.group(2))
+        if image is not None:
+            records.append(image)
+    return records, table_seq
 
 
 def _extract_visuals(
@@ -281,61 +321,10 @@ def _extract_visuals(
     index = start_index
     tseq = table_seq
 
-    def _payload(match: re.Match) -> list[tuple[str, bytes, str]]:
-        """(kind, content, suffix) records for one match (may be several)."""
-        nonlocal tseq
-        block = match.group(0)
-        records: list[tuple[str, bytes, str]] = []
-        data = match.group(1)  # set only by the bare data-URI <img> branch
-        if data is None:
-            # Round-3 (finding 7): a <figure class="table"> containing an
-            # inline SVG inside a data cell must be extracted as a TABLE, not
-            # as an image — the table branch owns the wrapper; only a figure
-            # with NO table but an SVG/photo is a figure.
-            table = _TABLE_RE.search(block)
-            if table:
-                sanitized = sanitize_table(table.group(0), id_prefix=f"eqb-{ext_id}-t{tseq}")
-                if sanitized is not None:
-                    tseq += 1
-                    return [("table", sanitized.encode("utf-8"), "html")]
-                # sanitize failed (e.g. no cells): fall through to svg/img
-            svg = _SVG_RE.search(block)
-            if svg:
-                return [("image", svg.group(0).encode("utf-8"), "svg")]
-            # Round-4 (finding 5): a <figure> may hold MORE than one data-URI
-            # <img>; search() would save only the first. Iterate every one in
-            # document order.
-            for inner in _IMG_DATA_RE.finditer(block):  # <figure><img...></figure>
-                one = _payload_img_data(inner.group(2))
-                if one is not None:
-                    records.append(one)
-            return records
-        one = _payload_img_data(data)
-        return [one] if one is not None else []
-
-    def _payload_img_data(data: str) -> tuple[str, bytes, str] | None:
-        """Decode one data-URI <img> payload, or None to skip (keep text)."""
-        if "," not in data:  # malformed data URI: skip, keep as text
-            return None
-        # Long payloads commonly serialize with newlines every ~76 chars;
-        # b64decode(validate=True) raises on any whitespace, which silently
-        # dropped the figure (issue #31). Strip before decoding.
-        b64 = re.sub(r"\s+", "", data.split(",", 1)[1])
-        if not b64:  # whitespace-only payload: nothing to save, skip
-            return None
-        mime = data[len("data:image/") :].split(";", 1)[0].lower()
-        suffix = {"jpeg": "jpg", "svg+xml": "svg"}.get(mime) or mime
-        suffix = suffix.rsplit("/", 1)[-1].split("+", 1)[-1]
-        if not suffix.isalnum() or len(suffix) > 5:
-            return None  # unknown/unsafe type: skip
-        try:
-            return "image", base64.b64decode(b64, validate=True), suffix
-        except Exception:
-            return None  # malformed payload: skip, keep as text
-
     def _repl(match: re.Match) -> str:
-        nonlocal index
-        for got in _payload(match):
+        nonlocal index, tseq
+        payload, tseq = _visual_payload(match, ext_id, tseq)
+        for got in payload:
             kind, content, suffix = got
             if kind == "table":
                 visuals.append({"kind": "table", "html": content.decode("utf-8")})
@@ -437,170 +426,112 @@ def _normalize(detail: dict, meta: dict, image_dir: Path | None = None) -> dict 
     }
 
 
-def insert_qbank_row(conn, row: dict, batch: str) -> str:
-    """Shared insertion path for file imports and live fetches.
+def _backfill_column(conn, table_id: int, column: str, current: str, value: str) -> None:
+    try:
+        if json.loads(current or "null"):
+            return
+    except ValueError:
+        current = ""
+    conn.execute(f"UPDATE questions SET {column}=? WHERE id=?", (value, table_id))
 
-    Returns one of: 'added', 'duplicate', 'invalid'.
-    """
-    choices = row["choices"]
-    correct = row["correct"]
-    if len(choices) < 2 or not correct:
-        return "invalid"
-    fp = fpmod.fingerprint(row["passage"], row["stem"], [c["text"] for c in choices])
-    exists = conn.execute(
-        "SELECT id, choices_json, images_json, visuals_json, official_skill, difficulty, pool FROM questions WHERE fingerprint=?",
-        (fp,),
+
+def _backfill_media(conn, table_id: int, existing: sqlite3.Row, media: tuple) -> None:
+    images, visuals, images_json, visuals_json = media
+    if images:
+        _backfill_column(conn, table_id, "images_json", existing["images_json"] or "", images_json)
+    if visuals:
+        _backfill_column(
+            conn, table_id, "visuals_json", existing["visuals_json"] or "", visuals_json
+        )
+
+
+def _reconcile_choice_less(
+    conn, table_id: int, row: dict, existing: sqlite3.Row, choices: list, media: tuple
+) -> str:
+    _images, _visuals, _images_json, _visuals_json = media
+    skill = existing["official_skill"] or row.get("skill", "")
+    domain = SKILL_TO_DOMAIN.get(skill, "") if skill else ""
+    difficulty = (row.get("difficulty") or "").strip().lower()
+    conn.execute(
+        """UPDATE questions SET choices_json=?, correct_letter=?,
+               difficulty=CASE WHEN ?!='' THEN ? ELSE difficulty END,
+               official_skill=?, official_domain=?,
+               skill_source=CASE WHEN ?!='' THEN 'reconciled' ELSE skill_source END,
+               rationale=CASE WHEN rationale='' THEN ? ELSE rationale END
+           WHERE id=?""",
+        (
+            json.dumps(choices),
+            row["correct"],
+            difficulty,
+            difficulty,
+            skill,
+            domain,
+            existing["official_skill"] == "" and bool(skill),
+            row.get("rationale", ""),
+            table_id,
+        ),
+    )
+    _backfill_media(conn, table_id, existing, media)
+    return "duplicate"
+
+
+def _reconcile_duplicate_metadata(
+    conn, table_id: int, row: dict, existing: sqlite3.Row, media: tuple
+) -> str:
+    _images, _visuals, _images_json, _visuals_json = media
+    difficulty = (row.get("difficulty") or "").strip().lower()
+    skill = row.get("skill", "")
+    conn.execute(
+        """UPDATE questions SET
+              difficulty=CASE WHEN difficulty='' AND ?!='' THEN ? ELSE difficulty END,
+              official_skill=CASE WHEN official_skill='' AND ?!='' THEN ? ELSE official_skill END,
+              official_domain=CASE WHEN official_skill='' AND ?!='' THEN ? ELSE official_domain END,
+              rationale=CASE WHEN rationale='' AND ?!='' THEN ? ELSE rationale END
+          WHERE id=?""",
+        (
+            difficulty,
+            difficulty,
+            skill,
+            skill,
+            skill,
+            SKILL_TO_DOMAIN.get(skill, ""),
+            row.get("rationale", ""),
+            row.get("rationale", ""),
+            table_id,
+        ),
+    )
+    _backfill_media(conn, table_id, existing, media)
+    return "duplicate"
+
+
+def _reconcile_existing_qbank(
+    conn, row: dict, existing: sqlite3.Row, choices: list, media: tuple
+) -> str:
+    if existing["choices_json"] == "[]" and choices:
+        return _reconcile_choice_less(conn, existing["id"], row, existing, choices, media)
+    return _reconcile_duplicate_metadata(conn, existing["id"], row, existing, media)
+
+
+def _external_qbank_row(conn, external_id: str) -> sqlite3.Row | None:
+    if not external_id:
+        return None
+    return conn.execute(
+        """SELECT id, choices_json, images_json, visuals_json, official_skill, difficulty, pool
+          FROM questions
+          WHERE active=1
+            AND source='college_board_question_bank'
+            AND json_valid(provenance_json)
+            AND json_extract(provenance_json, '$.external_id')=?
+          ORDER BY id DESC""",
+        (external_id,),
     ).fetchone()
 
-    images = row.get("images") or []
-    images_json = json.dumps(images)
-    visuals = row.get("visuals") or []
-    visuals_json = json.dumps(visuals)
 
-    def _backfill_images(target_id: int, current: str) -> None:
-        if not images:
-            return
-        try:
-            if json.loads(current or "null"):
-                return  # already has figures
-        except ValueError:
-            pass
-        conn.execute("UPDATE questions SET images_json=? WHERE id=?", (images_json, target_id))
-
-    def _backfill_visuals(target_id: int, current: str) -> None:
-        if not visuals:
-            return
-        try:
-            if json.loads(current or "null"):
-                return  # already has visuals
-        except ValueError:
-            pass
-        conn.execute("UPDATE questions SET visuals_json=? WHERE id=?", (visuals_json, target_id))
-
-    def _reconcile(target_id: int) -> str:
-        row_ = exists_row
-        assert row_ is not None
-        skill = row_["official_skill"] or row.get("skill", "")
-        domain = SKILL_TO_DOMAIN.get(skill, "") if skill else ""
-        diff = (row.get("difficulty") or "").strip().lower()
-        conn.execute(
-            """UPDATE questions SET choices_json=?, correct_letter=?,
-                   difficulty=CASE WHEN ?!='' THEN ? ELSE difficulty END,
-                   official_skill=?, official_domain=?,
-                   skill_source=CASE WHEN ?!='' THEN 'reconciled' ELSE skill_source END,
-                   rationale=CASE WHEN rationale='' THEN ? ELSE rationale END
-               WHERE id=?""",
-            (
-                json.dumps(choices),
-                row["correct"],
-                diff,
-                diff,
-                skill,
-                domain,
-                row_["official_skill"] == "" and bool(skill),
-                row.get("rationale", ""),
-                target_id,
-            ),
-        )
-        _backfill_images(target_id, row_["images_json"] or "")
-        _backfill_visuals(target_id, row_["visuals_json"] or "")
-        return "duplicate"
-
-    exists_row: sqlite3.Row | None = None
-    if exists:
-        # Cross-source match (spec section 2): never counted as fresh.
-        exists_row = exists
-        if exists["choices_json"] == "[]" and choices:
-            return _reconcile(exists["id"])
-        # full duplicate: still reconcile authoritative metadata the historical
-        # scrape lacked (difficulty was never recorded by Bluebook)
-        diff = (row.get("difficulty") or "").strip().lower()
-        skill = row.get("skill", "")
-        conn.execute(
-            """UPDATE questions SET
-                  difficulty=CASE WHEN difficulty='' AND ?!='' THEN ? ELSE difficulty END,
-                  official_skill=CASE WHEN official_skill='' AND ?!='' THEN ? ELSE official_skill END,
-                  official_domain=CASE WHEN official_skill='' AND ?!='' THEN ? ELSE official_domain END,
-                  rationale=CASE WHEN rationale='' AND ?!='' THEN ? ELSE rationale END
-              WHERE id=?""",
-            (
-                diff,
-                diff,
-                skill,
-                skill,
-                skill,
-                SKILL_TO_DOMAIN.get(skill, ""),
-                row.get("rationale", ""),
-                row.get("rationale", ""),
-                exists["id"],
-            ),
-        )
-        _backfill_images(exists["id"], exists["images_json"] or "")
-        _backfill_visuals(exists["id"], exists["visuals_json"] or "")
-        return "duplicate"
-
-    # External-identity pass: the content fingerprint path above already handled
-    # identical re-imports. This pass guards against server-side content drift —
-    # College Board rephrasing a question between fetches — keyed on the canonical
-    # external_id. Matching on external_id means a known item reconciles instead
-    # of inserting a fresh duplicate (which could land in the protected
-    # benchmark pool).
-    ext = row.get("ext_id", "")
-    if ext:
-        # (no content-fingerprint match — that path returned 'duplicate'
-        # above; matching the same row twice here would be a no-op at best)
-        ext_row = conn.execute(
-            """SELECT id, choices_json, images_json, visuals_json, official_skill, difficulty, pool
-              FROM questions
-              WHERE active=1
-                AND source='college_board_question_bank'
-                AND json_valid(provenance_json)
-                AND json_extract(provenance_json, '$.external_id')=?
-              ORDER BY id DESC""",
-            (ext,),
-        ).fetchone()
-        if ext_row is not None:
-            exists_row = ext_row
-            if ext_row["choices_json"] == "[]" and choices:
-                return _reconcile(ext_row["id"])
-            diff = (row.get("difficulty") or "").strip().lower()
-            skill = row.get("skill", "")
-            conn.execute(
-                """UPDATE questions SET
-                      difficulty=CASE WHEN difficulty='' AND ?!='' THEN ? ELSE difficulty END,
-                      official_skill=CASE WHEN official_skill='' AND ?!='' THEN ? ELSE official_skill END,
-                      official_domain=CASE WHEN official_skill='' AND ?!='' THEN ? ELSE official_domain END,
-                      rationale=CASE WHEN rationale='' AND ?!='' THEN ? ELSE rationale END
-                  WHERE id=?""",
-                (
-                    diff,
-                    diff,
-                    skill,
-                    skill,
-                    skill,
-                    SKILL_TO_DOMAIN.get(skill, ""),
-                    row.get("rationale", ""),
-                    row.get("rationale", ""),
-                    ext_row["id"],
-                ),
-            )
-            _backfill_images(ext_row["id"], ext_row["images_json"] or "")
-            _backfill_visuals(ext_row["id"], ext_row["visuals_json"] or "")
-            return "duplicate"
-
-    # Loose reconciliation pass: a stored choice-less record whose normalized
-    # passage+stem matches this bank item IS the same question seen before.
-    loose = fpmod.fingerprint_loose(row["passage"], row["stem"])
-    for cand in conn.execute(
-        """SELECT id, passage, stem, official_skill, choices_json, images_json, visuals_json FROM questions
-         WHERE active=1 AND choices_json='[]'"""
-    ).fetchall():
-        if fpmod.fingerprint_loose(cand["passage"], cand["stem"]) != loose:
-            continue
-        exists_row = cand
-        return _reconcile(cand["id"])
-    pool = fpmod.pool_for_fingerprint(fp)
-    diff = (row.get("difficulty") or "").strip().lower()
+def _insert_new_qbank_row(
+    conn, row: dict, batch: str, fingerprint: str, choices: list, media: tuple
+) -> str:
+    _images, _visuals, images_json, visuals_json = media
+    difficulty = (row.get("difficulty") or "").strip().lower()
     conn.execute(
         """INSERT INTO questions
           (fingerprint, source, source_test, source_question_number, module,
@@ -610,7 +541,7 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
            pool, seen_benchmark, is_new_bank, import_batch, imported_at, provenance_json)
           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,1,?,?,?)""",
         (
-            fp,
+            fingerprint,
             "college_board_question_bank",
             batch,
             row.get("ext_id", ""),
@@ -618,15 +549,15 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
             row["passage"],
             row["stem"],
             json.dumps(choices),
-            correct,
+            row["correct"],
             row.get("rationale", ""),
             images_json,
             visuals_json,
             row.get("domain", ""),
             row.get("skill", ""),
             "metadata" if row.get("skill") else "unknown",
-            diff if diff in ("easy", "medium", "hard") else "",
-            pool,
+            difficulty if difficulty in ("easy", "medium", "hard") else "",
+            fpmod.pool_for_fingerprint(fingerprint),
             batch,
             utc_now(),
             json.dumps(row.get("_provenance") or {"external_id": row.get("ext_id", "")}),
@@ -635,6 +566,38 @@ def insert_qbank_row(conn, row: dict, batch: str) -> str:
     qid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.execute("INSERT INTO question_state (question_id) VALUES (?)", (qid,))
     return "added"
+
+
+def insert_qbank_row(conn, row: dict, batch: str) -> str:
+    """Shared insertion path for file imports and live fetches.
+
+    Returns one of: 'added', 'duplicate', 'invalid'.
+    """
+    choices = row["choices"]
+    if len(choices) < 2 or not row["correct"]:
+        return "invalid"
+    fp = fpmod.fingerprint(row["passage"], row["stem"], [c["text"] for c in choices])
+    images = row.get("images") or []
+    visuals = row.get("visuals") or []
+    media = (images, visuals, json.dumps(images), json.dumps(visuals))
+    exists = conn.execute(
+        "SELECT id, choices_json, images_json, visuals_json, official_skill, difficulty, pool FROM questions WHERE fingerprint=?",
+        (fp,),
+    ).fetchone()
+    if exists:
+        return _reconcile_existing_qbank(conn, row, exists, choices, media)
+    ext_row = _external_qbank_row(conn, row.get("ext_id", ""))
+    if ext_row is not None:
+        return _reconcile_existing_qbank(conn, row, ext_row, choices, media)
+    loose = fpmod.fingerprint_loose(row["passage"], row["stem"])
+    for cand in conn.execute(
+        """SELECT id, passage, stem, official_skill, choices_json, images_json, visuals_json FROM questions
+         WHERE active=1 AND choices_json='[]'"""
+    ).fetchall():
+        if fpmod.fingerprint_loose(cand["passage"], cand["stem"]) != loose:
+            continue
+        return _reconcile_existing_qbank(conn, row, cand, choices, media)
+    return _insert_new_qbank_row(conn, row, batch, fp, choices, media)
 
 
 def known_external_ids(conn) -> set[str]:
@@ -721,6 +684,105 @@ def fetch_qbank(
     return stats
 
 
+def _visual_query(hint: bool) -> str:
+    sql = (
+        "SELECT id, source_question_number, provenance_json, images_json, visuals_json"
+        " FROM questions"
+        " WHERE source='college_board_question_bank' AND active=1"
+        " AND visuals_json IN ('[]','','null')"
+    )
+    if hint:
+        sql += (
+            " AND (stem LIKE '%graph%' OR stem LIKE '%figure%' OR stem LIKE '%diagram%'"
+            " OR stem LIKE '%table%' OR stem LIKE '%chart%' OR stem LIKE '%scatterplot%'"
+            " OR stem LIKE '%map%' OR stem LIKE '%illustration%' OR stem LIKE '%plot%')"
+        )
+    return sql + " ORDER BY id"
+
+
+def _missing_visual_files(conn) -> int:
+    missing = 0
+    for row in conn.execute(
+        "SELECT images_json, visuals_json FROM questions"
+        " WHERE source='college_board_question_bank' AND active=1"
+    ).fetchall():
+        seen: set[str] = set()
+        for blob in (row["images_json"] or "[]", row["visuals_json"] or "[]"):
+            try:
+                refs = json.loads(blob) if blob else []
+            except (ValueError, TypeError):
+                continue
+            for ref in refs or []:
+                filename = ref if isinstance(ref, str) else (ref or {}).get("file", "")
+                if filename and filename not in seen:
+                    seen.add(filename)
+                    if not (config.IMAGES_DIR / filename).exists():
+                        missing += 1
+    return missing
+
+
+def _fetch_visual_candidate(row) -> tuple[bool, list[dict], list[str]] | None:
+    try:
+        external_id = (
+            json.loads(row["provenance_json"] or "{}").get("external_id")
+            or row["source_question_number"]
+        )
+    except json.JSONDecodeError:
+        external_id = row["source_question_number"]
+    if not external_id:
+        return None
+    detail = fetch_question(str(external_id))
+    if detail is None:
+        return None
+    source = f"{detail.get('stem') or ''} {detail.get('stimulus') or ''}"
+    had_markup = bool(re.search(r"<(figure|table|svg|img)\b", source, re.I))
+    normalized = _normalize(detail, {"external_id": str(external_id)})
+    visuals = normalized["visuals"] if normalized else []
+    images = [visual["file"] for visual in visuals if visual.get("kind") == "image"]
+    return had_markup, visuals, images
+
+
+def _checkpoint_backfill(conn, index: int, total: int, stats: dict, label: str) -> None:
+    if index % 50 == 0:
+        conn.commit()
+        print(f"  {label} {index}/{total} … {stats}")
+
+
+def _process_visual_candidate(
+    conn, row, index: int, total: int, stats: dict, options: tuple[float, bool]
+) -> None:
+    sleep_s, audit_only = options
+    stats["candidate"] += 1
+    result = _fetch_visual_candidate(row)
+    if result is None:
+        stats["failed"] += 1
+        return
+    stats["fetched"] += 1
+    had_markup, visuals, images = result
+    if not visuals:
+        stats["still_empty"] += 1
+        if had_markup:
+            stats["unsupported_markup"] += 1
+    else:
+        stats["now_visuals"] += 1
+        stats["now_images"] += len(images)
+        stats["now_tables"] += sum(1 for visual in visuals if visual.get("kind") == "table")
+    if audit_only:
+        _checkpoint_backfill(conn, index, total, stats, "audit")
+        time.sleep(sleep_s)
+        return
+    if not visuals:
+        _checkpoint_backfill(conn, index, total, stats, "backfill")
+        time.sleep(sleep_s)
+        return
+    conn.execute(
+        "UPDATE questions SET images_json=?, visuals_json=? WHERE id=?",
+        (json.dumps(images), json.dumps(visuals), row["id"]),
+    )
+    _checkpoint_backfill(conn, index, total, stats, "backfill")
+    time.sleep(sleep_s)
+
+
 def backfill_visuals(
     conn, hint: bool = True, limit: int = 0, sleep_s: float = 0.25, audit_only: bool = False
 ) -> dict:
@@ -738,22 +800,7 @@ def backfill_visuals(
     `audit_only`, no rows are written — the sweep reports what WOULD change,
     which is the acceptance-criteria audit for issue #46.
     """
-    sql = (
-        "SELECT id, source_question_number, provenance_json, images_json, visuals_json"
-        " FROM questions"
-        " WHERE source='college_board_question_bank' AND active=1"
-        " AND visuals_json IN ('[]','','null')"
-    )
-    if hint:
-        # Stems that name the embedded asset in any common word; the full
-        # sweep (hint=False) is the only one that can't miss any.
-        sql += (
-            " AND (stem LIKE '%graph%' OR stem LIKE '%figure%' OR stem LIKE '%diagram%'"
-            " OR stem LIKE '%table%' OR stem LIKE '%chart%' OR stem LIKE '%scatterplot%'"
-            " OR stem LIKE '%map%' OR stem LIKE '%illustration%' OR stem LIKE '%plot%')"
-        )
-    sql += " ORDER BY id"
-    rows = conn.execute(sql).fetchall()
+    rows = conn.execute(_visual_query(hint)).fetchall()
     if limit:
         rows = rows[:limit]
     stats = {
@@ -767,32 +814,7 @@ def backfill_visuals(
         "unsupported_markup": 0,
         "missing_files": 0,
     }
-    # Round-2 (finding 4): the missing-file audit inspects PERSISTED refs —
-    # including rows the sweep would not touch — BEFORE any extraction that
-    # re-saves figures. This is the only way a genuinely deleted file is
-    # reported rather than silently recreated by normalization. Round-3
-    # (finding 5): count each unique missing file once per row — current-format
-    # rows store a filename both as an images_json string AND as an image
-    # record in visuals_json, so a per-reference count would double-report.
-    for r in conn.execute(
-        "SELECT images_json, visuals_json FROM questions"
-        " WHERE source='college_board_question_bank' AND active=1"
-    ).fetchall():
-        seen: set[str] = set()
-        for blob in (r["images_json"] or "[]", r["visuals_json"] or "[]"):
-            try:
-                refs = json.loads(blob) if blob else []
-            except (ValueError, TypeError):
-                continue
-            for ref in refs or []:
-                fname = ref if isinstance(ref, str) else (ref or {}).get("file", "")
-                if not fname:
-                    continue
-                if fname in seen:
-                    continue
-                seen.add(fname)
-                if not (config.IMAGES_DIR / fname).exists():
-                    stats["missing_files"] += 1
+    stats["missing_files"] = _missing_visual_files(conn)
     if audit_only:
         # Round-2 (finding 3/4): audit must be purely read-only — do not
         # write figures to disk while re-normalizing (the audit reports what
@@ -800,65 +822,8 @@ def backfill_visuals(
         global _WRITE_FIGURES
         _WRITE_FIGURES = False
     try:
-        for i, r in enumerate(rows, 1):
-            stats["candidate"] += 1
-            try:
-                ext = (
-                    json.loads(r["provenance_json"] or "{}").get("external_id")
-                    or r["source_question_number"]
-                )
-            except json.JSONDecodeError:
-                ext = r["source_question_number"]
-            if not ext:
-                stats["failed"] += 1
-                continue
-            detail = fetch_question(str(ext))
-            if detail is None:
-                stats["failed"] += 1
-                continue
-            stats["fetched"] += 1
-            # Round-2 (finding 7): unsupported markup is counted only when the
-            # SOURCE actually carried a visual element that extraction failed
-            # to preserve — a plain text-only question is not "unsupported".
-            source = f"{detail.get('stem') or ''} {detail.get('stimulus') or ''}"
-            had_markup = bool(re.search(r"<(figure|table|svg|img)\b", source, re.I))
-            # Reuse the full normalization so figure numbering/ordering matches
-            # the normal ingest path (shared across stem and stimulus).
-            row = _normalize(detail, {"external_id": str(ext)})
-            visuals = row["visuals"] if row else []
-            images = [v["file"] for v in visuals if v.get("kind") == "image"]
-            if not visuals:
-                stats["still_empty"] += 1
-                if had_markup:
-                    stats["unsupported_markup"] += 1
-            else:
-                # Round-3 (finding 4): the audit reports what WOULD be
-                # preserved, so count discovered visuals here — before the
-                # early exits — so now_* are non-zero in audit mode too.
-                stats["now_visuals"] += 1
-                stats["now_images"] += len(images)
-                stats["now_tables"] += sum(1 for v in visuals if v.get("kind") == "table")
-            if audit_only:
-                if i % 50 == 0:
-                    print(f"  audit {i}/{len(rows)} … {stats}")
-                time.sleep(sleep_s)
-                continue
-            if not visuals:
-                # Checkpoint even when this candidate gained nothing, so an
-                # interrupted run resumes where it left off (resumable sweep).
-                if i % 50 == 0:
-                    conn.commit()
-                    print(f"  backfill {i}/{len(rows)} … {stats}")
-                time.sleep(sleep_s)
-                continue
-            conn.execute(
-                "UPDATE questions SET images_json=?, visuals_json=? WHERE id=?",
-                (json.dumps(images), json.dumps(visuals), r["id"]),
-            )
-            if i % 50 == 0:
-                conn.commit()
-                print(f"  backfill {i}/{len(rows)} … {stats}")
-            time.sleep(sleep_s)
+        for index, row in enumerate(rows, 1):
+            _process_visual_candidate(conn, row, index, len(rows), stats, (sleep_s, audit_only))
     finally:
         if audit_only:
             _WRITE_FIGURES = True

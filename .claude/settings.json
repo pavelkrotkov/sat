@@ -1,0 +1,61 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx --yes aislop@0.16.0 hook claude",
+            "__aislop": {
+              "v": 1,
+              "managed": true,
+              "hash": "sha256:76c5d8b7bfc1fd04c7b17dd5bf5c1d51"
+            }
+          }
+        ]
+      }
+    ],
+    "FileChanged": [
+      {
+        "matcher": ".aislop/config.yml|.aislop/rules.yml|package.json",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx --yes aislop@0.16.0 hook claude --on-file-changed",
+            "__aislop": {
+              "v": 1,
+              "managed": true,
+              "hash": "sha256:a7a5e96a04eac99b2d7f53066df9dc2e"
+            }
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx --yes aislop@0.16.0 hook claude --stop",
+            "__aislop": {
+              "v": 1,
+              "managed": true,
+              "hash": "sha256:b8be6db412bcec6c1df3fd94b7835e1a"
+            }
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run ruff check . && uv run ruff format --check . && uv run ty check --extra-search-path . . && uv run pytest -q && uv run python scripts/aislop_changed_gate.py \"$(git merge-base origin/main HEAD)\""
+          }
+        ]
+      }
+    ]
+  }
+}

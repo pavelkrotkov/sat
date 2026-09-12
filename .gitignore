@@ -36,5 +36,13 @@ kb/
 *.xlsx
 *.csv
 
+# Mutation testing scratch (mutmut 3.x)
+.mutmut-cache/
+mutants/
+
+# aislop local score history / telemetry cache
+.aislop/history.jsonl
+.aislop/*.jsonl
+
 # OS metadata
 .DS_Store

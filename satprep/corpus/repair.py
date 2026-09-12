@@ -155,13 +155,8 @@ def _json_choices(rec: dict, correct_letter: str = "") -> list[dict]:
 # ---------------------------------------------------------------- repair -----
 
 
-def repair_bluebook(conn) -> dict:
-    """Reconcile the historical corpus from outputs/ + artifacts/ (idempotent).
-
-    Returns a stats dict with counts for every repair action so the CLI can
-    report exactly what changed.
-    """
-    stats = {
+def _new_repair_stats() -> dict:
+    return {
         "records": 0,
         "snapshots_missing": 0,
         "snapshots_parsed": 0,
@@ -172,115 +167,122 @@ def repair_bluebook(conn) -> dict:
         "rows_inserted": 0,
         "duplicate_placements": 0,
     }
+
+
+def _historical_uid_map(conn) -> dict[str, int]:
+    uid_to_qid: dict[str, int] = {}
+    for row in conn.execute("SELECT id, provenance_json FROM questions WHERE pool='historical'"):
+        try:
+            uid = json.loads(row["provenance_json"] or "{}").get("bluebook_uid") or ""
+        except json.JSONDecodeError:
+            continue
+        if uid:
+            uid_to_qid.setdefault(uid, row["id"])
+    return uid_to_qid
+
+
+def _load_snapshot(rec: dict, stats: dict) -> tuple[ParsedQuestion | None, str]:
+    uid = rec.get("uid") or ""
+    snap_path = rec.get("html_snapshot_path") or ""
+    snap_file = Path(snap_path)
+    if not snap_file.is_absolute():
+        snap_file = config.REPO_ROOT / snap_path
+    if not snap_path or not snap_file.exists():
+        stats["snapshots_missing"] += 1
+        return None, snap_path
+    try:
+        parsed = parse_snapshot(snap_file.read_text(errors="ignore"))
+    except Exception:
+        LOG.warning("parse failed for %s", uid)
+        return None, snap_path
+    stats["snapshots_parsed"] += 1
+    return parsed, snap_path
+
+
+def _resolve_question_id(
+    conn, uid_to_qid: dict[str, int], uid: str, fingerprint: str
+) -> int | None:
+    existing_qid = uid_to_qid.get(uid)
+    if existing_qid is not None:
+        return existing_qid
+    row = conn.execute("SELECT id FROM questions WHERE fingerprint=?", (fingerprint,)).fetchone()
+    if row is None:
+        return None
+    uid_to_qid[uid] = row["id"]
+    return row["id"]
+
+
+def _upsert_occurrence(conn, rec: dict, uid: str, fingerprint: str, qid: int) -> None:
+    conn.execute(
+        """INSERT INTO bluebook_occurrences
+             (bluebook_uid, test_name, module, question_number, subject,
+              fingerprint, question_id, answer_status, scraped_at)
+           VALUES (?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(bluebook_uid) DO UPDATE SET
+             test_name=excluded.test_name,
+             module=excluded.module,
+             question_number=excluded.question_number,
+             subject=excluded.subject,
+             fingerprint=excluded.fingerprint,
+             question_id=excluded.question_id,
+             answer_status=excluded.answer_status,
+             scraped_at=excluded.scraped_at""",
+        (
+            uid,
+            rec.get("test_name") or "",
+            rec.get("module") or "",
+            str(rec.get("question_number") or ""),
+            config.SUBJECT,
+            fingerprint,
+            qid,
+            rec.get("answer_status") or "",
+            rec.get("scraped_at") or "",
+        ),
+    )
+
+
+def _repair_record(conn, rec: dict, stats: dict, uid_to_qid: dict[str, int]) -> None:
+    if rec.get("subject_bucket") != config.SUBJECT:
+        return
+    stats["records"] += 1
+    uid = rec.get("uid") or ""
+    parsed, snap_path = _load_snapshot(rec, stats)
+    merged, warnings = merge_fields(parsed, rec) if parsed else _merge_json_only(rec)
+    stats["warnings"].extend(f"{uid}: {warning}" for warning in warnings)
+    stats["fields_warned"] += len(warnings)
+    if not merged["correct_letter"]:
+        stats["warnings"].append(f"{uid}: no answer key; skipped")
+        return
+    fingerprint = fpmod.fingerprint(
+        merged["passage"], merged["stem"], [choice["text"] for choice in merged["choices"]]
+    )
+    qid = _resolve_question_id(conn, uid_to_qid, uid, fingerprint)
+    if qid is None:
+        qid = _insert_question(conn, rec, merged, fingerprint, uid, snap_path)
+        stats["rows_inserted"] += 1
+    elif _reconcile_question(conn, qid, rec, merged, fingerprint):
+        stats["rows_updated"] += 1
+    _upsert_occurrence(conn, rec, uid, fingerprint, qid)
+    stats["occurrences_upserted"] += 1
+    _ensure_historical_attempt(conn, qid, rec, merged)
+
+
+def repair_bluebook(conn) -> dict:
+    """Reconcile the historical corpus from outputs/ + artifacts/ (idempotent).
+
+    Returns a stats dict with counts for every repair action so the CLI can
+    report exactly what changed.
+    """
+    stats = _new_repair_stats()
     if not config.BLUEBOOK_JSON.exists():
         LOG.warning("no %s; nothing to repair", config.BLUEBOOK_JSON)
         return stats
-
     records = json.loads(config.BLUEBOOK_JSON.read_text())
     if isinstance(records, dict):
         records = list(records.values())
-
-    # Map existing historical rows by their provenance bluebook_uid so an
-    # occurrence resolves to the SAME question_id across repair runs.
-    uid_to_qid: dict[str, int] = {}
-    for row in conn.execute(
-        """SELECT id, provenance_json FROM questions WHERE pool='historical'"""
-    ):
-        try:
-            prov = json.loads(row["provenance_json"] or "{}")
-        except json.JSONDecodeError:
-            continue
-        uid = prov.get("bluebook_uid") or ""
-        if uid:
-            uid_to_qid.setdefault(uid, row["id"])
-
+    uid_to_qid = _historical_uid_map(conn)
     for rec in records:
-        if rec.get("subject_bucket") != config.SUBJECT:
-            continue
-        stats["records"] += 1
-        uid = rec.get("uid") or ""
-        snap_path = rec.get("html_snapshot_path") or ""
-        parsed = None
-        snap_file = Path(snap_path)
-        if not snap_file.is_absolute():
-            # Records store paths relative to the repo root (e.g.
-            # artifacts/html/...); resolve so repair works from any cwd.
-            snap_file = config.REPO_ROOT / snap_path
-        if snap_path and snap_file.exists():
-            try:
-                parsed = parse_snapshot(snap_file.read_text(errors="ignore"))
-                stats["snapshots_parsed"] += 1
-            except Exception:
-                LOG.warning("parse failed for %s", uid)
-                parsed = None
-        else:
-            stats["snapshots_missing"] += 1
-        merged, warnings = merge_fields(parsed, rec) if parsed else _merge_json_only(rec)
-        stats["warnings"].extend(f"{uid}: {w}" for w in warnings)
-        stats["fields_warned"] += len(warnings)
-
-        correct_letter = merged["correct_letter"]
-        if not correct_letter:
-            # cannot establish a key; refuse to fabricate
-            stats["warnings"].append(f"{uid}: no answer key; skipped")
-            continue
-
-        fp = fpmod.fingerprint(
-            merged["passage"], merged["stem"], [c["text"] for c in merged["choices"]]
-        )
-        existing_qid = uid_to_qid.get(uid)
-        if existing_qid is None:
-            # Resolve by content fingerprint first so two source UIDs with
-            # identical content share a row instead of violating the UNIQUE
-            # constraint on a second insert (T0).
-            fp_row = conn.execute("SELECT id FROM questions WHERE fingerprint=?", (fp,)).fetchone()
-            if fp_row is not None:
-                existing_qid = fp_row["id"]
-                # Keep the placement identity in uid_to_qid so a later record
-                # with the same UID does not re-insert.
-                uid_to_qid[uid] = existing_qid
-        if existing_qid is None:
-            # New occurrence: insert a question row.
-            existing_qid = _insert_question(conn, rec, merged, fp, uid, snap_path)
-            stats["rows_inserted"] += 1
-        else:
-            changed = _reconcile_question(conn, existing_qid, rec, merged, fp)
-            if changed:
-                stats["rows_updated"] += 1
-
-        # Record the occurrence with its resolved question_id.
-        conn.execute(
-            """INSERT INTO bluebook_occurrences
-                 (bluebook_uid, test_name, module, question_number, subject,
-                  fingerprint, question_id, answer_status, scraped_at)
-               VALUES (?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(bluebook_uid) DO UPDATE SET
-                 test_name=excluded.test_name,
-                 module=excluded.module,
-                 question_number=excluded.question_number,
-                 subject=excluded.subject,
-                 fingerprint=excluded.fingerprint,
-                 question_id=excluded.question_id,
-                 answer_status=excluded.answer_status,
-                 scraped_at=excluded.scraped_at""",
-            (
-                uid,
-                rec.get("test_name") or "",
-                rec.get("module") or "",
-                str(rec.get("question_number") or ""),
-                config.SUBJECT,
-                fp,
-                existing_qid,
-                rec.get("answer_status") or "",
-                rec.get("scraped_at") or "",
-            ),
-        )
-        stats["occurrences_upserted"] += 1
-
-        # Historical attempt (once per uid even after dedupe/re-runs).
-        _ensure_historical_attempt(conn, existing_qid, rec, merged)
-
-    # Post-pass: flag placements with more than one occurrence.
+        _repair_record(conn, rec, stats, uid_to_qid)
     stats["duplicate_placements"] = _count_duplicate_placements(conn)
     return stats
 
@@ -338,6 +340,25 @@ def _insert_question(conn, rec: dict, merged: dict, fp: str, uid: str, snap_path
     return cur.lastrowid
 
 
+def _append_media_update(row, merged: dict, updates: list[tuple[str, str]]) -> None:
+    new_images = json.dumps(merged["images"])
+    if row["images_json"] in ("[]", "") and new_images not in ("[]",):
+        updates.append(("images_json", new_images))
+
+
+def _append_fingerprint_update(
+    conn, row, qid: int, merged: dict, fp: str, updates: list[tuple[str, str]]
+) -> None:
+    if not merged["choices"] or fp == row["fingerprint"]:
+        return
+    owner = conn.execute(
+        "SELECT id FROM questions WHERE fingerprint=? AND id!=?",
+        (fp, qid),
+    ).fetchone()
+    if owner is None:
+        updates.append(("fingerprint", fp))
+
+
 def _reconcile_question(conn, qid: int, rec: dict, merged: dict, fp: str) -> bool:
     """Fill gaps on an existing historical row in place.
 
@@ -365,14 +386,12 @@ def _reconcile_question(conn, qid: int, rec: dict, merged: dict, fp: str) -> boo
         updates.append(("stem", merged["stem"]))
     if not row["rationale"] and merged["rationale"]:
         updates.append(("rationale", merged["rationale"]))
-    new_images = json.dumps(merged["images"])
     # Images follow the same fill-if-missing rule as the other fields: when
     # the row already has images, keep them. For content-collided rows (two
     # occurrences sharing one question with different figure paths, e.g. the
     # same item reused across modules) this keeps the write idempotent instead
     # of oscillating image paths on every run.
-    if row["images_json"] in ("[]", "") and new_images not in ("[]",):
-        updates.append(("images_json", new_images))
+    _append_media_update(row, merged, updates)
     # T1: reconcile the content identity when the corrected fingerprint is
     # free AND the merged source actually recovered real content (choices
     # non-empty). Re-keying on a degenerate run (snapshot missing, JSON
@@ -380,13 +399,7 @@ def _reconcile_question(conn, qid: int, rec: dict, merged: dict, fp: str) -> boo
     # one. The row keeps its id (attempts/tags/reviews stay attached); only
     # update when no OTHER row already owns that exact fingerprint (that is
     # a genuine content collision handled by the occurrence table).
-    if merged["choices"] and fp != row["fingerprint"]:
-        owner = conn.execute(
-            "SELECT id FROM questions WHERE fingerprint=? AND id!=?",
-            (fp, qid),
-        ).fetchone()
-        if owner is None:
-            updates.append(("fingerprint", fp))
+    _append_fingerprint_update(conn, row, qid, merged, fp, updates)
     if updates:
         sets = ", ".join(f"{col}=?" for col, _ in updates)
         conn.execute(

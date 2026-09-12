@@ -21,6 +21,7 @@ dev = [
     "pyyaml>=6.0",     # KB lint script (scripts/check_kb.py) and rebuild.sh nav edit
     "ruff>=0.16.3",
     "ty>=0.0.73",
+    "mutmut>=3.2",
 ]
 
 [build-system]
@@ -39,9 +40,17 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "C901"]
 ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+# C901 is enabled repo-wide with max-complexity 10. New/changed code must
+# stay within it. If an intrinsically clearer legacy function later needs an
+# exception, keep it at that function's def site; never add a file-wide ignore.
+# The changed-code gate runs Ruff with `--ignore-noqa`, so a new suppression
+# cannot bypass this limit.
 [tool.ruff.lint.per-file-ignores]
 "scrape_wrong_questions.py" = ["E741", "B023"]
 
@@ -50,3 +59,19 @@ exclude = [
     "tests",
     "scrape_wrong_questions.py",
 ]
+
+[tool.mutmut]
+source_paths = ["satprep/"]
+pytest_add_cli_args_test_selection = ["tests/"]
+# tests/test_public_repo_guard.py imports scripts.check_public_repo, and the
+# trust-boundary test reads .github/aislop-gate.sha256; mutmut copies only
+# source_paths + tests by default.
+also_copy = ["scripts/", "deploy/", ".github/"]
+# Mutmut collects every source path before applying command name filters, so
+# keep the initial baseline bounded to the highest-signal module. Widen this
+# list deliberately when another module is ready for mutation review.
+only_mutate = ["satprep/training/composition.py"]
+# Run the configured high-signal baseline (advisory, not a per-edit hook):
+#   uv run mutmut run
+# Inspect survivors and apply the strongest:
+#   uv run mutmut results && uv run mutmut apply && uv run pytest -q

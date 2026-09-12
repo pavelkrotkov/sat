@@ -1,0 +1,104 @@
+name: aislop
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  ai-slop-gate:
+    name: AI-slop gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node (pinned major)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install gate dependencies
+        run: uv sync --locked --dev
+
+      # Deterministic gate: compare findings in changed files at HEAD and the PR
+      # merge-base, then fail only new or worsened findings in changed code.
+      # This keeps the legacy baseline non-blocking while enforcing configured
+      # quality thresholds and rules elevated to `error`. The base is resolved to
+      # the PR base SHA in pull_request events, or the before-ref on pushes to
+      # main, and used to scope the gate to truly changed code. This avoids pulling
+      # in concurrent or stale history. The aislop version is pinned to the reviewed
+      # baseline; never bump to `@latest` without checking release notes.
+      - name: Resolve merge-base for this run
+        id: mergebase
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            MERGE_BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            MERGE_BASE="${{ github.event.before }}"
+          fi
+          if [ -z "$MERGE_BASE" ]; then
+            MERGE_BASE="$(git rev-parse HEAD~1)"
+          fi
+          echo "Comparing against merge-base $MERGE_BASE"
+          echo "sha=$MERGE_BASE" >> "$GITHUB_OUTPUT"
+      - name: Verify trusted gate sources
+        run: |
+          set -euo pipefail
+          manifest="$RUNNER_TEMP/aislop-gate.sha256"
+          trusted_revision="${{ steps.mergebase.outputs.sha }}"
+          if git cat-file -e "$trusted_revision:.github/aislop-gate.sha256" 2>/dev/null; then
+            git show "$trusted_revision:.github/aislop-gate.sha256" > "$manifest"
+          else
+            echo "No trusted aislop gate manifest at $trusted_revision; refusing PR-controlled bootstrap." >&2
+            exit 1
+          fi
+          expected="$RUNNER_TEMP/aislop-gate.expected"
+          actual="$RUNNER_TEMP/aislop-gate.actual"
+          awk 'NF == 2 { print $2 }' "$manifest" | sort > "$expected"
+          git ls-tree -r --name-only "$trusted_revision" -- scripts \
+            | while IFS= read -r path; do
+                case "$path" in
+                  scripts/*.py) printf '%s\n' "$path" ;;
+                esac
+              done \
+            | sort > "$actual"
+          if ! cmp -s "$expected" "$actual"; then
+            diff -u "$expected" "$actual"
+            exit 1
+          fi
+          trusted_dir="$RUNNER_TEMP/aislop-gate"
+          mkdir -p "$trusted_dir"
+          git archive "$trusted_revision" -- scripts | tar -x -C "$trusted_dir"
+          (
+            cd "$trusted_dir"
+            sha256sum --strict --check "$manifest"
+          )
+          echo "Using trusted gate sources from $trusted_revision"
+      - name: Run aislop (changed code only)
+        env:
+          AISLOP_ROOT: ${{ github.workspace }}
+          PYTHONPATH: ${{ runner.temp }}/aislop-gate
+        run: >
+          ${{ github.workspace }}/.venv/bin/python -P -m scripts.aislop_changed_gate
+          "${{ steps.mergebase.outputs.sha }}"
