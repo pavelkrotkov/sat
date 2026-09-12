@@ -321,7 +321,8 @@ def _validate_engine_results(report: dict, policy: dict) -> None:
     engines = report.get("engines")
     if not isinstance(engines, dict):
         raise SystemExit("aislop report is missing engine results")
-    for engine, active in policy["config"].get("engines", {}).items():
+    effective_engines = {**DEFAULT_ENGINES, **policy["config"].get("engines", {})}
+    for engine, active in effective_engines.items():
         if not active:
             continue
         result = engines.get(engine)

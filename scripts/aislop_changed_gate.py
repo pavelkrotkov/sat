@@ -154,14 +154,34 @@ def score_worsened_since_base(base_report: dict, head_report: dict, config_path:
     return head_score < base_score
 
 
-def changed_files(base: str) -> list[str]:
+def changed_file_paths(base: str) -> tuple[list[str], dict[str, str]]:
     result = subprocess.run(
-        ["git", "diff", "--name-only", "--diff-filter=ACMR", f"{base}...HEAD", "--"],
+        [
+            "git",
+            "diff",
+            "--name-status",
+            "--find-renames",
+            "--diff-filter=ACMR",
+            f"{base}...HEAD",
+            "--",
+        ],
         check=True,
         capture_output=True,
         text=True,
     )
-    return [p for p in result.stdout.splitlines() if p]
+    files = []
+    renames = {}
+    for row in result.stdout.splitlines():
+        status, *paths = row.split("\t")
+        if status.startswith("R") and len(paths) == 2:
+            renames[paths[0]] = paths[1]
+        if paths:
+            files.append(paths[-1])
+    return files, renames
+
+
+def changed_files(base: str) -> list[str]:
+    return changed_file_paths(base)[0]
 
 
 def materialize_base(base: str, directory: str) -> None:
@@ -187,21 +207,31 @@ def file_line_text(root: str, relpath: str, line: int) -> str:
         return ""
 
 
-def finding_signature(finding: dict, root: str) -> tuple:
+def finding_signature(
+    finding: dict,
+    root: str,
+    *,
+    canonical_path: str | None = None,
+) -> tuple:
     """Key a finding so base vs head comparisons ignore line-number drift.
 
     Function-level findings include the measured value from `detail`, so a
     threshold violation that worsens has a new signature. Line-level findings
     use source text when available, which stays stable when code merely shifts lines.
+    A rename can provide the new path as `canonical_path` while source text is
+    still read from the old path in the base tree.
     """
-    relpath = finding.get("filePath", "")
+    source_path = finding.get("filePath", "")
+    relpath = canonical_path or source_path
     rule = finding.get("rule", "")
     line = int(finding.get("line") or 0)
-    func_match = _FUNC_NAME.match(finding.get("detail", ""))
-    if func_match and line > 0:
-        return ("func", relpath, rule, func_match.group(1), finding.get("detail", ""))
     detail = finding.get("detail", "")
-    text = detail if line <= 0 else file_line_text(root, relpath, line)
+    if canonical_path and source_path:
+        detail = detail.replace(source_path, canonical_path)
+    func_match = _FUNC_NAME.match(detail)
+    if func_match and line > 0:
+        return ("func", relpath, rule, func_match.group(1), detail)
+    text = detail if line <= 0 else file_line_text(root, source_path, line)
     return ("line", relpath, rule, text or detail)
 
 
@@ -264,7 +294,7 @@ def main() -> int:
         raise SystemExit("usage: aislop_changed_gate.py <merge-base>")
     base = sys.argv[1]
 
-    files = changed_files(base)
+    files, renames = changed_file_paths(base)
     paths, new_files = added_lines(base)
     c901_blocking = c901_blocking_diagnostics(str(_ROOT), paths, new_files)
     config_path = _ROOT / ".aislop/config.yml"
@@ -280,8 +310,14 @@ def main() -> int:
         ensure_policy_not_weakened(base_policy, head_policy)
         head = run_aislop(str(_ROOT))
         base_report = run_aislop(base_dir)
-        base_diags = [d for d in base_report.get("diagnostics", []) if d.get("filePath") in files]
-        base_sigs = {finding_signature(d, base_dir) for d in base_diags}
+        base_paths = set(files) | set(renames)
+        base_diags = [
+            d for d in base_report.get("diagnostics", []) if d.get("filePath") in base_paths
+        ]
+        base_sigs = {
+            finding_signature(d, base_dir, canonical_path=renames.get(d.get("filePath")))
+            for d in base_diags
+        }
 
     head_diags = [d for d in head.get("diagnostics", []) if d.get("filePath") in files]
     head_sigs = {finding_signature(d, str(_ROOT)) for d in head_diags}

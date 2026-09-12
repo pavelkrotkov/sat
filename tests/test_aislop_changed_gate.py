@@ -44,6 +44,19 @@ index 111111..222222 100644
     assert ranges["demo.py"] == {184}
 
 
+def test_changed_file_paths_preserves_rename_pairs(monkeypatch):
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        _fake_diff_output("R100\tsatprep/config.py\tsatprep/renamed.py\n"),
+    )
+
+    files, renames = gate.changed_file_paths("base")
+
+    assert files == ["satprep/renamed.py"]
+    assert renames == {"satprep/config.py": "satprep/renamed.py"}
+
+
 def test_finding_signature_uses_detail_for_metric_lines():
     base = {
         "filePath": "satprep/corpus/audit.py",
@@ -63,6 +76,26 @@ def test_finding_signature_uses_detail_for_metric_lines():
         set(),
         is_new=gate.finding_signature(head, ".") != gate.finding_signature(base, "."),
     )
+
+
+def test_renamed_finding_uses_canonical_path_for_baseline_signature():
+    base = {
+        "filePath": "satprep/config.py",
+        "line": 0,
+        "rule": "complexity/file-too-large",
+        "detail": "satprep/config.py · 858 lines",
+    }
+    head = {
+        **base,
+        "filePath": "satprep/renamed.py",
+        "detail": "satprep/renamed.py · 858 lines",
+    }
+
+    assert gate.finding_signature(
+        base,
+        ".",
+        canonical_path=head["filePath"],
+    ) == gate.finding_signature(head, ".")
 
 
 def test_score_worsened_since_base_only_blocks_regressions(tmp_path: Path):
@@ -270,6 +303,26 @@ def test_report_rejects_skipped_enabled_engine():
     }
 
     with pytest.raises(SystemExit, match="skipped enabled engine: ai-slop"):
+        policy.validate_report(report, {"config": config, "rules": []})
+
+
+def test_report_rejects_omitted_required_engine():
+    config = copy.deepcopy(policy.DEFAULT_POLICY)
+    engines_config = cast(dict[str, bool], config["engines"])
+    engines_config.pop("ai-slop")
+    engines = {name: {} for name, active in engines_config.items() if active}
+    report = {
+        "schemaVersion": "1",
+        "cliVersion": "0.16.0",
+        "version": "0.16.0",
+        "score": 100,
+        "diagnostics": [],
+        "engines": engines,
+        "summary": {},
+        "scoreable": True,
+    }
+
+    with pytest.raises(SystemExit, match="missing enabled engine: ai-slop"):
         policy.validate_report(report, {"config": config, "rules": []})
 
 
