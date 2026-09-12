@@ -1,4 +1,5 @@
 import copy
+import json
 from pathlib import Path
 from typing import cast
 
@@ -76,6 +77,17 @@ def test_finding_signature_uses_detail_for_metric_lines():
         set(),
         is_new=gate.finding_signature(head, ".") != gate.finding_signature(base, "."),
     )
+
+
+def test_improved_metric_does_not_block():
+    base = {
+        "filePath": "satprep/config.py",
+        "rule": "complexity/file-too-large",
+        "detail": "satprep/config.py · 858 lines",
+    }
+    head = {**base, "detail": "satprep/config.py · 857 lines"}
+
+    assert gate._metric_improved(head, [base], {})
 
 
 def test_renamed_finding_uses_canonical_path_for_baseline_signature():
@@ -201,6 +213,17 @@ def test_deep_nesting_threshold_is_blocking():
     assert gate.is_blocking(finding)
 
 
+def test_legacy_file_size_is_advisory_but_new_file_size_blocks():
+    finding = {
+        "filePath": "satprep/legacy.py",
+        "rule": "complexity/file-too-large",
+        "severity": "warning",
+    }
+
+    assert not gate.is_blocking(finding)
+    assert gate.is_blocking(finding, {"satprep/legacy.py"})
+
+
 def test_policy_rejects_schema_invalid_config(tmp_path: Path):
     config = tmp_path / "config.yml"
     config.write_text("version: 1\nengines:\n  unknown: true\n", encoding="utf-8")
@@ -250,6 +273,54 @@ def test_policy_rejects_new_disabled_rule_override():
 
     with pytest.raises(SystemExit, match="disabled rule override"):
         policy.ensure_policy_not_weakened(base, head)
+
+
+def test_policy_rejects_builtin_error_downgrade():
+    base = {
+        "config": copy.deepcopy(policy.DEFAULT_POLICY),
+        "rules": [],
+        "suppressions": {"ignore": None, "inline": ()},
+    }
+    head = copy.deepcopy(base)
+    cast(dict, head["config"])["rules"] = {"security/eval": "warning"}
+
+    with pytest.raises(SystemExit, match="built-in error rule"):
+        policy.ensure_policy_not_weakened(base, head)
+
+
+def test_default_policy_disables_telemetry(tmp_path: Path):
+    gate.write_default_policy(str(tmp_path))
+
+    assert "enabled: false" in (tmp_path / ".aislop" / "config.yml").read_text()
+
+
+def test_policy_allows_disabling_base_telemetry():
+    base = {
+        "config": copy.deepcopy(policy.DEFAULT_POLICY),
+        "rules": [],
+        "suppressions": {"ignore": None, "inline": ()},
+    }
+    cast(dict, base["config"])["telemetry"]["enabled"] = True
+    head = copy.deepcopy(base)
+    cast(dict, head["config"])["telemetry"]["enabled"] = False
+
+    policy.ensure_policy_not_weakened(base, head)
+
+
+def test_run_aislop_disables_telemetry(monkeypatch, tmp_path: Path):
+    _policy_directory(tmp_path)
+    report = {"schemaVersion": "1", "cliVersion": "0.16.0", "version": "0.16.0"}
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured.update(kwargs)
+        return _Completed(json.dumps(report))
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+    monkeypatch.setattr(gate, "validate_report", lambda value, _policy: value)
+
+    assert gate.run_aislop(str(tmp_path)) == report
+    assert captured["env"]["AISLOP_NO_TELEMETRY"] == "1"
 
 
 def _policy_directory(root: Path, *, ignore: str | None = None, inline: bool = False) -> None:

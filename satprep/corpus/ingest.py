@@ -56,7 +56,154 @@ def _historical_correctness(rec: dict) -> int | None:
     return None  # unknown - do not fabricate
 
 
-def ingest_bluebook(conn) -> dict:  # noqa: C901 (legacy: ingest state machine)
+def _parse_bluebook_record(rec: dict, stats: dict) -> tuple[dict, str]:
+    snap_path = rec.get("html_snapshot_path")
+    parsed = None
+    if snap_path and Path(snap_path).exists():
+        try:
+            parsed = parse_snapshot(Path(snap_path).read_text())
+        except Exception:
+            parsed = None
+    if parsed is None:
+        stats["parse_fallbacks"] += 1
+        parsed = _question_from_json_record(rec)
+    merged, warnings = merge_fields(parsed, rec)
+    stats["field_warnings"].extend(f"{rec.get('uid')}: {warning}" for warning in warnings)
+    return merged, snap_path or ""
+
+
+def _insert_bluebook_question(conn, rec: dict, merged: dict, fp: str, snap_path: str) -> int:
+    provenance = {
+        "bluebook_uid": rec.get("uid"),
+        "html_snapshot": snap_path,
+        "test_name": rec.get("test_name"),
+        "module": rec.get("module"),
+        "scraped_at": rec.get("scraped_at"),
+        "skill_from_metadata": rec.get("skill") or "",
+        "domain_from_metadata": rec.get("domain") or "",
+    }
+    cur = conn.execute(
+        """INSERT INTO questions
+          (fingerprint, source, source_test, source_question_number, module,
+           passage, stem, choices_json, correct_letter, rationale, images_json,
+           visuals_json,
+           official_domain, official_skill, skill_source, difficulty,
+           pool, seen_benchmark, is_new_bank, import_batch, imported_at, provenance_json)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,'',?,?)""",
+        (
+            fp,
+            "bluebook_test",
+            rec.get("test_name") or "",
+            str(rec.get("question_number") or ""),
+            rec.get("module") or "",
+            merged["passage"],
+            merged["stem"],
+            json.dumps(merged["choices"]),
+            merged["correct_letter"],
+            merged["rationale"],
+            json.dumps(merged["images"]),
+            json.dumps(rec.get("visuals") or []),
+            rec.get("domain") or "",
+            rec.get("skill") or "",
+            "metadata" if rec.get("skill") else "unknown",
+            "",
+            "historical",
+            utc_now(),
+            json.dumps(provenance),
+        ),
+    )
+    return cur.lastrowid
+
+
+def _bluebook_question_id(
+    conn, rec: dict, merged: dict, fp: str, snap_path: str, stats: dict
+) -> int:
+    existing = conn.execute("SELECT id FROM questions WHERE fingerprint=?", (fp,)).fetchone()
+    occurrence = conn.execute(
+        "SELECT question_id FROM bluebook_occurrences WHERE bluebook_uid=?",
+        (rec.get("uid") or "",),
+    ).fetchone()
+    if occurrence is not None and occurrence["question_id"] is not None:
+        if existing and existing["id"] != occurrence["question_id"]:
+            stats["skipped_existing"] += 1
+        return occurrence["question_id"]
+    if existing:
+        stats["skipped_existing"] += 1
+        return existing["id"]
+    stats["questions_added"] += 1
+    return _insert_bluebook_question(conn, rec, merged, fp, snap_path)
+
+
+def _record_bluebook_attempt(
+    conn, rec: dict, merged: dict, qid: int, student_letter: str, stats: dict
+) -> None:
+    correctness = _historical_correctness(rec)
+    session_key = f"hist:{rec.get('uid')}"
+    seen = conn.execute("SELECT 1 FROM attempts WHERE session_id=?", (session_key,)).fetchone()
+    if correctness is None or seen:
+        return
+    conn.execute(
+        """INSERT INTO attempts (session_id, question_id, chosen_letter, correct,
+                                 confidence, time_ms, mode, attempted_at)
+           VALUES (?,?,?,?,0,0,'historical',?)""",
+        (session_key, qid, student_letter, correctness, rec.get("scraped_at") or utc_now()),
+    )
+    conn.execute(
+        """INSERT INTO question_state (question_id, due_at) VALUES (?, NULL)
+           ON CONFLICT(question_id) DO NOTHING""",
+        (qid,),
+    )
+    stats["attempts_added"] += 1
+    if correctness == 0 and student_letter and merged["choices"]:
+        diagnose_attempt(conn, qid, merged["choices"], merged["correct_letter"], student_letter)
+
+
+def _upsert_bluebook_occurrence(conn, rec: dict, fp: str, qid: int, stats: dict) -> None:
+    conn.execute(
+        """INSERT INTO bluebook_occurrences
+             (bluebook_uid, test_name, module, question_number, subject,
+              fingerprint, question_id, answer_status, scraped_at)
+           VALUES (?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(bluebook_uid) DO UPDATE SET
+             test_name=excluded.test_name,
+             module=excluded.module,
+             question_number=excluded.question_number,
+             subject=excluded.subject,
+             fingerprint=excluded.fingerprint,
+             question_id=excluded.question_id,
+             answer_status=excluded.answer_status,
+             scraped_at=excluded.scraped_at""",
+        (
+            rec.get("uid") or "",
+            rec.get("test_name") or "",
+            rec.get("module") or "",
+            str(rec.get("question_number") or ""),
+            config.SUBJECT,
+            fp,
+            qid,
+            rec.get("answer_status") or "",
+            rec.get("scraped_at") or "",
+        ),
+    )
+    stats["occurrences_upserted"] += 1
+
+
+def _ingest_bluebook_record(conn, rec: dict, stats: dict) -> None:
+    if rec.get("subject_bucket") != config.SUBJECT:
+        return
+    stats["rw_records"] += 1
+    merged, snap_path = _parse_bluebook_record(rec, stats)
+    correct_letter = merged["correct_letter"]
+    if not correct_letter:
+        return
+    choice_texts = [choice["text"] for choice in merged["choices"]]
+    fp = fpmod.fingerprint(merged["passage"], merged["stem"], choice_texts)
+    qid = _bluebook_question_id(conn, rec, merged, fp, snap_path, stats)
+    _record_bluebook_attempt(conn, rec, merged, qid, merged["student_letter"], stats)
+    _upsert_bluebook_occurrence(conn, rec, fp, qid, stats)
+
+
+def ingest_bluebook(conn) -> dict:
     """Ingest the scraped 8-test history. Idempotent."""
     stats = {
         "records_seen": 0,
@@ -70,170 +217,12 @@ def ingest_bluebook(conn) -> dict:  # noqa: C901 (legacy: ingest state machine)
     }
     if not config.BLUEBOOK_JSON.exists():
         return stats
-
     records = json.loads(config.BLUEBOOK_JSON.read_text())
     if isinstance(records, dict):
         records = list(records.values())
-
     for rec in records:
         stats["records_seen"] += 1
-        if rec.get("subject_bucket") != config.SUBJECT:
-            continue
-        stats["rw_records"] += 1
-
-        parsed: ParsedQuestion | None = None
-        snap_path = rec.get("html_snapshot_path")
-        if snap_path and Path(snap_path).exists():
-            try:
-                parsed = parse_snapshot(Path(snap_path).read_text())
-            except Exception:
-                parsed = None
-        if parsed is None:
-            # No usable snapshot at all -> rebuild from scraped JSON text.
-            # When a snapshot exists but is missing passage/stem, keep the
-            # parsed object (its recovered choices/key may be valid) and let
-            # merge_fields fill the gaps from JSON (T10) rather than
-            # discarding the parsed fields with a wholesale replacement.
-            stats["parse_fallbacks"] += 1
-            parsed = _question_from_json_record(rec)
-
-        # Issue #49: merge parsed-snapshot fields with the JSON record
-        # independently, per field. The snapshot wins for passage/stem/
-        # choices/key/rationale when present; the JSON record fills any gap.
-        # Previously a valid snapshot with an empty choice list (correct-
-        # answer reviews put the <ol> in .question-panel, which the parser
-        # did not read) beat the JSON fallback, so 432 of 479 R&W records
-        # were ingested without choices even though the saved HTML had them.
-        merged, warnings = merge_fields(parsed, rec)
-        for w in warnings:
-            stats.setdefault("field_warnings", []).append(f"{rec.get('uid')}: {w}")
-
-        correct_letter = merged["correct_letter"]
-        if not correct_letter:
-            continue  # cannot establish an answer key; refuse to fabricate
-        student_letter = merged["student_letter"]
-
-        passage = merged["passage"]
-        stem = merged["stem"]
-        choice_texts = [c["text"] for c in merged["choices"]]
-        fp = fpmod.fingerprint(passage, stem, choice_texts)
-
-        existing = conn.execute("SELECT id FROM questions WHERE fingerprint=?", (fp,)).fetchone()
-        # T1: resolve by source UID first so a record that was repaired
-        # (content fingerprint changed in bluebook_occurrences) reconciles
-        # the SAME row instead of inserting a duplicate. The occurrence table
-        # is the stable identity across repair/key changes.
-        occ = conn.execute(
-            "SELECT question_id FROM bluebook_occurrences WHERE bluebook_uid=?",
-            (rec.get("uid") or "",),
-        ).fetchone()
-        if occ is not None and occ["question_id"] is not None:
-            if existing and existing["id"] != occ["question_id"]:
-                # Content fp matches a different row than the occurrence's.
-                # Trust the occurrence's stable identity; reconcile below.
-                stats["skipped_existing"] += 1
-            qid = occ["question_id"]
-        elif existing:
-            stats["skipped_existing"] += 1
-            qid = existing["id"]
-        else:
-            provenance = {
-                "bluebook_uid": rec.get("uid"),
-                "html_snapshot": snap_path or "",
-                "test_name": rec.get("test_name"),
-                "module": rec.get("module"),
-                "scraped_at": rec.get("scraped_at"),
-                "skill_from_metadata": rec.get("skill") or "",
-                "domain_from_metadata": rec.get("domain") or "",
-            }
-            cur = conn.execute(
-                """INSERT INTO questions
-                  (fingerprint, source, source_test, source_question_number, module,
-                   passage, stem, choices_json, correct_letter, rationale, images_json,
-                   visuals_json,
-                   official_domain, official_skill, skill_source, difficulty,
-                   pool, seen_benchmark, is_new_bank, import_batch, imported_at, provenance_json)
-                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,'',?,?)""",
-                (
-                    fp,
-                    "bluebook_test",
-                    rec.get("test_name") or "",
-                    str(rec.get("question_number") or ""),
-                    rec.get("module") or "",
-                    passage,
-                    stem,
-                    json.dumps(merged["choices"]),
-                    correct_letter,
-                    merged["rationale"],
-                    json.dumps(merged["images"]),
-                    json.dumps(rec.get("visuals") or []),
-                    rec.get("domain") or "",
-                    rec.get("skill") or "",
-                    "metadata" if rec.get("skill") else "unknown",
-                    "",  # difficulty unknown for bluebook history
-                    "historical",
-                    utc_now(),
-                    json.dumps(provenance),
-                ),
-            )
-            qid = cur.lastrowid
-            stats["questions_added"] += 1
-
-        # Historical attempt (once per uid even after dedupe/re-runs).
-        correctness = _historical_correctness(rec)
-        session_key = f"hist:{rec.get('uid')}"
-        seen = conn.execute("SELECT 1 FROM attempts WHERE session_id=?", (session_key,)).fetchone()
-        if correctness is not None and not seen:
-            conn.execute(
-                """INSERT INTO attempts (session_id, question_id, chosen_letter, correct,
-                                         confidence, time_ms, mode, attempted_at)
-                   VALUES (?,?,?,?,0,0,'historical',?)""",
-                (session_key, qid, student_letter, correctness, rec.get("scraped_at") or utc_now()),
-            )
-            conn.execute(
-                """INSERT INTO question_state (question_id, due_at) VALUES (?, NULL)
-                   ON CONFLICT(question_id) DO NOTHING""",
-                (qid,),
-            )
-            stats["attempts_added"] += 1
-
-            # Historical error diagnosis (spec section 6): only when both the
-            # chosen wrong letter and the full choice set are known. Never
-            # fabricated from bare right/wrong.
-            if correctness == 0 and student_letter and merged["choices"]:
-                diagnose_attempt(conn, qid, merged["choices"], correct_letter, student_letter)
-
-        # Source-occurrence identity (issue #49): every scraped review is
-        # one occurrence with its stable UID and placement, even when the
-        # content fingerprint collides with another occurrence.
-        conn.execute(
-            """INSERT INTO bluebook_occurrences
-                 (bluebook_uid, test_name, module, question_number, subject,
-                  fingerprint, question_id, answer_status, scraped_at)
-               VALUES (?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(bluebook_uid) DO UPDATE SET
-                 test_name=excluded.test_name,
-                 module=excluded.module,
-                 question_number=excluded.question_number,
-                 subject=excluded.subject,
-                 fingerprint=excluded.fingerprint,
-                 question_id=excluded.question_id,
-                 answer_status=excluded.answer_status,
-                 scraped_at=excluded.scraped_at""",
-            (
-                rec.get("uid") or "",
-                rec.get("test_name") or "",
-                rec.get("module") or "",
-                str(rec.get("question_number") or ""),
-                config.SUBJECT,
-                fp,
-                qid,
-                rec.get("answer_status") or "",
-                rec.get("scraped_at") or "",
-            ),
-        )
-        stats["occurrences_upserted"] = stats.get("occurrences_upserted", 0) + 1
-
+        _ingest_bluebook_record(conn, rec, stats)
     return stats
 
 

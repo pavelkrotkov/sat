@@ -58,89 +58,159 @@ def _recency(attempted_at: str | None, now: datetime) -> float:
     return math.pow(0.5, age_days / config.WEAKNESS_RECENCY_HALF_LIFE_DAYS)
 
 
-def compute_weakness(conn, now: datetime | None = None) -> dict:  # noqa: C901 (legacy: per-entity recency/multiplication math)
+def _collect_stats(
+    conn, sql: str, entity: str, now: datetime, slow_ms: float
+) -> tuple[dict, float]:
+    rows = conn.execute(sql, (entity,)).fetchall()
+    alpha_wrong = alpha_right = slow_penalty = 0.0
+    n = wrong = correct = 0.0
+    slow_times = []
+    for row in rows:
+        weight = _weight_for(row["correct"], row["confidence"] or 0)
+        decay = _recency(row["attempted_at"], now)
+        weighted = weight * decay
+        n += decay if row["correct"] else weighted
+        if row["correct"]:
+            alpha_right += weighted
+            correct += 1
+            if (row["time_ms"] or 0) >= slow_ms:
+                slow_penalty += 0.35
+                slow_times.append(row["time_ms"])
+        else:
+            alpha_wrong += weighted
+            wrong += 1
+    return {
+        "n": round(n, 3),
+        "n_raw": len(rows),
+        "wrong": int(wrong),
+        "correct": int(correct),
+        "alpha_wrong": round(alpha_wrong, 3),
+        "alpha_right": round(alpha_right, 3),
+        "slow_correct": len(slow_times),
+    }, slow_penalty
+
+
+def _score_from(
+    stats: dict, prior_strength: float, prior_p: float, slow_penalty: float
+) -> tuple[float, dict]:
+    denom = stats["alpha_wrong"] + stats["alpha_right"] + prior_strength
+    post_err = (stats["alpha_wrong"] + prior_strength * prior_p) / denom if denom else prior_p
+    score = post_err * 100.0 + min(6.0, slow_penalty)
+    if stats["correct"] >= 4 and stats["wrong"] == 0:
+        score *= 1 - config.MASTERY_RECENT_CORRECT_DISCOUNT
+    baseline = prior_p * 100.0
+    volume = max(stats.get("n_raw", stats["n"]), 1)
+    shrink = min(1.0, volume / (volume + config.WEAKNESS_SHRINK_N))
+    score = baseline + (score - baseline) * shrink
+    return round(min(100.0, score), 1), stats
+
+
+def _tag_stats(rows: list, now: datetime) -> tuple[dict, float]:
+    alpha_wrong = alpha_right = 0.0
+    wrong = correct = hard_wrong = slow_correct = 0
+    decayed_n = 0.0
+    for row in rows:
+        if row["correct"] is None:
+            continue
+        weight = _weight_for(row["correct"], row["confidence"] or 0)
+        decay = _recency(row["attempted_at"], now)
+        decayed_n += decay
+        if row["correct"]:
+            alpha_right += weight * decay
+            correct += 1
+            if (row["time_ms"] or 0) >= config.SLOW_CORRECT_THRESHOLD_S * 1000:
+                slow_correct += 1
+        else:
+            alpha_wrong += weight * decay
+            wrong += 1
+            if (row["difficulty"] or "") == "hard":
+                hard_wrong += 1
+    stats = {
+        "n": round(decayed_n, 3),
+        "wrong": wrong,
+        "correct": correct,
+        "hard_questions_wrong": hard_wrong,
+        "slow_correct": slow_correct,
+        "alpha_wrong": round(alpha_wrong, 3),
+        "alpha_right": round(alpha_right, 3),
+    }
+    return stats, min(6.0, 1.2 * hard_wrong + 0.3 * slow_correct)
+
+
+def _error_stats(conn, qids: list[int], now: datetime) -> dict:
+    sql = """SELECT a.correct AS correct, a.confidence AS confidence,
+                      a.attempted_at AS attempted_at, a.time_ms AS time_ms
+               FROM attempts a
+               JOIN questions q ON q.id=a.question_id AND q.active=1
+               WHERE a.question_id IN ({})""".format(",".join("?" * len(qids)))
+    alpha_wrong = alpha_right = 0.0
+    wrong = correct = 0
+    decayed_n = 0.0
+    for row in conn.execute(sql, qids).fetchall():
+        weight = _weight_for(row["correct"], row["confidence"] or 0)
+        decay = _recency(row["attempted_at"], now)
+        decayed_n += decay
+        if row["correct"]:
+            alpha_right += weight * decay
+            correct += 1
+        else:
+            alpha_wrong += weight * decay
+            wrong += 1
+    return {
+        "n": round(decayed_n, 3),
+        "wrong": wrong,
+        "correct": correct,
+        "alpha_wrong": round(alpha_wrong, 3),
+        "alpha_right": round(alpha_right, 3),
+    }
+
+
+def _persist_profile(conn, profile: dict, now: datetime) -> None:
+    conn.execute("DELETE FROM weakness_cache")
+    for entity_type, entities in profile.items():
+        for entity, payload in entities.items():
+            conn.execute(
+                """INSERT OR REPLACE INTO weakness_cache (entity_type, entity, score, stats_json, computed_at)
+                   VALUES (?,?,?,?,?)""",
+                (
+                    entity_type,
+                    entity,
+                    payload.get("score", 0.0),
+                    json.dumps(payload),
+                    now.isoformat(),
+                ),
+            )
+
+
+def compute_weakness(conn, now: datetime | None = None) -> dict:
     """Compute weakness scores for skills, reasoning tags, error tags.
 
     Returns {entity_type: {entity: {'score': float, 'stats': {...}}}}
     and persists to weakness_cache.
     """
     now = now or datetime.now().astimezone()
-
+    prior_strength = config.WEAKNESS_PRIOR_STRENGTH
+    prior_p = 0.25
     base_sql = """
         SELECT a.correct AS correct, a.confidence AS confidence,
                a.attempted_at AS attempted_at, a.time_ms AS time_ms,
                q.difficulty AS difficulty
         FROM attempts a JOIN questions q ON q.id=a.question_id
-        WHERE q.active=1 AND ({join}) = ?
+        WHERE q.active=1 AND ({}) = ?
     """
-
-    SLOW_CORRECT_MS = config.SLOW_CORRECT_THRESHOLD_S * 1000
-
-    def collect(join_clause: str, entity_value: str):
-        rows = conn.execute(base_sql.format(join=join_clause), (entity_value,)).fetchall()
-        alpha_wrong = alpha_right = 0.0
-        slow_penalty = 0.0
-        n = wrong = correct = 0.0
-        times = []
-        for r in rows:
-            w = _weight_for(r["correct"], r["confidence"] or 0)
-            decay = _recency(r["attempted_at"], now)
-            weighted = w * decay
-            n += decay if r["correct"] else weighted
-            if r["correct"]:
-                alpha_right += weighted
-                correct += 1
-                # spec section 12: a slow correct answer still indicates friction
-                t = r["time_ms"] or 0
-                if t >= SLOW_CORRECT_MS:
-                    slow_penalty += 0.35
-                    times.append(t)
-            else:
-                alpha_wrong += weighted
-                wrong += 1
-        return (
-            {
-                "n": round(n, 3),
-                "n_raw": len(rows),
-                "wrong": int(wrong),
-                "correct": int(correct),
-                "alpha_wrong": round(alpha_wrong, 3),
-                "alpha_right": round(alpha_right, 3),
-                "slow_correct": len(times),
-            },
-            rows,
-            slow_penalty,
-        )
-
-    def score_from(stats: dict, slow_penalty: float = 0.0) -> tuple[float, dict]:
-        denom = stats["alpha_wrong"] + stats["alpha_right"] + k
-        post_err = (stats["alpha_wrong"] + k * prior_p) / denom if denom else prior_p
-        score = post_err * 100.0 + min(6.0, slow_penalty)
-        if stats["correct"] >= 4 and stats["wrong"] == 0:
-            score *= 1 - config.MASTERY_RECENT_CORRECT_DISCOUNT
-        baseline = prior_p * 100.0
-        vol = max(stats.get("n_raw", stats["n"]), 1)
-        shrink = min(1.0, vol / (vol + config.WEAKNESS_SHRINK_N))
-        score = baseline + (score - baseline) * shrink
-        return round(min(100.0, score), 1), stats
-
-    out = {"skill": {}, "tag": {}, "error_tag": {}}
-    k = config.WEAKNESS_PRIOR_STRENGTH
-    prior_p = 0.25  # expected error rate for a strong student
-
-    # official skills
-    for skill_row in conn.execute(
+    profile = {"skill": {}, "tag": {}, "error_tag": {}}
+    slow_ms = config.SLOW_CORRECT_THRESHOLD_S * 1000
+    for row in conn.execute(
         """SELECT DISTINCT q.official_skill AS s FROM questions q
            WHERE q.active=1 AND q.official_skill != ''"""
     ).fetchall():
-        skill = skill_row["s"]
-        stats, _rows, slow_pen = collect("q.official_skill", skill)
-        if stats["n"] == 0 and stats["n_raw"] == 0:
-            continue
-        sc, st = score_from(stats, slow_pen)
-        out["skill"][skill] = {"score": sc, **st}
+        stats, slow_penalty = _collect_stats(
+            conn, base_sql.format("q.official_skill"), row["s"], now, slow_ms
+        )
+        if stats["n"] or stats["n_raw"]:
+            score, stats = _score_from(stats, prior_strength, prior_p, slow_penalty)
+            profile["skill"][row["s"]] = {"score": score, **stats}
 
-    # reasoning tags (demand tags)
     tag_rows = conn.execute(
         """SELECT qt.tag AS tag, a.correct AS correct, a.confidence AS confidence,
                   a.attempted_at AS attempted_at, a.time_ms AS time_ms,
@@ -149,101 +219,31 @@ def compute_weakness(conn, now: datetime | None = None) -> dict:  # noqa: C901 (
            JOIN questions q ON q.id=qt.question_id AND q.active=1
            LEFT JOIN attempts a ON a.question_id=q.id"""
     ).fetchall()
-    per_tag: dict[str, list] = {}
-    for r in tag_rows:
-        per_tag.setdefault(r["tag"], []).append(r)
-    for tag, trows in per_tag.items():
-        alpha_wrong = alpha_right = 0.0
-        wrong = correct = hard_wrong = slow_correct = 0
-        now_decayed_n = 0.0
-        for r in trows:
-            if r["correct"] is None:
-                continue
-            w = _weight_for(r["correct"], r["confidence"] or 0)
-            decay = _recency(r["attempted_at"], now)
-            now_decayed_n += decay
-            if r["correct"]:
-                alpha_right += w * decay
-                correct += 1
-                if (r["time_ms"] or 0) >= config.SLOW_CORRECT_THRESHOLD_S * 1000:
-                    slow_correct += 1
-            else:
-                alpha_wrong += w * decay
-                wrong += 1
-                if (r["difficulty"] or "") == "hard":
-                    hard_wrong += 1
-        stats = {
-            "n": round(now_decayed_n, 3),
-            "wrong": wrong,
-            "correct": correct,
-            "hard_questions_wrong": hard_wrong,
-            "slow_correct": slow_correct,
-            "alpha_wrong": round(alpha_wrong, 3),
-            "alpha_right": round(alpha_right, 3),
-        }
-        if wrong + correct == 0:
-            continue
-        sc, st = score_from(stats, min(6.0, 1.2 * hard_wrong + 0.3 * slow_correct))
-        out["tag"][tag] = {"score": sc, **stats}
+    per_tag: dict[str, list] = defaultdict(list)
+    for row in tag_rows:
+        per_tag[row["tag"]].append(row)
+    for tag, rows in per_tag.items():
+        stats, slow_penalty = _tag_stats(rows, now)
+        if stats["wrong"] + stats["correct"]:
+            score, stats = _score_from(stats, prior_strength, prior_p, slow_penalty)
+            profile["tag"][tag] = {"score": score, **stats}
 
-    # diagnosed student error tags
-    err_rows = conn.execute(
+    error_rows = conn.execute(
         """SELECT set_.tag AS tag, set_.qid AS qid FROM (
                SELECT setag.tag AS tag, setag.question_id AS qid
                FROM student_error_tags setag
            ) set_ GROUP BY set_.tag, set_.qid"""
     ).fetchall()
-    # Score error tags from actual attempt outcomes on questions that
-    # carry the diagnosis. This makes the error-tag weakness signal
-    # real (not a constant 0.0), so remediation can differentiate
-    # candidates by the student's actual error pattern.
     tag_qids: dict[str, list[int]] = defaultdict(list)
-    for r in err_rows:
-        tag_qids[r["tag"]].append(r["qid"])
+    for row in error_rows:
+        tag_qids[row["tag"]].append(row["qid"])
     for tag, qids in tag_qids.items():
-        alpha_wrong = alpha_right = 0.0
-        wrong = correct = 0
-        now_decayed_n = 0.0
-        for r in conn.execute(
-            """SELECT a.correct AS correct, a.confidence AS confidence,
-                      a.attempted_at AS attempted_at, a.time_ms AS time_ms
-               FROM attempts a
-               JOIN questions q ON q.id=a.question_id AND q.active=1
-               WHERE a.question_id IN ({})""".format(",".join("?" * len(qids))),
-            qids,
-        ).fetchall():
-            w = _weight_for(r["correct"], r["confidence"] or 0)
-            decay = _recency(r["attempted_at"], now)
-            now_decayed_n += decay
-            if r["correct"]:
-                alpha_right += w * decay
-                correct += 1
-            else:
-                alpha_wrong += w * decay
-                wrong += 1
-        stats = {
-            "n": round(now_decayed_n, 3),
-            "wrong": wrong,
-            "correct": correct,
-            "alpha_wrong": round(alpha_wrong, 3),
-            "alpha_right": round(alpha_right, 3),
-        }
-        if wrong + correct == 0:
-            continue
-        sc, st = score_from(stats, 0.0)
-        out["error_tag"][tag] = {"score": sc, **stats, "question_ids": qids}
-
-    # persist cache
-    conn.execute("DELETE FROM weakness_cache")
-    ts = now.isoformat()
-    for etype, entities in out.items():
-        for entity, payload in entities.items():
-            conn.execute(
-                """INSERT OR REPLACE INTO weakness_cache (entity_type, entity, score, stats_json, computed_at)
-                   VALUES (?,?,?,?,?)""",
-                (etype, entity, payload.get("score", 0.0), json.dumps(payload), ts),
-            )
-    return out
+        stats = _error_stats(conn, qids, now)
+        if stats["wrong"] + stats["correct"]:
+            score, stats = _score_from(stats, prior_strength, prior_p, 0.0)
+            profile["error_tag"][tag] = {"score": score, **stats, "question_ids": qids}
+    _persist_profile(conn, profile, now)
+    return profile
 
 
 _ENTITIES_WITH_EVIDENCE = {

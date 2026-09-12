@@ -56,7 +56,7 @@ DEFAULT_POLICY = {
         "maxPerRule": 40,
     },
     "ci": {"failBelow": 70, "format": "json"},
-    "telemetry": {"enabled": True},
+    "telemetry": {"enabled": False},
     "rules": {},
 }
 

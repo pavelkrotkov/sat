@@ -160,7 +160,7 @@ def restore_corpus(conn, archive_path: Path | None = None) -> dict:
     return stats
 
 
-def _restore_lines(conn, archive_path: Path, stats: dict) -> None:  # noqa: C901 (legacy: archive state machine)
+def _validate_archive_version(archive_path: Path) -> None:
     head = next(
         (line for line in archive_path.read_text(encoding="utf-8").splitlines() if line.strip()),
         "",
@@ -172,6 +172,81 @@ def _restore_lines(conn, archive_path: Path, stats: dict) -> None:  # noqa: C901
                 f"Archive schema v{v} unsupported by this build (expects v{ARCHIVE_VERSION}); "
                 f"upgrade satprep or use the matching release."
             )
+
+
+def _restore_record(conn, rec: dict, stats: dict) -> None:
+    if not rec.get("fingerprint") or not rec.get("correct_letter"):
+        stats["invalid"] += 1
+        return
+    visuals = _restore_visuals(rec.get("visuals", []))
+    cur = conn.execute(
+        """INSERT OR IGNORE INTO questions
+          (fingerprint, source, source_test, source_question_number, module,
+           passage, stem, choices_json, correct_letter, rationale, images_json,
+           visuals_json,
+           official_domain, official_skill, skill_source, difficulty,
+           pool, seen_benchmark, is_new_bank, import_batch, imported_at, provenance_json)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)""",
+        (
+            rec["fingerprint"],
+            rec.get("source", ""),
+            rec.get("source_test", ""),
+            str(rec.get("source_question_number", "")),
+            rec.get("module", ""),
+            rec.get("passage", ""),
+            rec.get("stem", ""),
+            json.dumps(rec.get("choices", [])),
+            rec["correct_letter"],
+            rec.get("rationale", ""),
+            json.dumps(rec.get("images", [])),
+            json.dumps(visuals),
+            rec.get("official_domain", ""),
+            rec.get("official_skill", ""),
+            rec.get("skill_source") or ("archive" if rec.get("official_skill") else "unknown"),
+            rec.get("difficulty", ""),
+            rec.get("pool", "historical"),
+            int(rec.get("is_new_bank", 0)),
+            rec.get("import_batch", ""),
+            utc_now(),
+            json.dumps(rec.get("provenance", {})),
+        ),
+    )
+    if cur.rowcount == 0:
+        stats["duplicates"] += 1
+        return
+    qid = cur.lastrowid
+    conn.execute("INSERT INTO question_state (question_id) VALUES (?)", (qid,))
+    for item in rec.get("tags", []):
+        if isinstance(item, dict):
+            tag, origin = item["tag"], item.get("origin", "archive")
+        else:
+            tag, origin = item, "archive"
+        restore_tag(conn, qid, tag, origin)
+    for occurrence in rec.get("occurrences", []):
+        if not isinstance(occurrence, dict) or not occurrence.get("bluebook_uid"):
+            continue
+        conn.execute(
+            """INSERT OR IGNORE INTO bluebook_occurrences
+                 (bluebook_uid, test_name, module, question_number, subject,
+                  fingerprint, question_id, answer_status, scraped_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                occurrence["bluebook_uid"],
+                occurrence.get("test_name") or "",
+                occurrence.get("module") or "",
+                str(occurrence.get("question_number") or ""),
+                occurrence.get("subject") or "",
+                occurrence.get("fingerprint") or "",
+                qid,
+                occurrence.get("answer_status") or "",
+                occurrence.get("scraped_at") or "",
+            ),
+        )
+    stats["restored"] += 1
+
+
+def _restore_lines(conn, archive_path: Path, stats: dict) -> None:
+    _validate_archive_version(archive_path)
     for line_no, line in enumerate(archive_path.read_text(encoding="utf-8").splitlines(), 1):
         line = line.strip()
         if not line:
@@ -181,75 +256,7 @@ def _restore_lines(conn, archive_path: Path, stats: dict) -> None:  # noqa: C901
             rec = json.loads(line)
         except json.JSONDecodeError as exc:
             raise ValueError(f"{archive_path.name}:{line_no}: malformed JSON ({exc})") from None
-        if not isinstance(rec, dict) or not rec.get("fingerprint") or not rec.get("correct_letter"):
+        if not isinstance(rec, dict):
             stats["invalid"] += 1
             continue
-        # A restore must be FAITHFUL: keep the archived fingerprint verbatim
-        # (recomputing would break reconciled rows whose content changed).
-        visuals = _restore_visuals(rec.get("visuals", []))
-        cur = conn.execute(
-            """INSERT OR IGNORE INTO questions
-              (fingerprint, source, source_test, source_question_number, module,
-               passage, stem, choices_json, correct_letter, rationale, images_json,
-               visuals_json,
-               official_domain, official_skill, skill_source, difficulty,
-               pool, seen_benchmark, is_new_bank, import_batch, imported_at, provenance_json)
-              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)""",
-            (
-                rec["fingerprint"],
-                rec.get("source", ""),
-                rec.get("source_test", ""),
-                str(rec.get("source_question_number", "")),
-                rec.get("module", ""),
-                rec.get("passage", ""),
-                rec.get("stem", ""),
-                json.dumps(rec.get("choices", [])),
-                rec["correct_letter"],
-                rec.get("rationale", ""),
-                json.dumps(rec.get("images", [])),
-                json.dumps(visuals),
-                rec.get("official_domain", ""),
-                rec.get("official_skill", ""),
-                rec.get("skill_source") or ("archive" if rec.get("official_skill") else "unknown"),
-                rec.get("difficulty", ""),
-                rec.get("pool", "historical"),
-                int(rec.get("is_new_bank", 0)),
-                rec.get("import_batch", ""),
-                utc_now(),
-                json.dumps(rec.get("provenance", {})),
-            ),
-        )
-        if cur.rowcount == 0:
-            stats["duplicates"] += 1
-            continue
-        qid = cur.lastrowid
-        conn.execute("INSERT INTO question_state (question_id) VALUES (?)", (qid,))
-        for t in rec.get("tags", []):
-            if isinstance(t, dict):
-                tag, origin = t["tag"], t.get("origin", "archive")
-            else:
-                tag, origin = t, "archive"
-            restore_tag(conn, qid, tag, origin)
-        # T4: restore source occurrences faithfully when the archive carried
-        # them. The question_id is re-linked to the freshly restored row.
-        for occ in rec.get("occurrences", []):
-            if not isinstance(occ, dict) or not occ.get("bluebook_uid"):
-                continue
-            conn.execute(
-                """INSERT OR IGNORE INTO bluebook_occurrences
-                     (bluebook_uid, test_name, module, question_number, subject,
-                      fingerprint, question_id, answer_status, scraped_at)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
-                (
-                    occ["bluebook_uid"],
-                    occ.get("test_name") or "",
-                    occ.get("module") or "",
-                    str(occ.get("question_number") or ""),
-                    occ.get("subject") or "",
-                    occ.get("fingerprint") or "",
-                    qid,
-                    occ.get("answer_status") or "",
-                    occ.get("scraped_at") or "",
-                ),
-            )
-        stats["restored"] += 1
+        _restore_record(conn, rec, stats)

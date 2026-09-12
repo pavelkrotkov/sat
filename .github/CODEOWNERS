@@ -1,0 +1,9 @@
+# The quality gate and its policy are executable trust-boundary code.
+.github/CODEOWNERS @pavelkrotkov
+.github/aislop-gate.sha256 @pavelkrotkov
+.github/workflows/aislop.yml @pavelkrotkov
+.aislop/ @pavelkrotkov
+scripts/aislop_changed_gate.py @pavelkrotkov
+scripts/aislop_policy.py @pavelkrotkov
+scripts/aislop_policy_compare.py @pavelkrotkov
+scripts/ruff_changed_gate.py @pavelkrotkov

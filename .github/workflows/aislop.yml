@@ -62,5 +62,14 @@ jobs:
           fi
           echo "Comparing against merge-base $MERGE_BASE"
           echo "sha=$MERGE_BASE" >> "$GITHUB_OUTPUT"
+      - name: Verify trusted gate sources
+        run: |
+          manifest="$RUNNER_TEMP/aislop-gate.sha256"
+          if git cat-file -e "${{ steps.mergebase.outputs.sha }}:.github/aislop-gate.sha256" 2>/dev/null; then
+            git show "${{ steps.mergebase.outputs.sha }}:.github/aislop-gate.sha256" > "$manifest"
+          else
+            cp .github/aislop-gate.sha256 "$manifest"
+          fi
+          sha256sum --strict --check "$manifest"
       - name: Run aislop (changed code only)
         run: uv run --no-sync python scripts/aislop_changed_gate.py "${{ steps.mergebase.outputs.sha }}"

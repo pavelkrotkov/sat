@@ -317,7 +317,42 @@ def _extract_evidence(
 _EVIDENCE_MAX_CHARS = 480
 
 
-def _pick_passage_span(  # noqa: C901 (legacy: evidence excerpt heuristic)
+def _sentence_scores(
+    sentences: list[str], target: str, tokenize
+) -> list[tuple[int, int, int, str]]:
+    scored = []
+    for index, sentence in enumerate(sentences):
+        tokens = tokenize(sentence)
+        hit = sum(1 for token in tokens if token in target)
+        scored.append((hit, -index, index, sentence))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return scored
+
+
+def _fallback_excerpt(scored: list[tuple[int, int, int, str]], sentences: list[str]) -> str:
+    scored.sort(key=lambda item: (-len(item[3]), item[1]))
+    for _, _, _, sentence in scored:
+        if len(sentence) <= _EVIDENCE_MAX_CHARS:
+            return sentence
+    return sentences[0][:_EVIDENCE_MAX_CHARS]
+
+
+def _widen_excerpt(primary: str, scored: list[tuple[int, int, int, str]], tokenize) -> str:
+    parts = [primary]
+    size = len(primary)
+    primary_tokens = set(tokenize(primary))
+    for _, _, _, sentence in scored[1:]:
+        if size + len(sentence) > _EVIDENCE_MAX_CHARS:
+            break
+        overlap = sum(1 for token in tokenize(sentence) if token in primary_tokens)
+        if overlap == 0:
+            continue
+        parts.append(sentence)
+        size += len(sentence)
+    return " ".join(parts)
+
+
+def _pick_passage_span(
     passage: str, stem: str, correct_text: str, student_text: str, tokenize
 ) -> str:
     """Pick a bounded passage excerpt that still contains the cited
@@ -337,35 +372,15 @@ def _pick_passage_span(  # noqa: C901 (legacy: evidence excerpt heuristic)
     target = " ".join([stem, correct_text, student_text]).lower()
     if not target.strip():
         target = sentences[0].lower()
-    scored: list[tuple[int, int, int, str]] = []
-    for i, s in enumerate(sentences):
-        toks = tokenize(s)
-        hit = sum(1 for t in toks if t in target)
-        scored.append((hit, -i, i, s))
     # Sort before testing the best score; a later sentence may be the only match.
-    scored.sort(key=lambda t: (-t[0], t[1]))
+    scored = _sentence_scores(sentences, target, tokenize)
     if not scored or scored[0][0] == 0:
         # Nothing matched; take the longest sentence we can still fit.
-        scored.sort(key=lambda t: (-len(t[3]), t[1]))
-        for _, _, _, s in scored:
-            if len(s) <= _EVIDENCE_MAX_CHARS:
-                return s
-        return sentences[0][:_EVIDENCE_MAX_CHARS]
+        return _fallback_excerpt(scored, sentences)
     primary = scored[0][3]
     # Optionally widen with the next sentence if it shares tokens with
     # the primary (citations often straddle a sentence break).
-    parts = [primary]
-    size = len(primary)
-    prim_toks = set(tokenize(primary))
-    for _, _, _, s in scored[1:]:
-        if size + len(s) > _EVIDENCE_MAX_CHARS:
-            break
-        overlap = sum(1 for t in tokenize(s) if t in prim_toks)
-        if overlap == 0:
-            continue
-        parts.append(s)
-        size += len(s)
-    return " ".join(parts)
+    return _widen_excerpt(primary, scored, tokenize)
 
 
 # ---------------------------------------------------------------------------

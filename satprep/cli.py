@@ -181,7 +181,49 @@ def cmd_drill(args) -> None:
         _run_drill(conn, mode, args)
 
 
-def _run_drill(conn, mode: str, args) -> None:  # noqa: C901 (legacy: interactive print orchestration)
+def _print_question_visuals(question: dict) -> None:
+    visuals = question.get("visuals") or []
+    if visuals:
+        for visual in visuals:
+            if visual.get("kind") == "image":
+                print(f"  [figure: {visual.get('file')}]")
+            elif visual.get("kind") == "table":
+                print(f"  [table: {' | '.join(_cell_text(visual.get('html', '')))}]")
+        return
+    for image in question.get("images") or []:
+        print(f"  [figure: {image}]")
+
+
+def _run_drill_question(conn, sid: str, question: dict, index: int, total: int) -> None:
+    print(f"--- Question {index}/{total} ---")
+    if question["passage"]:
+        print(question["passage"][:1800])
+        print()
+    _print_question_visuals(question)
+    print(question["stem"])
+    for choice in sorted(question["choices"], key=lambda item: item["letter"]):
+        print(f"  {choice['letter']}. {choice['text'][:300]}")
+    question_started = datetime.now().astimezone()
+    letter, confidence = _interactive_answer()
+    elapsed_ms = int((datetime.now().astimezone() - question_started).total_seconds() * 1000)
+    result = submit_answer(conn, sid, question["id"], letter, confidence, elapsed_ms)
+    if result.get("duplicate"):
+        print("already answered - not recorded again\n")
+        return
+    print(("correct" if result["correct"] else f"wrong (key: {result['key']})") + "\n")
+
+
+def _print_review(review: dict) -> None:
+    print(
+        f"\nREVIEW Q{review['question_id']} [{review['official_skill']}] trap={','.join(review['trap_tags'])}"
+    )
+    if review["passage_skeleton"]:
+        print("skeleton:", " | ".join(s[:120] for s in review["passage_skeleton"]))
+    if review["rationale_official"]:
+        print("rationale:", excerpt_sentences(review["rationale_official"], max_chars=500))
+
+
+def _run_drill(conn, mode: str, args) -> None:
     sess = create_session(conn, mode=mode, count=args.count, seed=args.seed, focus_tag=args.focus)
     plan, questions = sess["plan"], sess["questions"]
     if not questions:
@@ -189,45 +231,13 @@ def _run_drill(conn, mode: str, args) -> None:  # noqa: C901 (legacy: interactiv
         return
     sid = plan["session_id"]
     print(f"\n== {mode} | session {sid} | {len(questions)} questions ==\n")
-    for i, q in enumerate(questions, 1):
-        print(f"--- Question {i}/{len(questions)} ---")
-        if q["passage"]:
-            print(q["passage"][:1800])
-            print()
-        visuals = q.get("visuals") or []
-        if visuals:
-            # Mixed table and image records render in source order.
-            for v in visuals:
-                if v.get("kind") == "image":
-                    print(f"  [figure: {v.get('file')}]")
-                elif v.get("kind") == "table":
-                    print(f"  [table: {' | '.join(_cell_text(v.get('html', '')))}]")
-        else:
-            # legacy rows (pre-visuals) render their images directly
-            for img in q.get("images") or []:
-                print(f"  [figure: {img}]")
-        print(q["stem"])
-        for c in sorted(q["choices"], key=lambda c: c["letter"]):
-            print(f"  {c['letter']}. {c['text'][:300]}")
-        q_start = datetime.now().astimezone()  # spec section 12: per-question time
-        letter, conf = _interactive_answer()
-        ms = int((datetime.now().astimezone() - q_start).total_seconds() * 1000)
-        res = submit_answer(conn, sid, q["id"], letter, conf, ms)
-        if res.get("duplicate"):
-            print("already answered - not recorded again\n")
-            continue
-        print(("correct" if res["correct"] else f"wrong (key: {res['key']})") + "\n")
+    for index, question in enumerate(questions, 1):
+        _run_drill_question(conn, sid, question, index, len(questions))
     summary = complete_session(conn, sid)
     print("summary:", json.dumps(summary))
     reviews = [r for r in review_payload(conn, sid) if not r["correct"]]
-    for r in reviews:
-        print(
-            f"\nREVIEW Q{r['question_id']} [{r['official_skill']}] trap={','.join(r['trap_tags'])}"
-        )
-        if r["passage_skeleton"]:
-            print("skeleton:", " | ".join(s[:120] for s in r["passage_skeleton"]))
-        if r["rationale_official"]:
-            print("rationale:", excerpt_sentences(r["rationale_official"], max_chars=500))
+    for review in reviews:
+        _print_review(review)
 
 
 def cmd_benchmark(args) -> None:

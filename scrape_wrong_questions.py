@@ -552,6 +552,87 @@ def question_ref(item: dict[str, Any]) -> str:
     return f"{test_name}{suffix}"
 
 
+def _normalize_review_question_data(data: dict[str, Any], structured: dict[str, Any]) -> None:
+    heading = normalize_space(data.get("heading"))
+    if heading:
+        match = re.search(r"^(.*?):\s*Question\s*(\d+)\s*$", heading, flags=re.IGNORECASE)
+        if match:
+            structured["section"] = normalize_space(match.group(1))
+            structured["question_number"] = match.group(2)
+    question_parts = [
+        normalize_space(part) for part in data.get("question_parts", []) if normalize_space(part)
+    ]
+    if question_parts:
+        structured["question_text"] = "\n".join(question_parts)
+    question_html = (data.get("question_html") or "").strip()
+    if question_html:
+        structured["question_html"] = question_html
+    answer_choices = [
+        normalize_space(choice)
+        for choice in data.get("answer_choices", [])
+        if normalize_space(choice)
+    ]
+    if answer_choices:
+        structured["answer_choices"] = answer_choices
+    answer_choices_html = [
+        fragment.strip()
+        for fragment in data.get("answer_choices_html", [])
+        if fragment and fragment.strip()
+    ]
+    if answer_choices_html:
+        structured["answer_choices_html"] = answer_choices_html
+    explanation = normalize_space(data.get("explanation"))
+    if explanation:
+        structured["explanation"] = explanation
+    explanation_html = (data.get("explanation_html") or "").strip()
+    if explanation_html:
+        structured["explanation_html"] = explanation_html
+    domain = normalize_space(data.get("domain"))
+    if domain:
+        structured["domain"] = domain
+
+
+def _normalize_review_status_data(data: dict[str, Any], structured: dict[str, Any]) -> None:
+    status_text = normalize_space(data.get("status_text"))
+    status_kind = normalize_space(data.get("status_kind"))
+    if status_kind not in {"Correct", "Incorrect"}:
+        lowered_status = status_text.lower()
+        if re.search(r"\bincorrect\b", lowered_status):
+            status_kind = "Incorrect"
+        elif re.search(r"\bcorrect\b", lowered_status):
+            status_kind = "Correct"
+        else:
+            status_kind = ""
+    if status_kind:
+        structured["answer_status"] = status_kind
+    if status_text:
+        selected_match = re.search(
+            r"You selected answer\s+([A-H])", status_text, flags=re.IGNORECASE
+        )
+        correct_match = re.search(r"correct answer is\s+([A-H])", status_text, flags=re.IGNORECASE)
+        if selected_match:
+            suffix = "Correct" if status_kind == "Correct" else "Incorrect"
+            structured["my_answer"] = f"{selected_match.group(1).upper()}; {suffix}"
+        if correct_match:
+            structured["correct_answer"] = correct_match.group(1).upper()
+        if (
+            status_kind == "Correct"
+            and not structured.get("my_answer")
+            and structured.get("correct_answer")
+        ):
+            structured["my_answer"] = f"{structured['correct_answer']}; Correct"
+    correct_choice = normalize_space(data.get("correct_choice_letter"))
+    if correct_choice and not structured.get("correct_answer"):
+        structured["correct_answer"] = correct_choice
+
+
+def _normalize_review_structured_data(data: dict[str, Any]) -> dict[str, Any]:
+    structured: dict[str, Any] = {}
+    _normalize_review_question_data(data, structured)
+    _normalize_review_status_data(data, structured)
+    return structured
+
+
 class ReviewParser:
     def parse_container(
         self, container: Locator, row_meta: dict[str, Any]
@@ -579,7 +660,7 @@ class ReviewParser:
             return True
         return False
 
-    def extract_review_structured_data(self, container: Locator) -> dict[str, Any]:  # noqa: C901 (legacy: review-row state machine)
+    def extract_review_structured_data(self, container: Locator) -> dict[str, Any]:
         try:
             data = container.evaluate(
                 """
@@ -646,80 +727,7 @@ class ReviewParser:
         except PlaywrightError:
             return {}
 
-        structured: dict[str, Any] = {}
-        heading = normalize_space(data.get("heading"))
-        if heading:
-            match = re.search(r"^(.*?):\s*Question\s*(\d+)\s*$", heading, flags=re.IGNORECASE)
-            if match:
-                structured["section"] = normalize_space(match.group(1))
-                structured["question_number"] = match.group(2)
-        question_parts = [
-            normalize_space(part)
-            for part in data.get("question_parts", [])
-            if normalize_space(part)
-        ]
-        if question_parts:
-            structured["question_text"] = "\n".join(question_parts)
-        question_html = (data.get("question_html") or "").strip()
-        if question_html:
-            structured["question_html"] = question_html
-        answer_choices = [
-            normalize_space(choice)
-            for choice in data.get("answer_choices", [])
-            if normalize_space(choice)
-        ]
-        if answer_choices:
-            structured["answer_choices"] = answer_choices
-        answer_choices_html = [
-            fragment.strip()
-            for fragment in data.get("answer_choices_html", [])
-            if fragment and fragment.strip()
-        ]
-        if answer_choices_html:
-            structured["answer_choices_html"] = answer_choices_html
-        explanation = normalize_space(data.get("explanation"))
-        if explanation:
-            structured["explanation"] = explanation
-        explanation_html = (data.get("explanation_html") or "").strip()
-        if explanation_html:
-            structured["explanation_html"] = explanation_html
-        domain = normalize_space(data.get("domain"))
-        if domain:
-            structured["domain"] = domain
-        status_text = normalize_space(data.get("status_text"))
-        status_kind = normalize_space(data.get("status_kind"))
-        if status_kind not in {"Correct", "Incorrect"}:
-            lowered_status = status_text.lower()
-            if re.search(r"\bincorrect\b", lowered_status):
-                status_kind = "Incorrect"
-            elif re.search(r"\bcorrect\b", lowered_status):
-                status_kind = "Correct"
-            else:
-                status_kind = ""
-        if status_kind:
-            structured["answer_status"] = status_kind
-        if status_text:
-            selected_match = re.search(
-                r"You selected answer\s+([A-H])", status_text, flags=re.IGNORECASE
-            )
-            correct_match = re.search(
-                r"correct answer is\s+([A-H])", status_text, flags=re.IGNORECASE
-            )
-            if selected_match:
-                suffix = "Correct" if status_kind == "Correct" else "Incorrect"
-                structured["my_answer"] = f"{selected_match.group(1).upper()}; {suffix}"
-            if correct_match:
-                structured["correct_answer"] = correct_match.group(1).upper()
-            if (
-                status_kind == "Correct"
-                and not structured.get("my_answer")
-                and structured.get("correct_answer")
-            ):
-                structured["my_answer"] = f"{structured['correct_answer']}; Correct"
-        correct_choice = normalize_space(data.get("correct_choice_letter"))
-        if correct_choice and not structured.get("correct_answer"):
-            structured["correct_answer"] = correct_choice
-        return structured
+        return _normalize_review_structured_data(data)
 
     def extract_visible_text(self, container: Locator) -> str:
         try:
@@ -1841,17 +1849,12 @@ class SatBluebookScraper:
         except PlaywrightTimeoutError:
             page.wait_for_timeout(1_000)
 
-    def set_view_all(self, page: Page) -> None:  # noqa: C901 (legacy: pagination stepping)
-        self.dismiss_session_modal(page)
-        try:
-            total_questions = self.total_questions_count(page)
-        except Exception:
-            total_questions = 0
+    def _click_all_page_size_button(self, page: Page, total_questions: int) -> bool:
         page_size_buttons = page.locator("#questions-table .page-size button")
         try:
             button_count = page_size_buttons.count()
         except PlaywrightError:
-            button_count = 0
+            return False
         for index in range(button_count):
             button = page_size_buttons.nth(index)
             label = self.safe_inner_text(button)
@@ -1860,12 +1863,15 @@ class SatBluebookScraper:
             aria_disabled = button.get_attribute("disabled")
             classes = button.get_attribute("class") or ""
             if aria_disabled is not None or "selected" in classes:
-                return
+                return True
             if self.click_first_visible(button, required=False):
                 self.wait_for_table_row_count(
                     page, minimum=max(total_questions, 11) if total_questions > 10 else 1
                 )
-                return
+                return True
+        return False
+
+    def _select_all_page_size(self, page: Page) -> bool:
         try:
             labeled_select = page.get_by_label(re.compile(r"View", re.IGNORECASE))
             if labeled_select.count() > 0:
@@ -1874,9 +1880,21 @@ class SatBluebookScraper:
                 except PlaywrightError:
                     labeled_select.first.select_option(value="all")
                 page.wait_for_timeout(600)
-                return
+                return True
         except (PlaywrightError, PlaywrightTimeoutError):
-            pass
+            return False
+        return False
+
+    def set_view_all(self, page: Page) -> None:
+        self.dismiss_session_modal(page)
+        try:
+            total_questions = self.total_questions_count(page)
+        except Exception:
+            total_questions = 0
+        if self._click_all_page_size_button(page, total_questions):
+            return
+        if self._select_all_page_size(page):
+            return
 
         if self.click_by_text(page, r"\bAll\b", regex=True, required=False):
             page.wait_for_timeout(600)
@@ -1960,8 +1978,7 @@ class SatBluebookScraper:
                 return candidate
         return None
 
-    def read_row_metadata(self, row: Locator, row_text: str = "") -> dict[str, str]:  # noqa: C901 (legacy: row parsing state machine)
-        row_text = row_text or self.safe_inner_text(row)
+    def _row_values(self, row: Locator) -> tuple[str, list[str]]:
         header_cells = row.locator("th")
         cells = row.locator("td, [role='cell']")
         question_number = ""
@@ -1969,7 +1986,7 @@ class SatBluebookScraper:
             if header_cells.count() > 0:
                 question_number = self.safe_inner_text(header_cells.first)
         except PlaywrightError:
-            question_number = ""
+            pass
         values: list[str] = []
         try:
             count = cells.count()
@@ -1979,6 +1996,9 @@ class SatBluebookScraper:
             text = self.safe_inner_text(cells.nth(index))
             if text:
                 values.append(text)
+        return question_number, values
+
+    def _row_module_and_section(self, row: Locator, values: list[str]) -> tuple[str, str]:
         section = next(
             (
                 value
@@ -1998,12 +2018,18 @@ class SatBluebookScraper:
             module_match = re.search(r"module-(\d+)", row_class, flags=re.IGNORECASE)
             if module_match:
                 module = f"Module {module_match.group(1)}"
+        return section, module
+
+    def _row_question_number(self, question_number: str, values: list[str]) -> str:
         if not question_number:
             for value in values:
                 match = re.search(r"\bquestion\s*(\d+)\b|\b(\d+)\b", value, flags=re.IGNORECASE)
                 if match:
                     question_number = match.group(1) or match.group(2)
                     break
+        return question_number
+
+    def _row_answer(self, values: list[str]) -> tuple[str, str]:
         my_answer = ""
         answer_status = ""
         for value in values:
@@ -2018,6 +2044,14 @@ class SatBluebookScraper:
             my_answer = next((value for value in values if "incorrect" in value.lower()), "")
             if my_answer:
                 answer_status = "Incorrect"
+        return my_answer, answer_status
+
+    def read_row_metadata(self, row: Locator, row_text: str = "") -> dict[str, str]:
+        row_text = row_text or self.safe_inner_text(row)
+        question_number, values = self._row_values(row)
+        section, module = self._row_module_and_section(row, values)
+        question_number = self._row_question_number(question_number, values)
+        my_answer, answer_status = self._row_answer(values)
         correct_answer = values[1] if len(values) >= 2 else ""
         domain = values[4] if len(values) >= 5 else ""
         return {
@@ -2193,48 +2227,37 @@ class SatBluebookScraper:
         ]
         return self._first_visible(candidates) or page.locator("body")
 
-    def save_artifacts(self, container: Locator, uid: str) -> dict[str, Any]:  # noqa: C901 (legacy: artifact write state machine)
-        screenshot_path = self.screenshot_dir / f"{uid}.png"
-        html_path = self.html_dir / f"{uid}.html"
-        screenshot_value = str(screenshot_path)
-        html_value = str(html_path)
-        html_markup = ""
+    def _save_question_screenshot(self, container: Locator, uid: str) -> str:
         if self.args.save_question_screenshots:
             ensure_dir(self.screenshot_dir)
             try:
-                container.screenshot(path=str(screenshot_path))
+                path = self.screenshot_dir / f"{uid}.png"
+                container.screenshot(path=str(path))
+                return str(path)
             except PlaywrightError as exc:
                 LOG.warning("Question screenshot failed for %s: %s", uid, exc)
                 self.main_page and self.capture_error(self.main_page, f"screenshot-failure-{uid}")
-                screenshot_value = ""
-        else:
-            screenshot_value = ""
+        return ""
+
+    def _save_question_html(self, container: Locator, uid: str) -> tuple[str, str]:
+        html_path = self.html_dir / f"{uid}.html"
         try:
-            html_markup = container.inner_html()
-            atomic_write_text(html_path, html_markup)
+            markup = container.inner_html()
+            atomic_write_text(html_path, markup)
+            return str(html_path), markup
         except PlaywrightError as exc:
             LOG.warning("HTML snapshot failed for %s: %s", uid, exc)
-            html_value = ""
+            return "", ""
 
+    def _save_img_elements(
+        self, container: Locator, uid: str, handled_image_sources: set[str]
+    ) -> list[str]:
         images: list[str] = []
-        handled_image_sources: set[str] = set()
-        if html_markup:
-            try:
-                images, handled_image_sources = extract_visual_assets_from_html_details(
-                    uid, html_markup, self.image_dir
-                )
-            except OSError as exc:
-                LOG.warning("Figure extraction failed for %s: %s", uid, exc)
-
-        if html_markup:
-            ensure_dir(self.image_dir)
-        images.extend(self.capture_non_svg_figures(container, uid))
-
         img_locator = container.locator("img")
         try:
             img_count = min(img_locator.count(), 12)
         except PlaywrightError:
-            img_count = 0
+            return images
         for index in range(img_count):
             image = img_locator.nth(index)
             try:
@@ -2248,7 +2271,23 @@ class SatBluebookScraper:
                 images.append(str(path))
             except PlaywrightError:
                 continue
+        return images
 
+    def save_artifacts(self, container: Locator, uid: str) -> dict[str, Any]:
+        screenshot_value = self._save_question_screenshot(container, uid)
+        html_value, html_markup = self._save_question_html(container, uid)
+        images: list[str] = []
+        handled_image_sources: set[str] = set()
+        if html_markup:
+            try:
+                images, handled_image_sources = extract_visual_assets_from_html_details(
+                    uid, html_markup, self.image_dir
+                )
+            except OSError as exc:
+                LOG.warning("Figure extraction failed for %s: %s", uid, exc)
+            ensure_dir(self.image_dir)
+        images.extend(self.capture_non_svg_figures(container, uid))
+        images.extend(self._save_img_elements(container, uid, handled_image_sources))
         return {
             "screenshot": screenshot_value,
             "html": html_value,

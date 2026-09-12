@@ -79,91 +79,90 @@ def _find_choice_list(soup) -> Tag | None:
     return None
 
 
-def parse_snapshot(html: str) -> ParsedQuestion:  # noqa: C901 (legacy: Bluebook HTML parse/repair)
-    soup = BeautifulSoup(html, "html.parser")
-    out = ParsedQuestion()
-
-    panel = soup.select_one(".question-panel") or soup
+def _parse_heading(panel: Tag, out: ParsedQuestion) -> None:
     heading = panel.find("h3")
-    if heading:
-        m = re.search(r"^(.*?):\s*Question\s*(\d+)", _clean(heading.get_text(" ")), re.IGNORECASE)
-        if m:
-            out.section = _clean(m.group(1))
-            out.question_number = m.group(2)
+    if not heading:
+        return
+    match = re.search(r"^(.*?):\s*Question\s*(\d+)", _clean(heading.get_text(" ")), re.IGNORECASE)
+    if match:
+        out.section = _clean(match.group(1))
+        out.question_number = match.group(2)
 
-    # Passage vs stem: every direct child div after the heading; the stem is
-    # the last one that looks like a question (ends with ? or starts with a
-    # typical directive). Everything earlier is passage material.
+
+def _parse_body(panel: Tag, out: ParsedQuestion) -> None:
     body_divs = [
         d for d in panel.find_all("div", recursive=False) if d is not None and not d.find("h3")
     ]
-    stem_idx = -1
-    for idx in range(len(body_divs) - 1, -1, -1):
-        text = _clean(body_divs[idx].get_text(" "))
-        if text:
-            stem_idx = idx
-            break
-    if stem_idx >= 0:
-        out.stem = _node_text(body_divs[stem_idx])
-        passage_parts = [_node_text(d) for d in body_divs[:stem_idx]]
-        out.passage = "\n".join(p for p in passage_parts if p)
+    for index in range(len(body_divs) - 1, -1, -1):
+        if not _clean(body_divs[index].get_text(" ")):
+            continue
+        out.stem = _node_text(body_divs[index])
+        out.passage = "\n".join(part for part in (_node_text(d) for d in body_divs[:index]) if part)
+        return
 
-    # Choices live in two possible places (issue #49):
-    #  - correct reviews: .question-panel ol.answer-options
-    #  - incorrect reviews: .answer-panel ol
-    # Prefer the question-panel list when present (it is the fuller one on
-    # correct reviews); fall back to the answer panel otherwise.
-    choice_ol = _find_choice_list(soup)
-    if choice_ol is not None:
-        start = choice_ol.get("type")
-        start_letter = start.upper() if isinstance(start, str) and len(start) == 1 else "A"
-        for offset, li in enumerate(choice_ol.find_all("li", recursive=False)):
-            classes = li.get("class") or []
-            out.choices.append(
-                {
-                    "letter": chr(ord(start_letter) + offset),
-                    "text": _node_text(li),
-                    "is_correct": "correct" in classes,
-                }
-            )
-    for c in out.choices:
-        if c["is_correct"]:
-            out.correct_letter = c["letter"]
-            break
 
-    answer_panel = soup.select_one(".answer-panel")
-    if answer_panel is None:
-        return out
+def _parse_choices(choice_ol: Tag | None, out: ParsedQuestion) -> None:
+    if choice_ol is None:
+        return
+    start = choice_ol.get("type")
+    start_letter = start.upper() if isinstance(start, str) and len(start) == 1 else "A"
+    for offset, li in enumerate(choice_ol.find_all("li", recursive=False)):
+        classes = li.get("class") or []
+        out.choices.append(
+            {
+                "letter": chr(ord(start_letter) + offset),
+                "text": _node_text(li),
+                "is_correct": "correct" in classes,
+            }
+        )
+    correct = next((choice for choice in out.choices if choice["is_correct"]), None)
+    if correct:
+        out.correct_letter = correct["letter"]
 
+
+def _parse_answer_panel(answer_panel: Tag, out: ParsedQuestion) -> None:
     status_p = answer_panel.find(
         "p",
         class_=lambda c: bool(c) and ("response" in c or "incorrect" in c or "correct" in c),
     )
     if status_p:
         status_text = _clean(status_p.get_text(" "))
-        m_sel = _SELECTED_RE.search(status_text)
-        if m_sel:
-            out.student_letter = m_sel.group(1).upper()
+        selected = _SELECTED_RE.search(status_text)
+        if selected:
+            out.student_letter = selected.group(1).upper()
         if not out.correct_letter:
-            m_key = _CORRECT_IS_RE.search(status_text)
-            if m_key:
-                out.correct_letter = m_key.group(1).upper()
+            correct = _CORRECT_IS_RE.search(status_text)
+            if correct:
+                out.correct_letter = correct.group(1).upper()
 
     rationale_h3 = next(
         (
-            h
-            for h in answer_panel.find_all("h3")
-            if re.search(r"rationale", _clean(h.get_text(" ")), re.I)
+            heading
+            for heading in answer_panel.find_all("h3")
+            if re.search(r"rationale", _clean(heading.get_text(" ")), re.I)
         ),
         None,
     )
-    if rationale_h3:
-        chunks = []
-        for sib in rationale_h3.next_siblings:
-            if isinstance(sib, Tag):
-                txt = _node_text(sib)
-                if txt:
-                    chunks.append(txt)
-        out.rationale = "\n".join(chunks)
+    if not rationale_h3:
+        return
+    chunks = []
+    for sibling in rationale_h3.next_siblings:
+        if not isinstance(sibling, Tag):
+            continue
+        text = _node_text(sibling)
+        if text:
+            chunks.append(text)
+    out.rationale = "\n".join(chunks)
 
+
+def parse_snapshot(html: str) -> ParsedQuestion:
+    soup = BeautifulSoup(html, "html.parser")
+    out = ParsedQuestion()
+    panel = soup.select_one(".question-panel") or soup
+    _parse_heading(panel, out)
+    _parse_body(panel, out)
+    _parse_choices(_find_choice_list(soup), out)
+    answer_panel = soup.select_one(".answer-panel")
+    if answer_panel is not None:
+        _parse_answer_panel(answer_panel, out)
     return out

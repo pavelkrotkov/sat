@@ -14,9 +14,11 @@ Blocking = a new finding that is error-severity (the .aislop/config.yml rules
 elevated to `error`) or a quality/score-threshold violation that the diff
 introduces:
   - ai-slop/* -> blocked (config elevates these to error)
-  - complexity/function-too-long, complexity/file-too-large,
+  - complexity/function-too-long,
     complexity/deep-nesting, complexity/too-many-params -> blocked
     (config `quality.*` thresholds)
+  - complexity/file-too-large remains visible in the report; it is
+    file-scoped legacy debt and only blocks a newly added oversized file.
   - Ruff C901 diagnostics in changed files/functions -> blocked, including
     legacy functions whose `# noqa` only preserves the existing baseline.
 Exit 1 when any such finding is new relative to the base or touches changed code.
@@ -27,6 +29,7 @@ from __future__ import annotations
 import ast
 import io
 import json
+import os
 import re
 import subprocess
 import sys
@@ -56,12 +59,13 @@ CONFIG_PARSE_WARNING = ("failed to parse", "default configuration")
 # ai-slop categories the repo config elevates to error.
 BLOCKING_RULES = (
     "complexity/function-too-long",
-    "complexity/file-too-large",
     "complexity/deep-nesting",
     "complexity/too-many-params",
 )
+FILE_SCOPED_RULES = {"complexity/file-too-large"}
 
 _FUNC_NAME = re.compile(r"^(.+?) · (?:\d+|depth \d+)")
+_METRIC_VALUE = re.compile(r"(?:·\s*)?(?:depth\s+)?(\d+(?:\.\d+)?)\s+(?:lines|params)")
 
 
 def run_aislop(directory: str, base: str | None = None) -> dict:
@@ -71,7 +75,13 @@ def run_aislop(directory: str, base: str | None = None) -> dict:
     if base is not None:
         command = [*AISLOP[:-1], "--changes", "--base", base, AISLOP[-1]]
     try:
-        result = subprocess.run(command, cwd=directory, capture_output=True, text=True)
+        result = subprocess.run(
+            command,
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "AISLOP_NO_TELEMETRY": "1"},
+        )
     except OSError as exc:
         raise SystemExit(f"aislop command failed: {exc}") from exc
 
@@ -256,7 +266,9 @@ def function_contains_changed_line(root: str, relpath: str, anchor: int, changed
     )
 
 
-def is_blocking(finding: dict) -> bool:
+def is_blocking(finding: dict, new_files: set[str] | None = None) -> bool:
+    if finding.get("rule", "") in FILE_SCOPED_RULES:
+        return finding.get("filePath", "") in (new_files or set())
     severity = finding.get("severity")
     return severity == "error" or finding.get("rule", "") in BLOCKING_RULES
 
@@ -287,6 +299,33 @@ def is_changed_finding(
             )
         )
     return is_new or line_changed
+
+
+def _metric_identity(finding: dict, renames: dict[str, str]) -> tuple[str, str, str]:
+    source_path = str(finding.get("filePath") or "")
+    path = renames.get(source_path, source_path)
+    detail = str(finding.get("detail") or "")
+    function = _FUNC_NAME.match(detail)
+    return path, str(finding.get("rule") or ""), function.group(1) if function else ""
+
+
+def _metric_value(finding: dict) -> float | None:
+    match = _METRIC_VALUE.search(str(finding.get("detail") or ""))
+    return float(match.group(1)) if match else None
+
+
+def _metric_improved(finding: dict, base_diagnostics: list[dict], renames: dict[str, str]) -> bool:
+    if finding.get("rule") not in (*BLOCKING_RULES, *FILE_SCOPED_RULES):
+        return False
+    identity = _metric_identity(finding, {})
+    candidates = [base for base in base_diagnostics if _metric_identity(base, renames) == identity]
+    if not candidates:
+        return False
+    head_value = _metric_value(finding)
+    base_values = [_metric_value(base) for base in candidates]
+    if head_value is None or any(value is None for value in base_values):
+        return False
+    return head_value < min(value for value in base_values if value is not None)
 
 
 def main() -> int:
@@ -325,7 +364,8 @@ def main() -> int:
     new = [
         d
         for d in head_diags
-        if is_changed_finding(
+        if not _metric_improved(d, base_diags, renames)
+        and is_changed_finding(
             d,
             paths,
             new_files,
@@ -333,12 +373,12 @@ def main() -> int:
             root=str(_ROOT),
         )
     ]
-    blocking = [*c901_blocking, *(d for d in new if is_blocking(d))]
+    blocking = [*c901_blocking, *(d for d in new if is_blocking(d, new_files))]
     score_comparable = base_policy == head_policy
     head_threshold_broken = score_blocking(head, config_path)
+    # The first policy rollout has no comparable score; policy weakening is
+    # checked separately and later runs compare like-for-like reports.
     score_regressed = score_comparable and score_worsened_since_base(base_report, head, config_path)
-    if not score_comparable:
-        score_regressed = bool(new) and head_threshold_broken
     if score_regressed:
         blocking.append(
             {

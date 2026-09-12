@@ -42,7 +42,113 @@ def _load_candidates(conn, include_pools: tuple[str, ...]) -> list[Candidate]:
     return out
 
 
-def score_candidate(  # noqa: C901 (legacy: linear explainable scoring, extraction hides the signal list)
+def _matched_weak_tags(cand: Candidate, weak_tags: dict) -> list[str]:
+    matched = [tag for tag in cand.tags if tag in weak_tags]
+    matched.sort(key=lambda tag: -weak_tags[tag]["score"])
+    return matched
+
+
+def _score_weak_tags(
+    cand: Candidate, weak_tags: dict, matched: list[str], focus_tags: list[str] | None
+) -> None:
+    if not matched:
+        return
+    top = matched[0]
+    bonus = config.W_WEAK_TAG_MATCH * weak_tags[top]["score"] / 100.0
+    if focus_tags and top in focus_tags:
+        bonus *= 1.35
+    cand.add(f"weak-tag:{top}", bonus)
+    if len(matched) > 1:
+        second = matched[1]
+        cand.add(
+            f"weak-tag-2nd:{second}",
+            config.W_WEAK_SECONDARY_TAG * (weak_tags[second]["score"] / 100.0),
+        )
+
+
+def _score_error_tags(cand: Candidate, weakness: dict, focus_tags: list[str] | None) -> None:
+    for tag, payload in weakness.get("error_tag", {}).items():
+        score = payload.get("score", 0) or 0
+        question_ids = payload.get("question_ids") or []
+        if score <= 0 or not question_ids or cand.question.id not in question_ids:
+            continue
+        bonus = config.W_WEAK_TAG_MATCH * (score / 100.0)
+        if focus_tags and tag in focus_tags:
+            bonus *= 1.35
+        cand.add(f"remediation:error-tag:{tag}", bonus)
+
+
+def _score_content(cand: Candidate, weakness: dict) -> None:
+    skill = cand.question.official_skill
+    weak_skills = weakness.get("skill", {})
+    if skill and skill in weak_skills:
+        cand.add(
+            f"skill-weakness:{skill}", config.W_SKILL_WEAKNESS * weak_skills[skill]["score"] / 100.0
+        )
+    if skill in config.SEMANTIC_SKILLS:
+        cand.add("semantic-content-bias", config.W_SEMANTIC_BIAS)
+    difficulty = cand.question.difficulty
+    diff_bonus = {"hard": config.W_HARD_DIFFICULTY, "medium": 0.5}.get(difficulty, 0.7)
+    cand.add("difficulty" + (f":{difficulty}" if difficulty else ":unknown"), diff_bonus)
+
+
+def _score_pool_state(cand: Candidate, weakness: dict, matched: list[str], due_now: bool) -> None:
+    question = cand.question
+    hist_correct = cand.hist_correct if question.pool == "historical" else False
+    weak_skills = weakness.get("skill", {})
+    if question.pool == "fresh_training":
+        if matched:
+            cand.add("fresh-matching-weak-tags", config.W_FRESH_MATCHING_WEAK)
+        elif question.official_skill and question.official_skill in weak_skills:
+            cand.add("fresh-neighbor-skill", config.W_FRESH_NEIGHBOR)
+    if question.pool == "historical" and due_now and hist_correct == 0:
+        cand.add("due-for-review-previously-wrong", config.W_DUE_INCORRECT)
+    if question.pool == "historical" and hist_correct == 1 and matched:
+        cand.add("transfer-correct-shares-weak-tag", config.W_TRANSFER_CORRECT)
+
+
+def _score_exposure(cand: Candidate, state) -> None:
+    seen_times = row_field(state, "times_seen", 0)
+    exposure_penalty = min(
+        config.PENALTY_EXPOSURE_CAP, config.PENALTY_EXPOSURE_PER_SEEN * seen_times
+    )
+    if exposure_penalty:
+        cand.add("exposure-penalty", -exposure_penalty)
+    if (
+        row_field(state, "times_correct", 0) >= 2
+        and row_field(state, "confident_wrong_streak", 0) == 0
+    ):
+        cand.add("recently-mastered-penalty", -config.PENALTY_RECENT_MASTERED)
+
+
+def _score_recency(cand: Candidate, state, now: datetime) -> None:
+    last_attempted = row_field(state, "last_attempted_at", None)
+    if not last_attempted:
+        return
+    try:
+        days_since = (now - datetime.fromisoformat(last_attempted)).days
+    except ValueError:
+        return
+    if days_since >= 45:
+        cand.add(f"not-seen-in-{min(days_since, 999)}-days", config.W_NOT_SEEN_LONG_AGO)
+
+
+def _score_state(
+    cand: Candidate,
+    weakness: dict,
+    matched: list[str],
+    now: datetime,
+) -> None:
+    question = cand.question
+    state = cand.state
+    hist_correct = cand.hist_correct if question.pool == "historical" else False
+    due_now = is_due(state, now) or (question.pool == "historical" and hist_correct == 0)
+    _score_pool_state(cand, weakness, matched, due_now)
+    _score_exposure(cand, state)
+    _score_recency(cand, state, now)
+
+
+def score_candidate(
     cand: Candidate,
     weakness: dict,
     focus_tags: list[str] | None = None,
@@ -50,95 +156,13 @@ def score_candidate(  # noqa: C901 (legacy: linear explainable scoring, extracti
 ) -> Candidate:
     """Additive explainable score (mirrors config weights)."""
     now = now or datetime.now().astimezone()
-    q = cand.question
-    tags = cand.tags
     weak_tags = weakness.get("tag", {})
-    weak_skills = weakness.get("skill", {})
-
+    matched = _matched_weak_tags(cand, weak_tags)
     cand.add("base", 0.5)
-
-    matched = [t for t in tags if t in weak_tags]
-    matched.sort(key=lambda t: -weak_tags[t]["score"])
-    if matched:
-        top = matched[0]
-        w = weak_tags[top]["score"] / 100.0 * 10.0
-        bonus = config.W_WEAK_TAG_MATCH * w / 10.0
-        if focus_tags and top in focus_tags:
-            bonus *= 1.35
-        cand.add(f"weak-tag:{top}", bonus)
-        if len(matched) > 1:
-            second = matched[1]
-            cand.add(
-                f"weak-tag-2nd:{second}",
-                config.W_WEAK_SECONDARY_TAG * (weak_tags[second]["score"] / 100.0),
-            )
-
-    # Issue #38: remediation also boosts questions carrying a weak
-    # ERROR tag (the classifier's output from #36). error_tags come
-    # from the student_error_tags table and live under
-    # weakness['error_tag']; they are distinct from demand tags but
-    # get the same additive scoring treatment. A candidate is boosted
-    # only when IT carries the weak error tag — the profile records
-    # which question_ids each error tag applies to.
-    error_weak = weakness.get("error_tag", {})
-    for t, payload in error_weak.items():
-        score = payload.get("score", 0) or 0
-        if score <= 0:
-            continue
-        qids = payload.get("question_ids") or []
-        if qids and cand.question.id in qids:
-            bonus = config.W_WEAK_TAG_MATCH * (score / 100.0)
-            if focus_tags and t in focus_tags:
-                bonus *= 1.35
-            cand.add(f"remediation:error-tag:{t}", bonus)
-    skill = q.official_skill
-    if skill and skill in weak_skills:
-        cand.add(
-            f"skill-weakness:{skill}", config.W_SKILL_WEAKNESS * weak_skills[skill]["score"] / 100.0
-        )
-    if skill in config.SEMANTIC_SKILLS:
-        # spec section 16: default bias toward hard semantic/reasoning content
-        cand.add("semantic-content-bias", config.W_SEMANTIC_BIAS)
-
-    diff_bonus = {"hard": config.W_HARD_DIFFICULTY, "medium": 0.5}.get(q.difficulty, 0.7)
-    cand.add("difficulty" + (f":{q.difficulty}" if q.difficulty else ":unknown"), diff_bonus)
-
-    state = cand.state
-
-    def _sget(key, default=0):
-        return row_field(state, key, default)
-
-    seen_times = _sget("times_seen")
-    hist_correct = cand.hist_correct if q.pool == "historical" else False
-    # an item scraped as incorrect counts as due even before any in-app review
-    due_now = is_due(state, now) or (q.pool == "historical" and hist_correct == 0)
-    if q.pool == "fresh_training":
-        if matched:
-            cand.add("fresh-matching-weak-tags", config.W_FRESH_MATCHING_WEAK)
-        elif skill and skill in weak_skills:
-            cand.add("fresh-neighbor-skill", config.W_FRESH_NEIGHBOR)
-    if q.pool == "historical" and due_now and hist_correct == 0:
-        cand.add("due-for-review-previously-wrong", config.W_DUE_INCORRECT)
-    if q.pool == "historical" and hist_correct == 1 and matched:
-        cand.add("transfer-correct-shares-weak-tag", config.W_TRANSFER_CORRECT)
-
-    exposure_penalty = min(
-        config.PENALTY_EXPOSURE_CAP, config.PENALTY_EXPOSURE_PER_SEEN * seen_times
-    )
-    if exposure_penalty:
-        cand.add("exposure-penalty", -exposure_penalty)
-    last_attempted = _sget("last_attempted_at", None)
-    if last_attempted:
-        try:
-            days_since = (now - datetime.fromisoformat(last_attempted)).days
-            if days_since >= 45:
-                cand.add(f"not-seen-in-{min(days_since, 999)}-days", config.W_NOT_SEEN_LONG_AGO)
-        except ValueError:
-            pass
-    times_correct = _sget("times_correct")
-    streak = _sget("confident_wrong_streak")
-    if times_correct >= 2 and streak == 0:
-        cand.add("recently-mastered-penalty", -config.PENALTY_RECENT_MASTERED)
+    _score_weak_tags(cand, weak_tags, matched, focus_tags)
+    _score_error_tags(cand, weakness, focus_tags)
+    _score_content(cand, weakness)
+    _score_state(cand, weakness, matched, now)
     return cand
 
 
