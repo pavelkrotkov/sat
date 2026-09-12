@@ -46,6 +46,15 @@
             }
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run ruff check . && uv run ruff format --check . && uv run ty check --extra-search-path . . && uv run pytest -q && uv run python scripts/aislop_changed_gate.py \"$(git merge-base origin/main HEAD)\""
+          }
+        ]
       }
     ]
   }

@@ -17,7 +17,9 @@ introduces:
   - complexity/function-too-long, complexity/file-too-large,
     complexity/deep-nesting, complexity/too-many-params -> blocked
     (config `quality.*` thresholds)
-Exit 1 when any such finding is new relative to the base.
+  - Ruff C901 diagnostics in changed files/functions -> blocked, including
+    legacy functions whose `# noqa` only preserves the existing baseline.
+Exit 1 when any such finding is new relative to the base or touches changed code.
 """
 
 from __future__ import annotations
@@ -40,10 +42,10 @@ from scripts.aislop_policy import (
     validate_report,
     write_default_policy,
 )
+from scripts.ruff_changed_gate import added_lines, c901_blocking_diagnostics
 
 _ROOT = Path(__file__).resolve().parent.parent
 AISLOP = ["npx", "--yes", "aislop@0.16.0", "scan", "--format", "json", "."]
-HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 DEFAULT_CONFIG_WARNING = "using default configuration"
 CONFIG_PARSE_WARNING = ("failed to parse", "default configuration")
 
@@ -161,52 +163,6 @@ def changed_files(base: str) -> list[str]:
     return [p for p in result.stdout.splitlines() if p]
 
 
-def added_lines(  # noqa: C901 (diff parser state machine)
-    base: str,
-) -> tuple[dict[str, set[int]], set[str]]:
-    result = subprocess.run(
-        ["git", "diff", "--unified=0", f"{base}...HEAD", "--"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    ranges: dict[str, set[int]] = {}
-    new_files: set[str] = set()
-    path: str | None = None
-    current: set[int] | None = None
-    line = 0
-    is_new = False
-    for raw in result.stdout.splitlines():
-        if raw.startswith("diff --git "):
-            path = None
-            current = None
-            line = 0
-            is_new = False
-            continue
-        if raw.startswith("new file mode "):
-            is_new = True
-            continue
-        if raw.startswith("+++ b/"):
-            path = raw[6:]
-            current = ranges.setdefault(path, set())
-            if is_new:
-                new_files.add(path)
-            continue
-        match = HUNK.match(raw)
-        if match:
-            line = int(match.group(1))
-            continue
-        if raw.startswith("+") and not raw.startswith("+++"):
-            if current is not None:
-                current.add(line)
-            line += 1
-        elif raw.startswith("-") and not raw.startswith("---"):
-            continue
-        elif raw and not raw.startswith("\\") and line:
-            line += 1
-    return ranges, new_files
-
-
 def materialize_base(base: str, directory: str) -> None:
     """Write the complete base tree without overlaying the PR policy."""
     tree = subprocess.run(
@@ -277,6 +233,7 @@ def main() -> int:
 
     files = changed_files(base)
     paths, new_files = added_lines(base)
+    c901_blocking = c901_blocking_diagnostics(str(_ROOT), paths, new_files)
     config_path = _ROOT / ".aislop/config.yml"
     head_policy = load_policy(str(_ROOT))
     ensure_required_policy(head_policy)
@@ -306,7 +263,7 @@ def main() -> int:
             is_new=finding_signature(d, str(_ROOT)) in new_sigs,
         )
     ]
-    blocking = [d for d in new if is_blocking(d)]
+    blocking = [*c901_blocking, *(d for d in new if is_blocking(d))]
     score_comparable = base_policy == head_policy
     head_threshold_broken = score_blocking(head, config_path)
     score_regressed = score_comparable and score_worsened_since_base(base_report, head, config_path)
@@ -338,6 +295,7 @@ def main() -> int:
         "head_score_below_threshold": head_threshold_broken,
         "base_score_below_threshold": base_threshold_broken,
         "head_fail_below": threshold,
+        "c901_blocking": len(c901_blocking),
         "blocking_diagnostics": len(blocking),
         "blocking": [
             {

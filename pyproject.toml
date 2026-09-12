@@ -51,7 +51,9 @@ max-complexity = 10
 # out with a targeted `# noqa: C901` on the specific `def` line (not the whole
 # file), so future code added to these modules remains subject to the gate.
 # Every carve-out is documented inline at its def site. Treat these as debt
-# to improve deliberately, not a pattern to extend.
+# to improve deliberately, not a pattern to extend. The changed-code gate runs
+# Ruff with `--ignore-noqa` and filters only those def-site baseline lines, so
+# edits inside an exempt function still fail C901.
 [tool.ruff.lint.per-file-ignores]
 "scrape_wrong_questions.py" = ["E741", "B023"]
 

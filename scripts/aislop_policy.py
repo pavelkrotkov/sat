@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 from pathlib import Path
 from typing import NoReturn, cast
@@ -76,6 +75,7 @@ _TOP_LEVEL = {
 }
 _SEVERITIES = {"error", "warning", "off"}
 _JB_SEVERITIES = {"ERROR", "WARNING", "SUGGESTION", "HINT"}
+_SUPPRESSION_MARKER = "aislop-" + "ignore"
 
 
 def _fail(message: str) -> NoReturn:
@@ -282,6 +282,29 @@ def validate_rules(rules_path: Path) -> list[dict]:
     return cast(list[dict], rules)
 
 
+def _suppression_state(root: Path) -> dict:
+    ignored = root / ".aislopignore"
+    try:
+        ignore_content = ignored.read_bytes() if ignored.is_file() else None
+    except OSError as exc:
+        _fail(f"unable to read {ignored}: {exc}")
+
+    inline: set[tuple[str, str]] = set()
+    excluded = DEFAULT_EXCLUDE | {".venv", "mutants"}
+    for path in root.rglob("*"):
+        relative = path.relative_to(root)
+        if not path.is_file() or any(part in excluded for part in relative.parts):
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for line in lines:
+            if _SUPPRESSION_MARKER in line.lower():
+                inline.add((relative.as_posix(), line.strip()))
+    return {"ignore": ignore_content, "inline": tuple(sorted(inline))}
+
+
 def load_policy(directory: str) -> dict:
     root = Path(directory)
     config_path = root / ".aislop" / "config.yml"
@@ -290,6 +313,7 @@ def load_policy(directory: str) -> dict:
     return {
         "config": validate_config(config_path),
         "rules": validate_rules(root / ".aislop" / "rules.yml"),
+        "suppressions": _suppression_state(root),
     }
 
 
@@ -325,57 +349,13 @@ def write_default_policy(directory: str) -> None:
     path.write_text(yaml.safe_dump(DEFAULT_POLICY, sort_keys=False), encoding="utf-8")
 
 
-def _effective(policy: dict) -> dict:
-    config = policy["config"]
-    engines = config.get("engines") or {}
-    quality = config.get("quality") or {}
-    ci = config.get("ci") or {}
-    return {
-        "engines": {key: engines.get(key, default) for key, default in DEFAULT_ENGINES.items()},
-        "quality": {key: quality.get(key, default) for key, default in REQUIRED_QUALITY.items()},
-        "failBelow": ci.get("failBelow", 70),
-        "rules": config.get("rules", {}),
-        "exclude": set(config.get("exclude", DEFAULT_EXCLUDE)),
-        "architecture_rules": policy["rules"],
-    }
-
-
-def _strength(value: object) -> int:
-    return {"off": 0, "warning": 1, "error": 2}.get(value if isinstance(value, str) else "", 1)
-
-
 def ensure_policy_not_weakened(base: dict, head: dict) -> None:
-    old = _effective(base)
-    new = _effective(head)
-    for engine, enabled in old["engines"].items():
-        if enabled and not new["engines"].get(engine, False):
-            _fail(f"head disables the base {engine} engine")
-    for key, limit in old["quality"].items():
-        if new["quality"].get(key, limit) > limit:
-            _fail(f"head raises the base quality.{key} limit")
-    if new["failBelow"] < old["failBelow"]:
-        _fail("head lowers the base ci.failBelow threshold")
-    for rule, severity in old["rules"].items():
-        if _strength(new["rules"].get(rule, "warning")) < _strength(severity):
-            _fail(f"head weakens the base rule {rule}")
-    old_rules = {json.dumps(rule, sort_keys=True) for rule in old["architecture_rules"]}
-    new_rules = {json.dumps(rule, sort_keys=True) for rule in new["architecture_rules"]}
-    if not old_rules <= new_rules:
-        _fail("head removes an architecture rule from the base")
-    if not new["exclude"] <= old["exclude"]:
-        _fail("head adds an excluded path")
+    from scripts.aislop_policy_compare import ensure_policy_not_weakened as compare
+
+    compare(base, head)
 
 
 def ensure_required_policy(policy: dict) -> None:
-    effective = _effective(policy)
-    for engine in ("format", "lint", "code-quality", "ai-slop", "architecture", "security"):
-        if not effective["engines"].get(engine, False):
-            _fail(f"required engine is disabled: {engine}")
-    for key, limit in REQUIRED_QUALITY.items():
-        if effective["quality"].get(key, limit) > limit:
-            _fail(f"quality.{key} exceeds the required limit")
-    if effective["failBelow"] < 85:
-        _fail("ci.failBelow must be at least 85")
-    for rule in REQUIRED_RULES:
-        if effective["rules"].get(rule) != "error":
-            _fail(f"required rule is not blocking: {rule}")
+    from scripts.aislop_policy_compare import ensure_required_policy as check
+
+    check(policy)

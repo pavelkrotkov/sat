@@ -1,9 +1,12 @@
+import copy
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from scripts import aislop_changed_gate as gate
 from scripts import aislop_policy as policy
+from scripts import ruff_changed_gate as ruff_gate
 
 
 def test_default_config_fallback_is_detected_in_command_output():
@@ -150,3 +153,94 @@ def test_policy_rejects_schema_invalid_config(tmp_path: Path):
 
     with pytest.raises(SystemExit, match="unknown keys"):
         policy.validate_config(config)
+
+
+def test_policy_rejects_weaker_enforcement_fields():
+    base = cast(
+        dict,
+        {
+            "config": copy.deepcopy(policy.DEFAULT_POLICY),
+            "rules": [],
+            "suppressions": {"ignore": None, "inline": ()},
+        },
+    )
+    base_config = cast(dict, base["config"])
+    cast(dict, base_config["lint"])["typecheck"] = True
+    cases = [
+        (("lint", "typecheck"), False),
+        (("security", "audit"), False),
+        (("scoring", "weights", "security"), 0),
+    ]
+
+    for path, value in cases:
+        head = cast(dict, copy.deepcopy(base))
+        target = cast(dict, head["config"])
+        for key in path[:-1]:
+            target = cast(dict, target[key])
+        target[path[-1]] = value
+        with pytest.raises(SystemExit):
+            policy.ensure_policy_not_weakened(base, head)
+
+
+def test_policy_rejects_new_disabled_rule_override():
+    base = cast(
+        dict,
+        {
+            "config": copy.deepcopy(policy.DEFAULT_POLICY),
+            "rules": [],
+            "suppressions": {"ignore": None, "inline": ()},
+        },
+    )
+    head = cast(dict, copy.deepcopy(base))
+    cast(dict, head["config"])["rules"] = {"ai-slop/new-rule": "off"}
+
+    with pytest.raises(SystemExit, match="disabled rule override"):
+        policy.ensure_policy_not_weakened(base, head)
+
+
+def _policy_directory(root: Path, *, ignore: str | None = None, inline: bool = False) -> None:
+    (root / ".aislop").mkdir(parents=True)
+    (root / ".aislop" / "config.yml").write_text("{}\n", encoding="utf-8")
+    if ignore is not None:
+        (root / ".aislopignore").write_text(ignore, encoding="utf-8")
+    if inline:
+        marker = "aislop-" + "ignore"
+        (root / "module.py").write_text(f"value = 1  # {marker}\n", encoding="utf-8")
+
+
+def test_policy_rejects_new_ignore_file(tmp_path: Path):
+    base_dir = tmp_path / "base"
+    head_dir = tmp_path / "head"
+    _policy_directory(base_dir)
+    _policy_directory(head_dir, ignore="satprep/**\n")
+
+    with pytest.raises(SystemExit, match=r"\.aislopignore"):
+        policy.ensure_policy_not_weakened(
+            policy.load_policy(str(base_dir)), policy.load_policy(str(head_dir))
+        )
+
+
+def test_policy_rejects_new_inline_suppression(tmp_path: Path):
+    base_dir = tmp_path / "base"
+    head_dir = tmp_path / "head"
+    _policy_directory(base_dir)
+    _policy_directory(head_dir, inline=True)
+
+    with pytest.raises(SystemExit, match="inline aislop suppressions"):
+        policy.ensure_policy_not_weakened(
+            policy.load_policy(str(base_dir)), policy.load_policy(str(head_dir))
+        )
+
+
+def test_changed_c901_matches_body_edits(monkeypatch, tmp_path: Path):
+    source = tmp_path / "demo.py"
+    source.write_text("def legacy():\n    return 1\n", encoding="utf-8")
+    diagnostic = {
+        "filename": str(source),
+        "location": {"row": 1},
+        "message": "`legacy` is too complex (11 > 10)",
+    }
+    monkeypatch.setattr(ruff_gate, "_ruff_c901", lambda directory: [diagnostic])
+
+    assert ruff_gate.changed_c901(str(tmp_path), {"demo.py": {2}}, set()) == [diagnostic]
+    assert ruff_gate.changed_c901(str(tmp_path), {"demo.py": {3}}, set()) == []
