@@ -119,6 +119,27 @@ def test_unchanged_legacy_function_finding_does_not_block():
     assert not gate.is_changed_finding(finding, {}, set(), is_new=False)
 
 
+def test_body_edit_marks_unchanged_function_finding_as_changed(tmp_path: Path):
+    source = tmp_path / "demo.py"
+    source.write_text(
+        "def legacy():\n    value = 1\n    return value\n",
+        encoding="utf-8",
+    )
+    finding = {
+        "filePath": "demo.py",
+        "line": 1,
+        "detail": "legacy · 81 lines",
+    }
+
+    assert gate.is_changed_finding(
+        finding,
+        {"demo.py": {2}},
+        set(),
+        is_new=False,
+        root=str(tmp_path),
+    )
+
+
 def test_worsened_function_threshold_blocks_with_unchanged_anchor():
     base = {
         "filePath": "satprep/corpus/audit.py",
@@ -230,6 +251,61 @@ def test_policy_rejects_new_inline_suppression(tmp_path: Path):
         policy.ensure_policy_not_weakened(
             policy.load_policy(str(base_dir)), policy.load_policy(str(head_dir))
         )
+
+
+def test_report_rejects_skipped_enabled_engine():
+    config = copy.deepcopy(policy.DEFAULT_POLICY)
+    engines_config = cast(dict[str, bool], config["engines"])
+    engines = {name: {} for name, active in engines_config.items() if active}
+    engines["ai-slop"] = {"skipped": True}
+    report = {
+        "schemaVersion": "1",
+        "cliVersion": "0.16.0",
+        "version": "0.16.0",
+        "score": 100,
+        "diagnostics": [],
+        "engines": engines,
+        "summary": {},
+        "scoreable": True,
+    }
+
+    with pytest.raises(SystemExit, match="skipped enabled engine: ai-slop"):
+        policy.validate_report(report, {"config": config, "rules": []})
+
+
+def test_report_allows_skipped_architecture_without_rules():
+    config = copy.deepcopy(policy.DEFAULT_POLICY)
+    engines_config = cast(dict[str, bool], config["engines"])
+    engines_config["architecture"] = True
+    engines = {name: {} for name, active in engines_config.items() if active}
+    engines["architecture"] = {"skipped": True}
+    report = {
+        "schemaVersion": "1",
+        "cliVersion": "0.16.0",
+        "version": "0.16.0",
+        "score": 100,
+        "diagnostics": [],
+        "engines": engines,
+        "summary": {},
+        "scoreable": True,
+    }
+
+    assert policy.validate_report(report, {"config": config, "rules": []}) == report
+
+
+def test_ruff_c901_uses_isolated_trusted_limit(monkeypatch, tmp_path: Path):
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        return _Completed("[]")
+
+    monkeypatch.setattr(ruff_gate.subprocess, "run", fake_run)
+
+    assert ruff_gate._ruff_c901(str(tmp_path)) == []
+    command = commands[0]
+    assert "--isolated" in command
+    assert command[command.index("--config") + 1] == "lint.mccabe.max-complexity=10"
 
 
 def test_changed_c901_matches_body_edits(monkeypatch, tmp_path: Path):

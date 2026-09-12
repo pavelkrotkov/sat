@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+_TRUSTED_MAX_COMPLEXITY = 10
 
 
 @dataclass
@@ -77,9 +78,12 @@ def _ruff_c901(directory: str) -> list[dict]:
             "-m",
             "ruff",
             "check",
+            "--isolated",
             "--select",
             "C901",
             "--ignore-noqa",
+            "--config",
+            f"lint.mccabe.max-complexity={_TRUSTED_MAX_COMPLEXITY}",
             "--output-format=json",
             ".",
         ],

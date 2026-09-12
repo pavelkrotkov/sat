@@ -24,6 +24,7 @@ Exit 1 when any such finding is new relative to the base or touches changed code
 
 from __future__ import annotations
 
+import ast
 import io
 import json
 import re
@@ -204,6 +205,27 @@ def finding_signature(finding: dict, root: str) -> tuple:
     return ("line", relpath, rule, text or detail)
 
 
+def is_c901_baseline_line(root: str, relpath: str, line: int) -> bool:
+    text = file_line_text(root, relpath, line).lower().lstrip()
+    return text.startswith(("def ", "async def ")) and "# noqa" in text and "c901" in text
+
+
+def function_contains_changed_line(root: str, relpath: str, anchor: int, changed: set[int]) -> bool:
+    changed = {line for line in changed if not is_c901_baseline_line(root, relpath, line)}
+    if not changed or not relpath.endswith(".py"):
+        return False
+    try:
+        tree = ast.parse((Path(root) / relpath).read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return False
+    return any(
+        node.lineno <= anchor <= (node.end_lineno or node.lineno)
+        and any(node.lineno <= line <= (node.end_lineno or node.lineno) for line in changed)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    )
+
+
 def is_blocking(finding: dict) -> bool:
     severity = finding.get("severity")
     return severity == "error" or finding.get("rule", "") in BLOCKING_RULES
@@ -215,6 +237,7 @@ def is_changed_finding(
     new_files: set[str],
     *,
     is_new: bool,
+    root: str | None = None,
 ) -> bool:
     file_path = finding.get("filePath", "")
     if file_path in new_files:
@@ -222,7 +245,17 @@ def is_changed_finding(
     line = int(finding.get("line") or 0)
     line_changed = line in paths.get(file_path, set())
     if _FUNC_NAME.match(finding.get("detail", "")) and line > 0:
-        return is_new
+        baseline_line = root is not None and is_c901_baseline_line(root, file_path, line)
+        return (
+            is_new
+            or (line_changed and not baseline_line)
+            or (
+                root is not None
+                and function_contains_changed_line(
+                    root, file_path, line, paths.get(file_path, set())
+                )
+            )
+        )
     return is_new or line_changed
 
 
@@ -261,6 +294,7 @@ def main() -> int:
             paths,
             new_files,
             is_new=finding_signature(d, str(_ROOT)) in new_sigs,
+            root=str(_ROOT),
         )
     ]
     blocking = [*c901_blocking, *(d for d in new if is_blocking(d))]

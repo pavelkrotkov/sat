@@ -317,6 +317,22 @@ def load_policy(directory: str) -> dict:
     }
 
 
+def _validate_engine_results(report: dict, policy: dict) -> None:
+    engines = report.get("engines")
+    if not isinstance(engines, dict):
+        raise SystemExit("aislop report is missing engine results")
+    for engine, active in policy["config"].get("engines", {}).items():
+        if not active:
+            continue
+        result = engines.get(engine)
+        if not isinstance(result, dict):
+            raise SystemExit(f"aislop report is missing enabled engine: {engine}")
+        if result.get("skipped"):
+            if engine == "architecture" and not policy.get("rules"):
+                continue
+            raise SystemExit(f"aislop skipped enabled engine: {engine}")
+
+
 def validate_report(report: object, policy: dict) -> dict:
     if not isinstance(report, dict):
         raise SystemExit("aislop returned a non-object report")
@@ -332,12 +348,7 @@ def validate_report(report: object, policy: dict) -> dict:
     diagnostics = report.get("diagnostics")
     if not isinstance(diagnostics, list) or not all(isinstance(item, dict) for item in diagnostics):
         raise SystemExit("aislop report is missing diagnostics")
-    engines = report.get("engines")
-    if not isinstance(engines, dict):
-        raise SystemExit("aislop report is missing engine results")
-    for engine, active in policy["config"].get("engines", {}).items():
-        if active and engine not in engines:
-            raise SystemExit(f"aislop report is missing enabled engine: {engine}")
+    _validate_engine_results(report, policy)
     if not isinstance(report.get("summary"), dict) or report.get("scoreable") is not True:
         raise SystemExit("aislop report is not scoreable")
     return report
