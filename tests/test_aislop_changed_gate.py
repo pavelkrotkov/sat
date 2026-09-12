@@ -259,6 +259,22 @@ def test_policy_rejects_weaker_enforcement_fields():
             policy.ensure_policy_not_weakened(base, head)
 
 
+def test_policy_rejects_lower_max_per_rule_cap():
+    base = cast(
+        dict,
+        {
+            "config": copy.deepcopy(policy.DEFAULT_POLICY),
+            "rules": [],
+            "suppressions": {"ignore": None, "inline": ()},
+        },
+    )
+    head = cast(dict, copy.deepcopy(base))
+    cast(dict, head["config"])["scoring"]["maxPerRule"] = 1
+
+    with pytest.raises(SystemExit, match="maxPerRule"):
+        policy.ensure_policy_not_weakened(base, head)
+
+
 def test_policy_rejects_new_disabled_rule_override():
     base = cast(
         dict,
@@ -446,6 +462,19 @@ def test_changed_c901_matches_body_edits(monkeypatch, tmp_path: Path):
     assert ruff_gate.changed_c901(str(tmp_path), {"demo.py": {3}}, set()) == []
 
 
+def test_changed_c901_does_not_allow_new_def_suppression(monkeypatch, tmp_path: Path):
+    source = tmp_path / "demo.py"
+    source.write_text("def legacy():  # noqa: C901\n    return 1\n", encoding="utf-8")
+    diagnostic = {
+        "filename": str(source),
+        "location": {"row": 1},
+        "message": "`legacy` is too complex (11 > 10)",
+    }
+    monkeypatch.setattr(ruff_gate, "_ruff_c901", lambda directory: [diagnostic])
+
+    assert ruff_gate.changed_c901(str(tmp_path), {"demo.py": {1}}, set()) == [diagnostic]
+
+
 def test_trusted_gate_manifest_covers_script_modules_and_uses_safe_runner():
     root = Path(__file__).parents[1]
     manifest = root / ".github" / "aislop-gate.sha256"
@@ -459,5 +488,7 @@ def test_trusted_gate_manifest_covers_script_modules_and_uses_safe_runner():
 
     workflow = (root / ".github" / "workflows" / "aislop.yml").read_text(encoding="utf-8")
     assert "cp .github/aislop-gate.sha256" not in workflow
+    assert "trusted_revision=HEAD" not in workflow
+    assert "refusing PR-controlled bootstrap" in workflow
     assert 'git archive "$trusted_revision" -- scripts' in workflow
     assert "python -P -m scripts.aislop_changed_gate" in workflow

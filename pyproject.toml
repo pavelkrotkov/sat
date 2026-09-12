@@ -47,13 +47,10 @@ ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 max-complexity = 10
 
 # C901 is enabled repo-wide with max-complexity 10. New/changed code must
-# stay within it. The legacy functions exceeding 10 are individually carved
-# out with a targeted `# noqa: C901` on the specific `def` line (not the whole
-# file), so future code added to these modules remains subject to the gate.
-# Every carve-out is documented inline at its def site. Treat these as debt
-# to improve deliberately, not a pattern to extend. The changed-code gate runs
-# Ruff with `--ignore-noqa` and filters only those def-site baseline lines, so
-# edits inside an exempt function still fail C901.
+# stay within it. If an intrinsically clearer legacy function later needs an
+# exception, keep it at that function's def site; never add a file-wide ignore.
+# The changed-code gate runs Ruff with `--ignore-noqa`, so a new suppression
+# cannot bypass this limit.
 [tool.ruff.lint.per-file-ignores]
 "scrape_wrong_questions.py" = ["E741", "B023"]
 
@@ -66,10 +63,10 @@ exclude = [
 [tool.mutmut]
 source_paths = ["satprep/"]
 pytest_add_cli_args_test_selection = ["tests/"]
-# tests/test_public_repo_guard.py imports scripts.check_public_repo; mutmut
-# copies only source_paths + tests into mutants/, so the scripts package must
-# be copied explicitly or collection fails with ModuleNotFoundError.
-also_copy = ["scripts/", "deploy/"]
+# tests/test_public_repo_guard.py imports scripts.check_public_repo, and the
+# trust-boundary test reads .github/aislop-gate.sha256; mutmut copies only
+# source_paths + tests by default.
+also_copy = ["scripts/", "deploy/", ".github/"]
 # Mutmut collects every source path before applying command name filters, so
 # keep the initial baseline bounded to the highest-signal module. Widen this
 # list deliberately when another module is ready for mutation review.

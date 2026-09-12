@@ -105,16 +105,6 @@ def _ruff_c901(directory: str) -> list[dict]:
     return report
 
 
-def _file_line_text(root: str, relpath: str, line: int) -> str:
-    if line < 1:
-        return ""
-    try:
-        lines = (Path(root) / relpath).read_text(encoding="utf-8").splitlines()
-        return lines[line - 1] if line <= len(lines) else ""
-    except OSError:
-        return ""
-
-
 def _function_spans(root: str, relpath: str) -> list[tuple[int, int]]:
     path = Path(root) / relpath
     if path.suffix != ".py":
@@ -140,11 +130,6 @@ def _relative_filename(directory: str, filename: str) -> str:
         return filename.replace("\\", "/")
 
 
-def _is_c901_baseline_line(directory: str, relpath: str, line: int) -> bool:
-    text = _file_line_text(directory, relpath, line).lower().lstrip()
-    return text.startswith(("def ", "async def ")) and "# noqa" in text and "c901" in text
-
-
 def _c901_touches_added_lines(
     diagnostic: dict,
     directory: str,
@@ -154,11 +139,7 @@ def _c901_touches_added_lines(
     relpath = _relative_filename(directory, diagnostic.get("filename", ""))
     if relpath in new_files:
         return True
-    added = {
-        line
-        for line in paths.get(relpath, set())
-        if not _is_c901_baseline_line(directory, relpath, line)
-    }
+    added = paths.get(relpath, set())
     location = diagnostic.get("location")
     row = location.get("row") if isinstance(location, dict) else None
     if not isinstance(row, int) or not added:

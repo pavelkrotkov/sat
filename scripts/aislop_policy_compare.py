@@ -86,8 +86,8 @@ def _ensure_numeric_not_weaker(old: float, new: float, field: tuple[str, ...]) -
             _fail(f"head lowers the base scoring.{field[1]}.{field[2]} value")
         return
     if field == ("scoring", "maxPerRule"):
-        if new > old:
-            _fail("head raises the base scoring.maxPerRule limit")
+        if new < old:
+            _fail("head lowers the base scoring.maxPerRule cap")
         return
     if new != old:
         _fail(f"head changes enforcement field {'.'.join(field)}")
