@@ -90,6 +90,17 @@ def test_improved_metric_does_not_block():
     assert gate._metric_improved(head, [base], {})
 
 
+def test_improved_deep_nesting_metric_does_not_block():
+    base = {
+        "filePath": "satprep/corpus/audit.py",
+        "rule": "complexity/deep-nesting",
+        "detail": "audit_bluebook · depth 7",
+    }
+    head = {**base, "detail": "audit_bluebook · depth 6"}
+
+    assert gate._metric_improved(head, [base], {})
+
+
 def test_renamed_finding_uses_canonical_path_for_baseline_signature():
     base = {
         "filePath": "satprep/config.py",
@@ -179,6 +190,27 @@ def test_body_edit_marks_unchanged_function_finding_as_changed(tmp_path: Path):
     assert gate.is_changed_finding(
         finding,
         {"demo.py": {2}},
+        set(),
+        is_new=False,
+        root=str(tmp_path),
+    )
+
+
+def test_nested_function_edit_does_not_change_outer_finding(tmp_path: Path):
+    source = tmp_path / "demo.py"
+    source.write_text(
+        "def outer():\n    def inner():\n        return 1\n    return inner()\n",
+        encoding="utf-8",
+    )
+    finding = {
+        "filePath": "demo.py",
+        "line": 1,
+        "detail": "outer · 81 lines",
+    }
+
+    assert not gate.is_changed_finding(
+        finding,
+        {"demo.py": {3}},
         set(),
         is_new=False,
         root=str(tmp_path),
@@ -371,6 +403,23 @@ def test_policy_rejects_new_inline_suppression(tmp_path: Path):
         policy.ensure_policy_not_weakened(
             policy.load_policy(str(base_dir)), policy.load_policy(str(head_dir))
         )
+
+
+def test_policy_allows_renamed_inline_suppression(tmp_path: Path):
+    base_dir = tmp_path / "base"
+    head_dir = tmp_path / "head"
+    _policy_directory(base_dir, inline=True)
+    _policy_directory(head_dir)
+    (head_dir / "renamed.py").write_text(
+        (base_dir / "module.py").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    policy.ensure_policy_not_weakened(
+        policy.load_policy(str(base_dir)),
+        policy.load_policy(str(head_dir)),
+        {"module.py": "renamed.py"},
+    )
 
 
 def test_report_rejects_skipped_enabled_engine():

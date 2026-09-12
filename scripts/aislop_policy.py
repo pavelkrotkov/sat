@@ -361,10 +361,14 @@ def write_default_policy(directory: str) -> None:
     path.write_text(yaml.safe_dump(DEFAULT_POLICY, sort_keys=False), encoding="utf-8")
 
 
-def ensure_policy_not_weakened(base: dict, head: dict) -> None:
+def ensure_policy_not_weakened(
+    base: dict,
+    head: dict,
+    renames: dict[str, str] | None = None,
+) -> None:
     from scripts.aislop_policy_compare import ensure_policy_not_weakened as compare
 
-    compare(base, head)
+    compare(base, head, renames)
 
 
 def ensure_required_policy(policy: dict) -> None:

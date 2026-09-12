@@ -31,6 +31,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -65,7 +66,7 @@ BLOCKING_RULES = (
 FILE_SCOPED_RULES = {"complexity/file-too-large"}
 
 _FUNC_NAME = re.compile(r"^(.+?) · (?:\d+|depth \d+)")
-_METRIC_VALUE = re.compile(r"(?:·\s*)?(?:depth\s+)?(\d+(?:\.\d+)?)\s+(?:lines|params)")
+_METRIC_VALUE = re.compile(r"(?:·\s*)?(?:depth\s+)?(\d+(?:\.\d+)?)(?:\s+(?:lines|params))?\s*$")
 
 
 def run_aislop(directory: str, base: str | None = None) -> dict:
@@ -206,6 +207,17 @@ def materialize_base(base: str, directory: str) -> None:
         archive.extractall(directory)
 
 
+def overlay_policy(source: Path, target: Path) -> None:
+    for relative in (".aislop/config.yml", ".aislop/rules.yml", ".aislopignore"):
+        source_path = source / relative
+        target_path = target / relative
+        if source_path.is_file():
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source_path, target_path)
+        elif target_path.exists():
+            target_path.unlink()
+
+
 def file_line_text(root: str, relpath: str, line: int) -> str:
     """Return the source line text at `relpath:line`, or '' if unreadable."""
     if line < 1:
@@ -258,11 +270,30 @@ def function_contains_changed_line(root: str, relpath: str, anchor: int, changed
         tree = ast.parse((Path(root) / relpath).read_text(encoding="utf-8"))
     except (OSError, SyntaxError, UnicodeDecodeError):
         return False
+    functions = [
+        node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    anchor_scopes = [
+        node for node in functions if node.lineno <= anchor <= (node.end_lineno or node.lineno)
+    ]
+    if not anchor_scopes:
+        return False
+    anchor_scope = max(
+        anchor_scopes, key=lambda node: (node.lineno, -(node.end_lineno or node.lineno))
+    )
+    scope_start = anchor_scope.lineno
+    scope_end = anchor_scope.end_lineno or scope_start
+    nested_spans = [
+        (node.lineno, node.end_lineno or node.lineno)
+        for node in functions
+        if node is not anchor_scope
+        and scope_start <= node.lineno <= scope_end
+        and (node.end_lineno or node.lineno) <= scope_end
+    ]
     return any(
-        node.lineno <= anchor <= (node.end_lineno or node.lineno)
-        and any(node.lineno <= line <= (node.end_lineno or node.lineno) for line in changed)
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        scope_start <= line <= scope_end
+        and not any(start <= line <= end for start, end in nested_spans)
+        for line in changed
     )
 
 
@@ -346,7 +377,8 @@ def main() -> int:
         if not base_config_path.is_file():
             write_default_policy(base_dir)
         base_policy = load_policy(base_dir)
-        ensure_policy_not_weakened(base_policy, head_policy)
+        ensure_policy_not_weakened(base_policy, head_policy, renames)
+        overlay_policy(_ROOT, Path(base_dir))
         head = run_aislop(str(_ROOT))
         base_report = run_aislop(base_dir)
         base_paths = set(files) | set(renames)
@@ -374,11 +406,11 @@ def main() -> int:
         )
     ]
     blocking = [*c901_blocking, *(d for d in new if is_blocking(d, new_files))]
-    score_comparable = base_policy == head_policy
+    score_comparable = True
     head_threshold_broken = score_blocking(head, config_path)
-    # The first policy rollout has no comparable score; policy weakening is
-    # checked separately and later runs compare like-for-like reports.
-    score_regressed = score_comparable and score_worsened_since_base(base_report, head, config_path)
+    # Both reports use the head policy, so score comparison remains meaningful
+    # even when the policy itself changes.
+    score_regressed = score_worsened_since_base(base_report, head, config_path)
     if score_regressed:
         blocking.append(
             {
