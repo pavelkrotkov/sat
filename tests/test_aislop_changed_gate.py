@@ -478,12 +478,15 @@ def test_changed_c901_does_not_allow_new_def_suppression(monkeypatch, tmp_path: 
 def test_trusted_gate_manifest_covers_script_modules_and_uses_safe_runner():
     root = Path(__file__).parents[1]
     manifest = root / ".github" / "aislop-gate.sha256"
-    listed = {
+    listed = sorted(
         line.split(maxsplit=1)[1]
         for line in manifest.read_text(encoding="utf-8").splitlines()
         if line.strip()
-    }
-    script_modules = {path.relative_to(root).as_posix() for path in (root / "scripts").glob("*.py")}
+    )
+    script_modules = sorted(
+        {path.relative_to(root).as_posix() for path in (root / "scripts").glob("*.py")}
+    )
+    assert len(listed) == len(set(listed))
     assert listed == script_modules
 
     workflow = (root / ".github" / "workflows" / "aislop.yml").read_text(encoding="utf-8")
