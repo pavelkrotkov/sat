@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 from pathlib import Path
 from typing import cast
@@ -493,8 +494,15 @@ def test_ruff_c901_uses_isolated_trusted_limit(monkeypatch, tmp_path: Path):
 
     assert ruff_gate._ruff_c901(str(tmp_path)) == []
     command = commands[0]
+    assert command[1] == "-P"
     assert "--isolated" in command
     assert command[command.index("--config") + 1] == "lint.mccabe.max-complexity=10"
+
+
+def test_ruff_c901_does_not_import_checkout_module(tmp_path: Path):
+    (tmp_path / "ruff.py").write_text("print('shadowed')\n", encoding="utf-8")
+
+    assert ruff_gate._ruff_c901(str(tmp_path)) == []
 
 
 def test_changed_c901_matches_body_edits(monkeypatch, tmp_path: Path):
@@ -527,16 +535,19 @@ def test_changed_c901_does_not_allow_new_def_suppression(monkeypatch, tmp_path: 
 def test_trusted_gate_manifest_covers_script_modules_and_uses_safe_runner():
     root = Path(__file__).parents[1]
     manifest = root / ".github" / "aislop-gate.sha256"
-    listed = sorted(
-        line.split(maxsplit=1)[1]
+    entries = [
+        line.split(maxsplit=1)
         for line in manifest.read_text(encoding="utf-8").splitlines()
         if line.strip()
-    )
+    ]
+    listed = sorted(path for _, path in entries)
     script_modules = sorted(
         {path.relative_to(root).as_posix() for path in (root / "scripts").glob("*.py")}
     )
     assert len(listed) == len(set(listed))
     assert listed == script_modules
+    for digest, path in entries:
+        assert digest == hashlib.sha256((root / path).read_bytes()).hexdigest()
 
     workflow = (root / ".github" / "workflows" / "aislop.yml").read_text(encoding="utf-8")
     assert "cp .github/aislop-gate.sha256" not in workflow

@@ -75,6 +75,7 @@ def _ruff_c901(directory: str) -> list[dict]:
     result = subprocess.run(
         [
             sys.executable,
+            "-P",
             "-m",
             "ruff",
             "check",
