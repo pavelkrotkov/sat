@@ -3,11 +3,10 @@ name: aislop
 on:
   push:
     branches: [main]
-  # This non-privileged bootstrap run exercises the gate on the PR that
-  # introduces it; pull_request_target is authoritative after that merge.
+  # Bootstrap coverage only; pull_request_target is authoritative after merge.
   pull_request:
     branches: [main]
-  # This event loads the workflow from the trusted base branch.
+  # Loads this workflow from the trusted base branch.
   # zizmor: ignore[dangerous-triggers]
   pull_request_target:
     branches: [main]
@@ -25,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout trusted base
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
           fetch-depth: 0
@@ -33,7 +32,7 @@ jobs:
 
       - name: Checkout PR tree as data
         if: github.event_name == 'pull_request' || github.event_name == 'pull_request_target'
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.sha }}
@@ -41,18 +40,18 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Set up Node (pinned major)
-        uses: actions/setup-node@v4
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           enable-cache: true
 
@@ -60,14 +59,8 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: uv sync --locked --dev
 
-      # Deterministic gate: compare findings in changed files at HEAD and the PR
-      # merge-base, then fail only new or worsened findings in changed code.
-      # This keeps the legacy baseline non-blocking while enforcing configured
-      # quality thresholds and rules elevated to `error`. The base is resolved to
-      # the PR base SHA in pull-request events, or the before-ref on pushes to
-      # main, and used to scope the gate to truly changed code. This avoids pulling
-      # in concurrent or stale history. The aislop version is pinned to the reviewed
-      # baseline; never bump to `@latest` without checking release notes.
+      # Compare only against the exact PR base (or pre-push main), never a
+      # moving branch tip.
       - name: Resolve merge-base for this run
         id: mergebase
         env:
@@ -84,6 +77,7 @@ jobs:
           fi
           echo "Comparing against merge-base $MERGE_BASE"
           echo "sha=$MERGE_BASE" >> "$GITHUB_OUTPUT"
+
       - name: Verify trusted gate sources
         env:
           TRUSTED_REVISION: ${{ steps.mergebase.outputs.sha }}
@@ -119,6 +113,7 @@ jobs:
             sha256sum --strict --check "$manifest"
           )
           echo "Using trusted gate sources from $trusted_revision"
+
       - name: Run aislop (changed code only)
         env:
           BASE_SHA: ${{ steps.mergebase.outputs.sha }}
@@ -128,7 +123,11 @@ jobs:
           else
             AISLOP_ROOT="$GITHUB_WORKSPACE"
           fi
+          if [ "$AISLOP_ROOT" != "$GITHUB_WORKSPACE" ]; then
+            git -C "$AISLOP_ROOT" fetch --no-tags "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$BASE_SHA"
+            rm -rf "$AISLOP_ROOT/node_modules"
+          fi
           cd "$AISLOP_ROOT"
-          AISLOP_ROOT="$AISLOP_ROOT" AISLOP_TOOL_ROOT="$GITHUB_WORKSPACE" \
+          NPM_CONFIG_GLOBAL=true AISLOP_ROOT="$AISLOP_ROOT" AISLOP_TOOL_ROOT="$GITHUB_WORKSPACE" \
             PYTHONPATH="$RUNNER_TEMP/aislop-gate" \
             $GITHUB_WORKSPACE/.venv/bin/python -P -m scripts.aislop_changed_gate "$BASE_SHA"
