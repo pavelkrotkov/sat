@@ -65,7 +65,7 @@ jobs:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
-          if [ "${{ github.event_name }}" = "pull_request_target" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
+          if [ "${{ github.event_name }}" = 'pull_request_target' ] || [ "${{ github.event_name }}" = 'pull_request' ]; then
             MERGE_BASE="$PR_BASE_SHA"
           else
             MERGE_BASE="$PUSH_BEFORE_SHA"
@@ -116,7 +116,7 @@ jobs:
         env:
           BASE_SHA: ${{ steps.mergebase.outputs.sha }}
         run: |
-          if [ "${{ github.event_name }}" = "pull_request_target" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
+          if [ "${{ github.event_name }}" = 'pull_request_target' ] || [ "${{ github.event_name }}" = 'pull_request' ]; then
             AISLOP_ROOT="$GITHUB_WORKSPACE/pr"
           else
             AISLOP_ROOT="$GITHUB_WORKSPACE"
@@ -126,7 +126,7 @@ jobs:
             rm -rf "$AISLOP_ROOT/node_modules"
           fi
           if [ ! -f "$AISLOP_ROOT/.aislop/config.yml" ]; then
-            if [ "${{ github.event_name }}" = "pull_request" ] || { [ "${{ github.event_name }}" = "push" ] && ! git cat-file -e "$BASE_SHA:.aislop/config.yml" 2>/dev/null; }; then
+            if [ "${{ github.event_name }}" = 'pull_request' ] || { [ "${{ github.event_name }}" = 'push' ] && ! git cat-file -e "$BASE_SHA:.aislop/config.yml" 2>/dev/null; }; then
               echo "No aislop policy yet; bootstrap coverage only."
               exit 0
             fi
