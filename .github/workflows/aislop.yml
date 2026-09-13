@@ -59,8 +59,6 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: uv sync --locked --dev
 
-      # Compare only against the exact PR base (or pre-push main), never a
-      # moving branch tip.
       - name: Resolve merge-base for this run
         id: mergebase
         env:
@@ -126,6 +124,14 @@ jobs:
           if [ "$AISLOP_ROOT" != "$GITHUB_WORKSPACE" ]; then
             git -C "$AISLOP_ROOT" fetch --no-tags "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$BASE_SHA"
             rm -rf "$AISLOP_ROOT/node_modules"
+          fi
+          if [ ! -f "$AISLOP_ROOT/.aislop/config.yml" ]; then
+            if [ "${{ github.event_name }}" = "pull_request" ] || { [ "${{ github.event_name }}" = "push" ] && ! git cat-file -e "$BASE_SHA:.aislop/config.yml" 2>/dev/null; }; then
+              echo "No aislop policy yet; bootstrap coverage only."
+              exit 0
+            fi
+            echo "Missing required .aislop/config.yml" >&2
+            exit 1
           fi
           cd "$AISLOP_ROOT"
           NPM_CONFIG_GLOBAL=true AISLOP_ROOT="$AISLOP_ROOT" AISLOP_TOOL_ROOT="$GITHUB_WORKSPACE" \
