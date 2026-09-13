@@ -120,7 +120,7 @@ jobs:
           fi
           if [ "$AISLOP_ROOT" != "$GITHUB_WORKSPACE" ]; then
             git -C "$AISLOP_ROOT" fetch --no-tags "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" "$BASE_SHA"
-            rm -rf "$AISLOP_ROOT/node_modules"
+            rm -rf "$AISLOP_ROOT/node_modules" "$AISLOP_ROOT/.npmrc"
           fi
           if [ ! -f "$AISLOP_ROOT/.aislop/config.yml" ]; then
             if [ "${{ github.event_name }}" = 'pull_request' ] || { [ "${{ github.event_name }}" = 'push' ] && ! git cat-file -e "$BASE_SHA:.aislop/config.yml" 2>/dev/null; }; then
@@ -131,6 +131,6 @@ jobs:
             exit 1
           fi
           cd "$AISLOP_ROOT"
-          NPM_CONFIG_GLOBAL=true AISLOP_ROOT="$AISLOP_ROOT" AISLOP_TOOL_ROOT="$GITHUB_WORKSPACE" \
+          AISLOP_ROOT="$AISLOP_ROOT" AISLOP_TOOL_ROOT="$GITHUB_WORKSPACE" \
             PYTHONPATH="$RUNNER_TEMP/aislop-gate" \
             $GITHUB_WORKSPACE/.venv/bin/python -P -m scripts.aislop_changed_gate "$BASE_SHA"
