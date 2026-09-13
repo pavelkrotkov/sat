@@ -6,7 +6,6 @@ on:
   # Bootstrap coverage only; pull_request_target is authoritative after merge.
   pull_request:
     branches: [main]
-  # Loads this workflow from the trusted base branch.
   # zizmor: ignore[dangerous-triggers]
   pull_request_target:
     branches: [main]
@@ -70,9 +69,7 @@ jobs:
           else
             MERGE_BASE="$PUSH_BEFORE_SHA"
           fi
-          if [ -z "$MERGE_BASE" ]; then
-            MERGE_BASE="$(git rev-parse HEAD~1)"
-          fi
+          : "${MERGE_BASE:?GitHub event did not provide a merge base}"
           echo "Comparing against merge-base $MERGE_BASE"
           echo "sha=$MERGE_BASE" >> "$GITHUB_OUTPUT"
 
