@@ -72,13 +72,18 @@ _METRIC_VALUE = re.compile(r"(?:·\s*)?(?:depth\s+)?(\d+(?:\.\d+)?)(?:\s+(?:line
 def run_aislop(directory: str, base: str | None = None) -> dict:
     """Run pinned aislop only after validating its project policy and report."""
     policy = load_policy(directory)
-    command = AISLOP
+    tool_root = Path(
+        os.environ.get("AISLOP_TOOL_ROOT", Path(__file__).resolve().parent.parent)
+    ).resolve()
+    target = Path(directory).resolve()
+    scan_target = "." if target == tool_root else str(target)
+    command = [*AISLOP[:-1], scan_target]
     if base is not None:
-        command = [*AISLOP[:-1], "--changes", "--base", base, AISLOP[-1]]
+        command = [*AISLOP[:-1], "--changes", "--base", base, scan_target]
     try:
         result = subprocess.run(
             command,
-            cwd=directory,
+            cwd=tool_root,
             capture_output=True,
             text=True,
             env={**os.environ, "AISLOP_NO_TELEMETRY": "1"},

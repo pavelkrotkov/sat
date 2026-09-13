@@ -358,10 +358,14 @@ def test_policy_allows_disabling_base_telemetry():
 
 def test_run_aislop_disables_telemetry(monkeypatch, tmp_path: Path):
     _policy_directory(tmp_path)
+    tool_root = tmp_path / "trusted"
+    tool_root.mkdir()
+    monkeypatch.setenv("AISLOP_TOOL_ROOT", str(tool_root))
     report = {"schemaVersion": "1", "cliVersion": "0.16.0", "version": "0.16.0"}
     captured = {}
 
     def fake_run(command, **kwargs):
+        captured["command"] = command
         captured.update(kwargs)
         return _Completed(json.dumps(report))
 
@@ -370,6 +374,8 @@ def test_run_aislop_disables_telemetry(monkeypatch, tmp_path: Path):
 
     assert gate.run_aislop(str(tmp_path)) == report
     assert captured["env"]["AISLOP_NO_TELEMETRY"] == "1"
+    assert captured["cwd"] == tool_root
+    assert captured["command"][-1] == str(tmp_path)
 
 
 def _policy_directory(root: Path, *, ignore: str | None = None, inline: bool = False) -> None:
@@ -567,9 +573,10 @@ def test_trusted_gate_manifest_covers_script_modules_and_uses_safe_runner():
     assert 'git archive "$trusted_revision" -- scripts' in workflow
     assert "python -P -m scripts.aislop_changed_gate" in workflow
     assert "pull_request_target:" in workflow
+    assert "\n  pull_request:\n" in workflow
     assert "# zizmor: ignore[dangerous-triggers]" in workflow
-    assert "\n  pull_request:\n" not in workflow
     assert workflow.count("persist-credentials: false") == 2
     assert "repository: ${{ github.event.pull_request.head.repo.full_name }}" in workflow
     assert "path: pr" in workflow
     assert "working-directory: ${{ github.workspace }}" in workflow
+    assert 'AISLOP_TOOL_ROOT="$GITHUB_WORKSPACE"' in workflow

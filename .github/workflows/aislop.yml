@@ -3,6 +3,10 @@ name: aislop
 on:
   push:
     branches: [main]
+  # This non-privileged bootstrap run exercises the gate on the PR that
+  # introduces it; pull_request_target is authoritative after that merge.
+  pull_request:
+    branches: [main]
   # This event loads the workflow from the trusted base branch.
   # zizmor: ignore[dangerous-triggers]
   pull_request_target:
@@ -28,7 +32,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout PR tree as data
-        if: github.event_name == 'pull_request_target'
+        if: github.event_name == 'pull_request' || github.event_name == 'pull_request_target'
         uses: actions/checkout@v4
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
@@ -60,7 +64,7 @@ jobs:
       # merge-base, then fail only new or worsened findings in changed code.
       # This keeps the legacy baseline non-blocking while enforcing configured
       # quality thresholds and rules elevated to `error`. The base is resolved to
-      # the PR base SHA in pull_request_target events, or the before-ref on pushes to
+      # the PR base SHA in pull-request events, or the before-ref on pushes to
       # main, and used to scope the gate to truly changed code. This avoids pulling
       # in concurrent or stale history. The aislop version is pinned to the reviewed
       # baseline; never bump to `@latest` without checking release notes.
@@ -70,7 +74,7 @@ jobs:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
-          if [ "${{ github.event_name }}" = "pull_request_target" ]; then
+          if [ "${{ github.event_name }}" = "pull_request_target" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
             MERGE_BASE="$PR_BASE_SHA"
           else
             MERGE_BASE="$PUSH_BEFORE_SHA"
@@ -119,11 +123,12 @@ jobs:
         env:
           BASE_SHA: ${{ steps.mergebase.outputs.sha }}
         run: |
-          if [ "${{ github.event_name }}" = "pull_request_target" ]; then
+          if [ "${{ github.event_name }}" = "pull_request_target" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
             AISLOP_ROOT="$GITHUB_WORKSPACE/pr"
           else
             AISLOP_ROOT="$GITHUB_WORKSPACE"
           fi
           cd "$AISLOP_ROOT"
-          AISLOP_ROOT="$AISLOP_ROOT" PYTHONPATH="$RUNNER_TEMP/aislop-gate" \
+          AISLOP_ROOT="$AISLOP_ROOT" AISLOP_TOOL_ROOT="$GITHUB_WORKSPACE" \
+            PYTHONPATH="$RUNNER_TEMP/aislop-gate" \
             $GITHUB_WORKSPACE/.venv/bin/python -P -m scripts.aislop_changed_gate "$BASE_SHA"
