@@ -122,7 +122,7 @@ jobs:
             AISLOP_ROOT="$GITHUB_WORKSPACE"
           fi
           if [ "$AISLOP_ROOT" != "$GITHUB_WORKSPACE" ]; then
-            git -C "$AISLOP_ROOT" fetch --no-tags "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$BASE_SHA"
+            git -C "$AISLOP_ROOT" fetch --no-tags "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" "$BASE_SHA"
             rm -rf "$AISLOP_ROOT/node_modules"
           fi
           if [ ! -f "$AISLOP_ROOT/.aislop/config.yml" ]; then
