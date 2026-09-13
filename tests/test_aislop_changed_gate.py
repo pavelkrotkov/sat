@@ -499,6 +499,17 @@ def test_ruff_c901_uses_isolated_trusted_limit(monkeypatch, tmp_path: Path):
     assert command[command.index("--config") + 1] == "lint.mccabe.max-complexity=10"
 
 
+def test_ruff_c901_fails_closed_on_invocation_error(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(
+        ruff_gate.subprocess,
+        "run",
+        lambda command, **kwargs: _Completed("", returncode=1, stderr="No module named ruff"),
+    )
+
+    with pytest.raises(SystemExit, match="without a report"):
+        ruff_gate._ruff_c901(str(tmp_path))
+
+
 def test_ruff_c901_does_not_import_checkout_module(tmp_path: Path):
     (tmp_path / "ruff.py").write_text("print('shadowed')\n", encoding="utf-8")
 
@@ -555,3 +566,10 @@ def test_trusted_gate_manifest_covers_script_modules_and_uses_safe_runner():
     assert "refusing PR-controlled bootstrap" in workflow
     assert 'git archive "$trusted_revision" -- scripts' in workflow
     assert "python -P -m scripts.aislop_changed_gate" in workflow
+    assert "pull_request_target:" in workflow
+    assert "# zizmor: ignore[dangerous-triggers]" in workflow
+    assert "\n  pull_request:\n" not in workflow
+    assert workflow.count("persist-credentials: false") == 2
+    assert "repository: ${{ github.event.pull_request.head.repo.full_name }}" in workflow
+    assert "path: pr" in workflow
+    assert "working-directory: ${{ github.workspace }}" in workflow

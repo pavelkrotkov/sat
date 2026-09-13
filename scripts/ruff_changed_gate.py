@@ -96,6 +96,9 @@ def _ruff_c901(directory: str) -> list[dict]:
     if result.returncode not in (0, 1):
         print(result.stderr, file=sys.stderr)
         raise SystemExit(f"ruff C901 check failed (code {result.returncode})")
+    if result.returncode == 1 and not result.stdout.strip():
+        print(result.stderr, file=sys.stderr)
+        raise SystemExit("ruff C901 check failed without a report")
     try:
         report = json.loads(result.stdout or "[]")
     except json.JSONDecodeError as exc:
