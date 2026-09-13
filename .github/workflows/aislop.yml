@@ -1,0 +1,136 @@
+name: aislop
+
+on:
+  push:
+    branches: [main]
+  # Bootstrap coverage only; pull_request_target is authoritative after merge.
+  pull_request:
+    branches: [main]
+  # zizmor: ignore[dangerous-triggers]
+  pull_request_target:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  ai-slop-gate:
+    name: AI-slop gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout trusted base
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout PR tree as data
+        if: github.event_name == 'pull_request' || github.event_name == 'pull_request_target'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          enable-cache: true
+
+      - name: Install gate dependencies
+        working-directory: ${{ github.workspace }}
+        run: uv sync --locked --dev
+
+      - name: Resolve merge-base for this run
+        id: mergebase
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [ "${{ github.event_name }}" = 'pull_request_target' ] || [ "${{ github.event_name }}" = 'pull_request' ]; then
+            MERGE_BASE="$PR_BASE_SHA"
+          else
+            MERGE_BASE="$PUSH_BEFORE_SHA"
+          fi
+          : "${MERGE_BASE:?GitHub event did not provide a merge base}"
+          echo "Comparing against merge-base $MERGE_BASE"
+          echo "sha=$MERGE_BASE" >> "$GITHUB_OUTPUT"
+
+      - name: Verify trusted gate sources
+        env:
+          TRUSTED_REVISION: ${{ steps.mergebase.outputs.sha }}
+        run: |
+          set -euo pipefail
+          manifest="$RUNNER_TEMP/aislop-gate.sha256"
+          trusted_revision="$TRUSTED_REVISION"
+          if git cat-file -e "$trusted_revision:.github/aislop-gate.sha256" 2>/dev/null; then
+            git show "$trusted_revision:.github/aislop-gate.sha256" > "$manifest"
+          else
+            echo "No trusted aislop gate manifest at $trusted_revision; refusing PR-controlled bootstrap." >&2
+            exit 1
+          fi
+          expected="$RUNNER_TEMP/aislop-gate.expected"
+          actual="$RUNNER_TEMP/aislop-gate.actual"
+          awk 'NF == 2 { print $2 }' "$manifest" | sort > "$expected"
+          git ls-tree -r --name-only "$trusted_revision" -- scripts \
+            | while IFS= read -r path; do
+                case "$path" in
+                  scripts/*.py) printf '%s\n' "$path" ;;
+                esac
+              done \
+            | sort > "$actual"
+          if ! cmp -s "$expected" "$actual"; then
+            diff -u "$expected" "$actual"
+            exit 1
+          fi
+          trusted_dir="$RUNNER_TEMP/aislop-gate"
+          mkdir -p "$trusted_dir"
+          git archive "$trusted_revision" -- scripts | tar -x -C "$trusted_dir"
+          (
+            cd "$trusted_dir"
+            sha256sum --strict --check "$manifest"
+          )
+          echo "Using trusted gate sources from $trusted_revision"
+
+      - name: Run aislop (changed code only)
+        env:
+          BASE_SHA: ${{ steps.mergebase.outputs.sha }}
+        run: |
+          if [ "${{ github.event_name }}" = 'pull_request_target' ] || [ "${{ github.event_name }}" = 'pull_request' ]; then
+            AISLOP_ROOT="$GITHUB_WORKSPACE/pr"
+          else
+            AISLOP_ROOT="$GITHUB_WORKSPACE"
+          fi
+          if [ "$AISLOP_ROOT" != "$GITHUB_WORKSPACE" ]; then
+            git -C "$AISLOP_ROOT" fetch --no-tags "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" "$BASE_SHA"
+            rm -rf "$AISLOP_ROOT/node_modules"
+          fi
+          if [ ! -f "$AISLOP_ROOT/.aislop/config.yml" ]; then
+            if [ "${{ github.event_name }}" = 'pull_request' ] || { [ "${{ github.event_name }}" = 'push' ] && ! git cat-file -e "$BASE_SHA:.aislop/config.yml" 2>/dev/null; }; then
+              echo "No aislop policy yet; bootstrap coverage only."
+              exit 0
+            fi
+            echo "Missing required .aislop/config.yml" >&2
+            exit 1
+          fi
+          cd "$AISLOP_ROOT"
+          NPM_CONFIG_GLOBAL=true AISLOP_ROOT="$AISLOP_ROOT" AISLOP_TOOL_ROOT="$GITHUB_WORKSPACE" \
+            PYTHONPATH="$RUNNER_TEMP/aislop-gate" \
+            $GITHUB_WORKSPACE/.venv/bin/python -P -m scripts.aislop_changed_gate "$BASE_SHA"
