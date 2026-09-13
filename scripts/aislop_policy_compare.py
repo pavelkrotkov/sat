@@ -86,8 +86,8 @@ def _ensure_numeric_not_weaker(old: float, new: float, field: tuple[str, ...]) -
             _fail(f"head lowers the base scoring.{field[1]}.{field[2]} value")
         return
     if field == ("scoring", "maxPerRule"):
-        if new > old:
-            _fail("head raises the base scoring.maxPerRule limit")
+        if new < old:
+            _fail("head lowers the base scoring.maxPerRule cap")
         return
     if new != old:
         _fail(f"head changes enforcement field {'.'.join(field)}")
@@ -139,24 +139,35 @@ def _ensure_architecture_and_excludes(old: dict, new: dict) -> None:
         _fail("head adds an excluded path")
 
 
-def _ensure_suppressions_unchanged(base: dict, head: dict) -> None:
+def _ensure_suppressions_unchanged(
+    base: dict,
+    head: dict,
+    renames: dict[str, str] | None = None,
+) -> None:
     old_suppressions = base.get("suppressions", {})
     new_suppressions = head.get("suppressions", {})
     if new_suppressions.get("ignore") not in (None, old_suppressions.get("ignore")):
         _fail("head changes .aislopignore; ignore-file changes are not allowed")
-    old_inline = set(old_suppressions.get("inline", ()))
+    old_inline = {
+        (renames.get(path, path) if renames else path, text)
+        for path, text in old_suppressions.get("inline", ())
+    }
     new_inline = set(new_suppressions.get("inline", ()))
     if not new_inline <= old_inline:
         _fail("head adds inline aislop suppressions")
 
 
-def ensure_policy_not_weakened(base: dict, head: dict) -> None:
+def ensure_policy_not_weakened(
+    base: dict,
+    head: dict,
+    renames: dict[str, str] | None = None,
+) -> None:
     old = _effective(base)
     new = _effective(head)
     _ensure_policy_fields(old, new)
     _ensure_rule_changes(old, new)
     _ensure_architecture_and_excludes(old, new)
-    _ensure_suppressions_unchanged(base, head)
+    _ensure_suppressions_unchanged(base, head, renames)
 
 
 def _ensure_required_engines(effective: dict) -> None:

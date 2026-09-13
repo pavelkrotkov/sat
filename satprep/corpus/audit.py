@@ -44,47 +44,23 @@ def _source_records() -> list[dict]:
     return [r for r in records if r.get("subject_bucket") == config.SUBJECT]
 
 
-def audit_bluebook(conn) -> dict:
-    """Audit the repaired historical corpus against the source scrape.
-
-    Never writes. Every key is JSON-serialisable for the CLI report.
-    """
-    report: dict = {
-        "occurrences_total": 0,
-        "occurrences_with_question": 0,
-        "source_records": 0,
-        "missing_occurrences": [],
-        "duplicate_placements": [],
-        "question_gaps": [],
-        "attempts_preserved": 0,
-        "attempts_missing": [],
-        "attempts_misplaced": [],
-        "failures": [],
-    }
-
-    # T5: the source scrape is the ground truth for "expected". A missing
-    # file or zero R&W records means we cannot audit, and must not report a
-    # clean PASS on an empty/missing dataset.
-    if not config.BLUEBOOK_JSON.exists():
-        report["failures"].append(f"source scrape missing at {config.BLUEBOOK_JSON}; cannot audit")
-        return report
-
-    occ_rows = conn.execute(
+def _audit_occurrences(conn, report: dict) -> tuple[list, dict]:
+    rows = conn.execute(
         """SELECT bluebook_uid, test_name, module, question_number,
                   question_id
            FROM bluebook_occurrences
            ORDER BY test_name, module, question_number"""
     ).fetchall()
-    report["occurrences_total"] = len(occ_rows)
-    occ_by_uid = {r["bluebook_uid"]: r for r in occ_rows}
-    report["occurrences_with_question"] = sum(1 for r in occ_rows if r["question_id"] is not None)
+    report["occurrences_total"] = len(rows)
+    report["occurrences_with_question"] = sum(1 for row in rows if row["question_id"] is not None)
+    return rows, {row["bluebook_uid"]: row for row in rows}
 
-    # ---- every source occurrence must be present ----------------------
-    sources = _source_records()
+
+def _audit_source_occurrences(report: dict, sources: list[dict], occ_by_uid: dict) -> None:
     report["source_records"] = len(sources)
-    if report["source_records"] == 0:
+    if not sources:
         report["failures"].append("source scrape has zero R&W records; corpus is unauditable")
-    seen_placements: dict[tuple, list[str]] = {}
+    placements: dict[tuple, list[str]] = {}
     for rec in sources:
         uid = rec.get("uid") or ""
         placement = (
@@ -92,17 +68,12 @@ def audit_bluebook(conn) -> dict:
             rec.get("module") or "",
             str(rec.get("question_number") or ""),
         )
-        seen_placements.setdefault(placement, []).append(uid)
+        placements.setdefault(placement, []).append(uid)
         if uid not in occ_by_uid:
             report["missing_occurrences"].append(
-                {
-                    "bluebook_uid": uid,
-                    "placement": list(placement),
-                }
+                {"bluebook_uid": uid, "placement": list(placement)}
             )
-
-    # ---- duplicate placements (intentional double-scrapes) ------------
-    for placement, uids in sorted(seen_placements.items()):
+    for placement, uids in sorted(placements.items()):
         if len(uids) > 1:
             report["duplicate_placements"].append(
                 {
@@ -114,49 +85,44 @@ def audit_bluebook(conn) -> dict:
                 }
             )
 
-    # ---- per-question field gaps --------------------------------------
-    qids = {r["question_id"] for r in occ_rows if r["question_id"] is not None}
+
+def _audit_question_gaps(conn, report: dict, rows: list) -> None:
+    qids = {row["question_id"] for row in rows if row["question_id"] is not None}
     for qid in sorted(qids):
         row = conn.execute("SELECT * FROM questions WHERE id=?", (qid,)).fetchone()
         if row is None:
             report["question_gaps"].append({"question_id": qid, "missing": ["question row"]})
             continue
-        q = Question.from_row(row)
-        missing = []
-        if not q.passage:
-            missing.append("passage")
-        if not q.stem:
-            missing.append("stem")
-        if not q.choices:
-            missing.append("choices")
-        if not q.correct_letter:
-            missing.append("correct_letter")
-        if not q.rationale:
-            missing.append("rationale")
+        question = Question.from_row(row)
+        missing = [
+            name
+            for name, value in (
+                ("passage", question.passage),
+                ("stem", question.stem),
+                ("choices", question.choices),
+                ("correct_letter", question.correct_letter),
+                ("rationale", question.rationale),
+            )
+            if not value
+        ]
         if missing:
             report["question_gaps"].append({"question_id": qid, "missing": missing})
 
-    # ---- attempts preserved (T3) ----------------------------------------
+
+def _audit_attempts(conn, report: dict, sources: list[dict], occ_by_uid: dict) -> None:
     report["attempts_preserved"] = conn.execute(
         "SELECT COUNT(*) FROM attempts WHERE mode='historical'"
     ).fetchone()[0]
-    # A global count cannot catch a lost or misattached hist:<uid> attempt,
-    # so compare each source occurrence against its resolved attempt. Every
-    # scraped review with a determinable correctness should have exactly one
-    # historical attempt attached to the occurrence's question.
     for rec in sources:
         uid = rec.get("uid") or ""
         occ = occ_by_uid.get(uid)
         if occ is None or occ["question_id"] is None:
             continue
-        session_key = f"hist:{uid}"
         row = conn.execute(
             "SELECT question_id FROM attempts WHERE session_id=? ORDER BY id DESC LIMIT 1",
-            (session_key,),
+            (f"hist:{uid}",),
         ).fetchone()
         if row is None:
-            # Only flag records that should carry an attempt (determinable
-            # correctness); unknown-correctness records were never given one.
             if _has_determinable_correctness(rec):
                 report["attempts_missing"].append(uid)
         elif row["question_id"] != occ["question_id"]:
@@ -168,7 +134,8 @@ def audit_bluebook(conn) -> dict:
                 }
             )
 
-    # ---- failures ------------------------------------------------------
+
+def _audit_failures(report: dict) -> None:
     if report["missing_occurrences"]:
         report["failures"].append(
             f"{len(report['missing_occurrences'])} source occurrence(s) have no "
@@ -188,6 +155,31 @@ def audit_bluebook(conn) -> dict:
             f"{len(report['attempts_misplaced'])} historical attempt(s) attached "
             "to the wrong question"
         )
+
+
+def audit_bluebook(conn) -> dict:
+    """Audit the repaired historical corpus against the source scrape."""
+    report: dict = {
+        "occurrences_total": 0,
+        "occurrences_with_question": 0,
+        "source_records": 0,
+        "missing_occurrences": [],
+        "duplicate_placements": [],
+        "question_gaps": [],
+        "attempts_preserved": 0,
+        "attempts_missing": [],
+        "attempts_misplaced": [],
+        "failures": [],
+    }
+    if not config.BLUEBOOK_JSON.exists():
+        report["failures"].append(f"source scrape missing at {config.BLUEBOOK_JSON}; cannot audit")
+        return report
+    rows, occ_by_uid = _audit_occurrences(conn, report)
+    sources = _source_records()
+    _audit_source_occurrences(report, sources, occ_by_uid)
+    _audit_question_gaps(conn, report, rows)
+    _audit_attempts(conn, report, sources, occ_by_uid)
+    _audit_failures(report)
     return report
 
 

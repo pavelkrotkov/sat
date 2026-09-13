@@ -219,115 +219,201 @@ def _long_word_ratio(text: str) -> float:
     return (sum(1 for w in words if len(w) >= 12) / len(words)) if words else 0.0
 
 
-def reasoning_tags(passage: str, stem: str, choices: list[str]) -> list[str]:
-    """Rule-based demand/trap tagging. Deterministic; never uses outcomes."""
+def _append_tags(target: list[str], tags: list[str]) -> None:
+    for tag in tags:
+        if tag not in target:
+            target.append(tag)
+
+
+def _demand_tags(stem: str, choice_blob: str, choices: list[str], passage: str) -> list[str]:
     tags: list[str] = []
-    add = lambda t: tags.append(t) if t not in tags else None  # noqa: E731
-
-    full = "\n".join([passage, stem])
-    choice_blob = " \n ".join(choices)
-    stem_low = stem.lower()
-
-    # ---- question-demand tags ------------------------------------------
     if _EVIDENCE_STEM.search(stem):
-        add("claim_vs_evidence")
-        add("evidence_strength")
-        if sum(1 for c in choices if _QUOTED_CHOICE.search(c)) >= 3:
-            add("evidence_relevance")
+        tags.extend(("claim_vs_evidence", "evidence_strength"))
+        if sum(1 for choice in choices if _QUOTED_CHOICE.search(choice)) >= 3:
+            tags.append("evidence_relevance")
     if _MAIN_IDEA_STEM.search(stem):
-        add("main_claim_vs_detail")
-        add("paraphrase_precision")
+        tags.extend(("main_claim_vs_detail", "paraphrase_precision"))
     if _PURPOSE_STEM.search(stem):
-        add("author_purpose")
+        tags.append("author_purpose")
     if _WORD_SENSE_STEM.search(stem):
-        add("word_sense_in_context")
-        add("near_synonym_distinction")
+        tags.extend(("word_sense_in_context", "near_synonym_distinction"))
     if _CROSS_TEXT_STEM.search(stem):
-        add(
+        tags.append(
             "cross_text_agreement"
-            if re.search(r"agree|similar|shared|both", stem_low)
+            if re.search(r"agree|similar|shared|both", stem.lower())
             else "cross_text_disagreement"
         )
-        add("same_topic_wrong_relationship")
-    if re.search(r"suggest|infer", stem_low):
-        add("unsupported_inference")
-        add("true_but_not_supported")
+        tags.append("same_topic_wrong_relationship")
+    if re.search(r"suggest|infer", stem.lower()):
+        tags.extend(("unsupported_inference", "true_but_not_supported"))
     if _COMPARATIVE.search(choice_blob) or _COMPARATIVE.search(passage[-600:]):
-        add("comparison_relationship")
+        tags.append("comparison_relationship")
+    return tags
 
-    # ---- trap-shape tags (how strong students get fooled) ---------------
-    abs_hits = [bool(_ABSOLUTES.search(c)) for c in choices]
-    hedge_hits = [bool(_HEDGES.search(c)) for c in choices]
+
+def _qualifier_tags(choices: list[str]) -> list[str]:
+    abs_hits = [bool(_ABSOLUTES.search(choice)) for choice in choices]
+    hedge_hits = [bool(_HEDGES.search(choice)) for choice in choices]
     if any(abs_hits) and any(hedge_hits):
-        add("absolute_vs_tentative_language")
-        add("qualifier_strength")
-    elif sum(hedge_hits) >= 2:
-        add("qualifier_strength")
+        return ["absolute_vs_tentative_language", "qualifier_strength"]
+    if sum(hedge_hits) >= 2:
+        return ["qualifier_strength"]
+    return []
+
+
+def _relationship_tags(full: str, choice_blob: str) -> list[str]:
+    tags: list[str] = []
     if _CAUSAL.search(choice_blob) and _CAUSAL.search(full):
-        add("cause_vs_correlation")
+        tags.append("cause_vs_correlation")
     if _CONTRAST.search(full):
-        add("contrast_concession")
+        tags.append("contrast_concession")
     if _CHRONOLOGY.search(full):
-        add("chronology")
+        tags.append("chronology")
     if _HYPOTHESIS.search(full) and _RESULT_WORDS.search(full):
-        add("hypothesis_vs_result")
-    if re.search(r"(attitude|tone|stance|perspective)", stem_low):
-        add("tone_or_stance")
-    if sum(1 for c in choices if _STANCE_WORDS.search(c)) >= 2:
-        add("tone_or_stance")
-        add("degree_or_intensity")
-    low_words = ["increase", "decrease", "reduce", "expand"]
-    if len({w for w in low_words for c in choices if w in c.lower()}) >= 2 or any(
-        a in c.lower() and b in c2.lower()
-        for a, b in _DIRECTION_PAIRS
-        for c in choices
-        for c2 in choices
-        if c is not c2
-    ):
-        add("direction_reversal")
+        tags.append("hypothesis_vs_result")
+    return tags
 
+
+def _tone_tags(stem: str, choices: list[str]) -> list[str]:
+    tags: list[str] = []
+    if re.search(r"(attitude|tone|stance|perspective)", stem.lower()):
+        tags.append("tone_or_stance")
+    if sum(1 for choice in choices if _STANCE_WORDS.search(choice)) >= 2:
+        tags.extend(("tone_or_stance", "degree_or_intensity"))
+    return tags
+
+
+def _direction_tags(choices: list[str]) -> list[str]:
+    low_words = ("increase", "decrease", "reduce", "expand")
+    if len({word for word in low_words for choice in choices if word in choice.lower()}) >= 2:
+        return ["direction_reversal"]
+    if any(
+        first in choice.lower() and second in other.lower()
+        for first, second in _DIRECTION_PAIRS
+        for choice in choices
+        for other in choices
+        if choice is not other
+    ):
+        return ["direction_reversal"]
+    return []
+
+
+def _quantifier_tags(choices: list[str]) -> list[str]:
     quantifiers = {"all", "none", "some", "several", "most", "many", "few", "only", "both"}
-    q_per_choice = [
-        {m.group(0).lower() for m in re.finditer(r"\b(" + "|".join(quantifiers) + r")\b", c, re.I)}
-        for c in choices
+    per_choice = [
+        {
+            match.group(0).lower()
+            for match in re.finditer(r"\b(" + "|".join(quantifiers) + r")\b", choice, re.I)
+        }
+        for choice in choices
     ]
-    union_q = set().union(*q_per_choice) if q_per_choice else set()
-    if len(union_q) >= 2 and any(len(q) > 0 for q in q_per_choice):
-        add("quantifier_mismatch")
+    union = set().union(*per_choice) if per_choice else set()
+    return ["quantifier_mismatch"] if len(union) >= 2 and any(per_choice) else []
 
-    # lexical overlap among choices => fine paraphrase distinctions
-    tok_sets = [_tokens(c) for c in choices if len(c.split()) >= 4]
-    overlaps = []
-    for i in range(len(tok_sets)):
-        for j in range(i + 1, len(tok_sets)):
-            inter = tok_sets[i] & tok_sets[j]
-            if inter:
-                overlaps.append(len(inter) / min(len(tok_sets[i]), len(tok_sets[j])))
+
+def _overlap_tags(choices: list[str]) -> list[str]:
+    token_sets = [_tokens(choice) for choice in choices if len(choice.split()) >= 4]
+    overlaps = [
+        len(token_sets[i] & token_sets[j]) / min(len(token_sets[i]), len(token_sets[j]))
+        for i in range(len(token_sets))
+        for j in range(i + 1, len(token_sets))
+        if token_sets[i] & token_sets[j]
+    ]
     if overlaps and max(overlaps) >= 0.55:
-        add("paraphrase_precision")
-        add("near_synonym_distinction")
+        return ["paraphrase_precision", "near_synonym_distinction"]
+    return []
 
-    # dense scientific passage load (spec section 17)
-    sentences = [s for s in re.split(r"[.!?]+", passage) if s.strip()]
-    avg_len = (sum(len(s.split()) for s in sentences) / len(sentences)) if sentences else 0
+
+def _science_tags(passage: str, full: str, stem: str, existing: list[str]) -> list[str]:
+    sentences = [sentence for sentence in re.split(r"[.!?]+", passage) if sentence.strip()]
+    avg_len = (
+        (sum(len(sentence.split()) for sentence in sentences) / len(sentences)) if sentences else 0
+    )
     tech_ratio = len(_TECH_SUFFIX.findall(passage)) / max(1, len(sentences))
+    tags: list[str] = []
     if _long_word_ratio(passage) >= 0.055 or tech_ratio >= 1.2:
-        add("dense_scientific_vocabulary")
+        tags.append("dense_scientific_vocabulary")
     if avg_len >= 30:
-        add("scientific_noun_overload")
-    if ("dense_scientific_vocabulary" in tags or "scientific_noun_overload" in tags) and (
-        _HYPOTHESIS.search(full) or _COMPARATIVE.search(full)
+        tags.append("scientific_noun_overload")
+    if (set(existing) | set(tags)) & {
+        "dense_scientific_vocabulary",
+        "scientific_noun_overload",
+    } and (_HYPOTHESIS.search(full) or _COMPARATIVE.search(full)):
+        tags.append("abstract_relationship_extraction")
+    if re.search(r"suggest|infer", stem.lower()) and _CONTRAST.search(full) and len(sentences) <= 6:
+        tags.append("abstract_relationship_extraction")
+    return tags
+
+
+def reasoning_tags(passage: str, stem: str, choices: list[str]) -> list[str]:
+    """Rule-based demand/trap tagging. Deterministic; never uses outcomes."""
+    full = "\n".join([passage, stem])
+    choice_blob = " \n ".join(choices)
+    tags: list[str] = []
+    for group in (
+        _demand_tags(stem, choice_blob, choices, passage),
+        _qualifier_tags(choices),
+        _relationship_tags(full, choice_blob),
+        _tone_tags(stem, choices),
+        _direction_tags(choices),
+        _quantifier_tags(choices),
+        _overlap_tags(choices),
     ):
-        add("abstract_relationship_extraction")
-
-    # inference stems on abstract relations
-    if re.search(r"suggest|infer", stem_low) and _CONTRAST.search(full) and len(sentences) <= 6:
-        add("abstract_relationship_extraction")
-
+        _append_tags(tags, group)
+    _append_tags(tags, _science_tags(passage, full, stem, tags))
     return tags
 
 
 # ---------------------------------------------------------- diagnostics ---
+
+
+def _qualifier_error_tags(correct: str, student: str) -> list[str]:
+    tags: list[str] = []
+    student_absolute = bool(_ABSOLUTES.search(student))
+    correct_absolute = bool(_ABSOLUTES.search(correct))
+    student_intensifier = bool(
+        re.search(r"\b(primary|main|sole(ly)?|direct(ly)?|chief|foremost)\b", student)
+    )
+    correct_hedged = bool(
+        re.search(r"\b(may|might|could|contribute|suggests?|appears?)\b", correct)
+    )
+    if student_absolute and not correct_absolute:
+        tags.extend(("qualifier_strength", "over_inference"))
+        if re.search(r"prove|definitely|undoubtedly|always|never", student):
+            tags.append("absolute_vs_tentative_language")
+    elif student_intensifier and correct_hedged and not correct_absolute:
+        tags.extend(("qualifier_strength", "over_inference"))
+    return tags
+
+
+def _direction_error_tags(correct: str, student: str) -> list[str]:
+    for first, second in _DIRECTION_PAIRS:
+        if (
+            (first in student and second in correct) or (second in student and first in correct)
+        ) and not (first in correct and second in correct):
+            return ["direction_reversal"]
+    return []
+
+
+def _contrast_error_tags(correct: str, student: str) -> list[str]:
+    if (
+        _CONTRAST.search(correct)
+        and not _CONTRAST.search(student)
+        and re.search(r"\bhowever|but|although\b", student) is None
+    ):
+        return ["contrast_concession"]
+    return []
+
+
+def _overlap_error_tags(correct_text: str, student_text: str) -> list[str]:
+    student_tokens, correct_tokens = _tokens(student_text), _tokens(correct_text)
+    if len(student_tokens) >= 4 and len(correct_tokens) >= 4:
+        overlap = len(student_tokens & correct_tokens) / max(
+            1, min(len(student_tokens), len(correct_tokens))
+        )
+        if overlap < 0.18:
+            return ["same_topic_wrong_relationship"]
+    return []
 
 
 def diagnose_error(correct_text: str, student_text: str) -> list[str]:
@@ -336,42 +422,18 @@ def diagnose_error(correct_text: str, student_text: str) -> list[str]:
     Deliberately conservative: only fires on clear textual contrasts so we
     don't fabricate failure modes the data cannot support (spec section 6).
     """
-    tags: list[str] = []
-    add = lambda t: tags.append(t) if t not in tags else None  # noqa: E731
     if not correct_text.strip() or not student_text.strip():
         return []
     c, s = correct_text.lower(), student_text.lower()
-
-    s_abs = bool(_ABSOLUTES.search(s))
-    c_abs = bool(_ABSOLUTES.search(c))
-    s_intensifier = bool(re.search(r"\b(primary|main|sole(ly)?|direct(ly)?|chief|foremost)\b", s))
-    c_hedged = bool(re.search(r"\b(may|might|could|contribute|suggests?|appears?)\b", c))
-    if s_abs and not c_abs:
-        add("qualifier_strength")
-        add("over_inference")
-        if re.search(r"prove|definitely|undoubtedly|always|never", s):
-            add("absolute_vs_tentative_language")
-    elif s_intensifier and c_hedged and not _ABSOLUTES.search(c):
-        # "is the primary cause" vs "may contribute": strength upgrade, no absolutes
-        add("qualifier_strength")
-        add("over_inference")
-    if _CAUSAL.search(s) and not _CAUSAL.search(c):
-        add("cause_vs_correlation")
-    for a, b in _DIRECTION_PAIRS:
-        if ((a in s and b in c) or (b in s and a in c)) and not (a in c and b in c):
-            add("direction_reversal")
-            break
-    if (
-        _CONTRAST.search(c)
-        and not _CONTRAST.search(s)
-        and re.search(r"\bhowever|but|although\b", s) is None
+    tags: list[str] = []
+    for group in (
+        _qualifier_error_tags(c, s),
+        ["cause_vs_correlation"] if _CAUSAL.search(s) and not _CAUSAL.search(c) else [],
+        _direction_error_tags(c, s),
+        _contrast_error_tags(c, s),
+        _overlap_error_tags(correct_text, student_text),
     ):
-        add("contrast_concession")
-    st, ct = _tokens(student_text), _tokens(correct_text)
-    if len(st) >= 4 and len(ct) >= 4:
-        overlap = len(st & ct) / max(1, min(len(st), len(ct)))
-        if overlap < 0.18:
-            add("same_topic_wrong_relationship")
+        _append_tags(tags, group)
     return tags
 
 

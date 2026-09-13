@@ -14,12 +14,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   ai-slop-gate:
-    name: AI-slop gate
+    name: ${{ github.event_name == 'pull_request' && 'AI-slop bootstrap' || 'AI-slop gate (trusted)' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout trusted base
@@ -62,12 +62,15 @@ jobs:
         id: mergebase
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
+          set -euo pipefail
           if [ "${{ github.event_name }}" = 'pull_request_target' ] || [ "${{ github.event_name }}" = 'pull_request' ]; then
-            MERGE_BASE="$PR_BASE_SHA"
+            git -C "$GITHUB_WORKSPACE/pr" fetch --no-tags "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" "$PR_BASE_SHA"
+            MERGE_BASE="$(git -C "$GITHUB_WORKSPACE/pr" merge-base "$PR_BASE_SHA" "$PR_HEAD_SHA")"
           else
-            MERGE_BASE="$PUSH_BEFORE_SHA"
+            MERGE_BASE="$(git merge-base "$PUSH_BEFORE_SHA" HEAD)"
           fi
           : "${MERGE_BASE:?GitHub event did not provide a merge base}"
           echo "Comparing against merge-base $MERGE_BASE"

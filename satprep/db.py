@@ -251,8 +251,7 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
     _migrate(conn)
 
 
-def _migrate(conn: sqlite3.Connection) -> None:
-    """Lightweight column/table migrations for pre-existing databases."""
+def _migrate_attempt_columns(conn: sqlite3.Connection) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(attempts)")}
     if "error_tags" not in cols:
         conn.execute("ALTER TABLE attempts ADD COLUMN error_tags TEXT NOT NULL DEFAULT '[]'")
@@ -261,7 +260,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     qcols = {r[1] for r in conn.execute("PRAGMA table_info(questions)")}
     if "visuals_json" not in qcols:
         conn.execute("ALTER TABLE questions ADD COLUMN visuals_json TEXT DEFAULT '[]'")
-    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+
+def _migrate_report_checkpoint(conn: sqlite3.Connection, tables: set[str]) -> None:
     if "report_checkpoint" not in tables:
         conn.execute(
             """CREATE TABLE report_checkpoint (
@@ -270,15 +271,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
             )"""
         )
         conn.execute("INSERT INTO report_checkpoint (id, committed_attempt_id) VALUES (1, 0)")
-    else:
-        checkpoint_cols = {r[1] for r in conn.execute("PRAGMA table_info(report_checkpoint)")}
-        if "committed_attempt_id" not in checkpoint_cols:
-            conn.execute(
-                "ALTER TABLE report_checkpoint ADD COLUMN committed_attempt_id INTEGER NOT NULL DEFAULT 0"
-            )
+        return
+    checkpoint_cols = {r[1] for r in conn.execute("PRAGMA table_info(report_checkpoint)")}
+    if "committed_attempt_id" not in checkpoint_cols:
         conn.execute(
-            "INSERT OR IGNORE INTO report_checkpoint (id, committed_attempt_id) VALUES (1, 0)"
+            "ALTER TABLE report_checkpoint ADD COLUMN committed_attempt_id INTEGER NOT NULL DEFAULT 0"
         )
+    conn.execute("INSERT OR IGNORE INTO report_checkpoint (id, committed_attempt_id) VALUES (1, 0)")
+
+
+def _migrate_report_runs(conn: sqlite3.Connection, tables: set[str]) -> None:
     if "report_dirty_events" not in tables:
         conn.execute(
             """CREATE TABLE report_dirty_events (
@@ -306,47 +308,56 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_report_runs_status ON report_runs(status, completed_at)"
         )
-    else:
-        run_cols = {r[1] for r in conn.execute("PRAGMA table_info(report_runs)")}
-        additions = {
-            "completed_at": "TEXT",
-            "eligible_attempt_count": "INTEGER NOT NULL DEFAULT 0",
-            "wrong_count": "INTEGER NOT NULL DEFAULT 0",
-            "report_name": "TEXT",
-            "error": "TEXT",
-            "lease_expires_at": "TEXT",
-            "lease_token": "TEXT",
-        }
-        for name, definition in additions.items():
-            if name not in run_cols:
-                conn.execute(f"ALTER TABLE report_runs ADD COLUMN {name} {definition}")
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_report_runs_status ON report_runs(status, completed_at)"
-        )
-    if "bluebook_occurrences" not in {
-        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    }:
-        conn.execute(
-            """CREATE TABLE bluebook_occurrences (
-                id INTEGER PRIMARY KEY,
-                bluebook_uid TEXT NOT NULL,
-                test_name TEXT NOT NULL,
-                module TEXT NOT NULL DEFAULT '',
-                question_number TEXT NOT NULL DEFAULT '',
-                subject TEXT NOT NULL DEFAULT '',
-                fingerprint TEXT NOT NULL,
-                question_id INTEGER REFERENCES questions(id),
-                answer_status TEXT NOT NULL DEFAULT '',
-                scraped_at TEXT NOT NULL DEFAULT '',
-                UNIQUE(bluebook_uid)
-            )"""
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_bb_occ_fp ON bluebook_occurrences(fingerprint)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_bb_occ_placement ON bluebook_occurrences(test_name, module, question_number)"
-        )
+        return
+    run_cols = {r[1] for r in conn.execute("PRAGMA table_info(report_runs)")}
+    additions = {
+        "completed_at": "TEXT",
+        "eligible_attempt_count": "INTEGER NOT NULL DEFAULT 0",
+        "wrong_count": "INTEGER NOT NULL DEFAULT 0",
+        "report_name": "TEXT",
+        "error": "TEXT",
+        "lease_expires_at": "TEXT",
+        "lease_token": "TEXT",
+    }
+    for name, definition in additions.items():
+        if name not in run_cols:
+            conn.execute(f"ALTER TABLE report_runs ADD COLUMN {name} {definition}")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_report_runs_status ON report_runs(status, completed_at)"
+    )
+
+
+def _migrate_occurrences(conn: sqlite3.Connection, tables: set[str]) -> None:
+    if "bluebook_occurrences" in tables:
+        return
+    conn.execute(
+        """CREATE TABLE bluebook_occurrences (
+            id INTEGER PRIMARY KEY,
+            bluebook_uid TEXT NOT NULL,
+            test_name TEXT NOT NULL,
+            module TEXT NOT NULL DEFAULT '',
+            question_number TEXT NOT NULL DEFAULT '',
+            subject TEXT NOT NULL DEFAULT '',
+            fingerprint TEXT NOT NULL,
+            question_id INTEGER REFERENCES questions(id),
+            answer_status TEXT NOT NULL DEFAULT '',
+            scraped_at TEXT NOT NULL DEFAULT '',
+            UNIQUE(bluebook_uid)
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_bb_occ_fp ON bluebook_occurrences(fingerprint)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bb_occ_placement ON bluebook_occurrences(test_name, module, question_number)"
+    )
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Lightweight column/table migrations for pre-existing databases."""
+    _migrate_attempt_columns(conn)
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    _migrate_report_checkpoint(conn, tables)
+    _migrate_report_runs(conn, tables)
+    _migrate_occurrences(conn, tables)
 
 
 @contextmanager
