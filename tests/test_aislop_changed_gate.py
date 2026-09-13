@@ -567,6 +567,12 @@ def test_trusted_gate_manifest_covers_script_modules_and_uses_safe_runner():
         assert digest == hashlib.sha256((root / path).read_bytes()).hexdigest()
 
     workflow = (root / ".github" / "workflows" / "aislop.yml").read_text(encoding="utf-8")
+    assert "${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}" in workflow
+    assert "AI-slop bootstrap" in workflow
+    assert "AI-slop gate (trusted)" in workflow
+    assert 'merge-base "$PR_BASE_SHA" "$PR_HEAD_SHA"' in workflow
+    assert 'merge-base "$PUSH_BEFORE_SHA" HEAD' in workflow
+    assert 'MERGE_BASE="$PR_BASE_SHA"' not in workflow
     assert "cp .github/aislop-gate.sha256" not in workflow
     assert "trusted_revision=HEAD" not in workflow
     assert "refusing PR-controlled bootstrap" in workflow
