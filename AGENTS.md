@@ -50,3 +50,5 @@ Before submitting, answer each:
 - Did the implementation create multiple sources of truth?
 
 No findings is a valid result. Do not manufacture findings to justify a review round.
+
+Before adding complexity for a speculative or vanishingly unlikely race or security edge case, explain the concrete failure mode, likelihood, and complexity cost to the user and get their buy-in. Do not silently expand scope for theoretical robustness.
